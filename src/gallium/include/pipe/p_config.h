@@ -187,6 +187,10 @@
  * See subsystem below for a more fine-grained distinction.
  */
 
+#if defined(__AROS__)
+#define PIPE_OS_AROS
+#else
+
 #if defined(__linux__)
 #define PIPE_OS_LINUX
 #define PIPE_OS_UNIX
@@ -252,6 +256,8 @@
 #define PIPE_OS_CYGWIN
 #define PIPE_OS_UNIX
 #endif
+
+#endif /* !__AROS__ */
 
 /*
  * Try to auto-detect the subsystem.

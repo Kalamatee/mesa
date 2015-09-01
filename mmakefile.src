@@ -1,0 +1,5 @@
+include $(TOP)/config/make.cfg
+
+%fetch mmake=workbench-libs-mesa-fetch archive=/A suffixes= \
+    archive_origins=. location= destination=. \
+    patches_origins=$(SRCDIR)/$(CURDIR) patches_specs=::

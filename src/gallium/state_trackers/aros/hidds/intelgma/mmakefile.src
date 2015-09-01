@@ -1,0 +1,42 @@
+# $Id$
+include $(TOP)/config/make.cfg
+
+GALLIUM_PATH = $(SRCDIR)/$(CURDIR)/../../../..
+
+include $(GALLIUM_PATH)/../aros/mesa3dgl/mesa.cfg
+
+IGMA_HIDD_SOURCES := \
+            intelgma_init \
+            intelgma_gfxclass \
+            intelgma_i2cclass \
+            intelgma_bitmapclass \
+            intelgma_lowlevel \
+            intelgma_memory \
+            intelgma_compositorclass \
+            intelgma_startup \
+            intelgma_galliumclass
+##            intelgma_copybox
+
+USER_INCLUDES := \
+            $(USER_INCLUDES) \
+            -iquote $(GALLIUM_PATH)/drivers \
+            -iquote $(GALLIUM_PATH)/include \
+            -iquote $(GALLIUM_PATH)/auxiliary
+
+USER_LDFLAGS := \
+  -L$(top_libdir) \
+  -ledid -lgallium_i915 -lgalliumauxiliary -lmesautil \
+  -lhiddstubs -lstdcio -lstdc
+
+##USER_CFLAGS := -DINTELGMA_COMPOSIT
+
+EXEDIR := $(AROSDIR)/Devs/Monitors
+
+#MM- workbench-devs-monitors: devs-monitors-intelgma
+#MM devs-monitors-intelgma : hidd-i2c hidd-gallium intelgma-linklibs-gallium_i915 intelgma-linklibs-edid
+
+%build_prog mmake=devs-monitors-intelgma \
+            progname=IntelGMA targetdir=$(EXEDIR) \
+            files=$(IGMA_HIDD_SOURCES) uselibs=""
+
+%common

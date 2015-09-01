@@ -1,0 +1,11 @@
+# $Id$
+include $(TOP)/config/make.cfg
+
+include $(SRCDIR)/$(CURDIR)/../../../../../../aros/mesa3dgl/mesa.cfg
+
+EDID_SOURCES := \
+             edid
+
+%build_linklib mmake=intelgma-linklibs-edid libname=edid libdir=$(top_libdir) files="$(EDID_SOURCES)"
+
+%common

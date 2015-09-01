@@ -334,7 +334,8 @@ softpipe_is_format_supported( struct pipe_screen *screen,
    if (bind & (PIPE_BIND_DISPLAY_TARGET |
                PIPE_BIND_SCANOUT |
                PIPE_BIND_SHARED)) {
-      if(!winsys->is_displaytarget_format_supported(winsys, bind, format))
+      if(!winsys->is_displaytarget_format_supported ||
+          !winsys->is_displaytarget_format_supported(winsys, bind, format))
          return FALSE;
    }
 

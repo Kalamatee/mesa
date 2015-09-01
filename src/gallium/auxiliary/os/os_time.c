@@ -36,7 +36,7 @@
 #include "pipe/p_defines.h"
 #include "util/u_atomic.h"
 
-#if defined(PIPE_OS_UNIX)
+#if defined(PIPE_OS_UNIX) || defined(PIPE_OS_AROS)
 #  include <time.h> /* timeval */
 #  include <sys/time.h> /* timeval */
 #  include <sched.h> /* sched_yield */
@@ -58,7 +58,7 @@ os_time_get_nano(void)
    clock_gettime(CLOCK_MONOTONIC, &tv);
    return tv.tv_nsec + tv.tv_sec*INT64_C(1000000000);
 
-#elif defined(PIPE_OS_UNIX)
+#elif defined(PIPE_OS_UNIX) || defined(PIPE_OS_AROS)
 
    struct timeval tv;
    gettimeofday(&tv, NULL);

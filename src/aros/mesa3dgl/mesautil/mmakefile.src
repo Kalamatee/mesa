@@ -1,0 +1,46 @@
+#   $Id$
+#
+#   Build Mesa3DGL private libmesautil.a
+#
+
+include $(TOP)/config/make.cfg
+
+CUR_MESADIR := src/util
+include $(SRCDIR)/$(CURDIR)/../mesa.cfg
+include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
+
+#MM- mesa3dgl-linklibs : mesa3dgl-linklibs-mesautil
+
+USER_INCLUDES := \
+            $(USER_INCLUDES) \
+            -I$(top_srcdir)/$(CUR_MESADIR) \
+            -iquote $(top_builddir)/$(CUR_MESADIR) \
+            -iquote $(top_srcdir)/src/mesa \
+            -iquote $(top_srcdir)/src/mapi \
+            -iquote $(top_srcdir)/src/gallium/include \
+            -iquote $(top_srcdir)/src/gallium/auxiliary
+
+$(top_builddir)/$(CUR_MESADIR)/format_srgb.c: $(top_srcdir)/$(CUR_MESADIR)/format_srgb.py
+	@mkdir -p $(dir $@)
+	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
+	$(PYTHON)  $< > $@
+
+MESA_UTIL_C_FILES := $(filter %.c, $(MESA_UTIL_FILES))
+
+MESA_UTIL_GENERATED_C_SOURCES := \
+            $(top_builddir)/$(CUR_MESADIR)/format_srgb.c
+
+MESA3DGL_MESAUTIL_C_SOURCES := \
+            $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(MESA_UTIL_C_FILES))) \
+            $(MESA_UTIL_GENERATED_C_SOURCES)
+
+MESA3DGL_MESAUTIL_SOURCES_C := $(MESA3DGL_MESAUTIL_C_SOURCES:.c=)
+
+#MM
+mesa3dgl-linklibs-mesautil-generated : $(MESA3DGL_MESAUTIL_GENERATED_C_SOURCES)
+
+#MM mesa3dgl-linklibs-mesautil : mesa3dgl-linklibs-mesautil-generated
+
+%build_linklib mmake=mesa3dgl-linklibs-mesautil libname=mesautil libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_MESAUTIL_SOURCES_C)"
+
+%common

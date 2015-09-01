@@ -55,6 +55,8 @@
 #  include <kernel/OS.h>
 #elif defined(PIPE_OS_WINDOWS)
 #  include <windows.h>
+#elif defined(PIPE_OS_AROS)
+# include <proto/exec.h>
 #else
 #error unexpected platform in os_sysinfo.c
 #endif
@@ -152,6 +154,9 @@ os_get_total_physical_memory(uint64_t *size)
    ret = GlobalMemoryStatusEx(&status);
    *size = status.ullTotalPhys;
    return (ret == TRUE);
+#elif defined(PIPE_OS_AROS)
+   *size = (uint64_t)AvailMem(MEMF_TOTAL);
+   return true;
 #else
 #error unexpected platform in os_sysinfo.c
    return false;

@@ -1,0 +1,89 @@
+#   $Id$
+#
+#   Generate mesa3dgl.library
+#
+
+include $(TOP)/config/make.cfg
+
+include $(SRCDIR)/$(CURDIR)/mesa.cfg
+
+include $(top_srcdir)/src/mesa/Makefile.sources
+include $(top_srcdir)/src/glsl/Makefile.sources
+include $(top_srcdir)/src/mapi/Makefile.sources
+
+#MM- workbench-libs-complete : mesa3dgl-library-$(AROS_TARGET_TOOLCHAIN)
+#MM- mesa3dgl-library-yes : mesa3dgl-library
+
+#MM mesa3dgl-library : includes linklibs-galliumauxiliary workbench-libs-gallium-linklib mesa3dgl-linklibs
+
+SHARED_LIB_SOURCES = \
+            aros/emul_arosc \
+            aros/tls \
+
+MESA3DGL_SOURCES = \
+            aros/mesa3dgl/mesa3dgl_support \
+            aros/mesa3dgl/mesa3dgl_gallium \
+            aros/mesa3dgl/mesa3dgl_init \
+            aros/mesa3dgl/mesa3dgl_getopenglstatetrackerapi \
+            aros/mesa3dgl/mesa3dgl_glacreatecontext \
+            aros/mesa3dgl/mesa3dgl_gladestroycontext \
+            aros/mesa3dgl/mesa3dgl_glagetconfig \
+            aros/mesa3dgl/mesa3dgl_glagetcurrentcontext \
+            aros/mesa3dgl/mesa3dgl_glagetprocaddress \
+            aros/mesa3dgl/mesa3dgl_glamakecurrent \
+            aros/mesa3dgl/mesa3dgl_glasetrast \
+            aros/mesa3dgl/mesa3dgl_glaswapbuffers \
+
+OLD_UDER_INCLUDE :=             -I$(AROS_DEVELOPMENT)/include/gallium \
+
+USER_INCLUDES := \
+            -iquote $(top_srcdir)/src/aros \
+            $(USER_INCLUDES) \
+            -I$(top_srcdir)/src/mesa \
+            -iquote $(top_builddir)/src/mesa \
+            -iquote $(top_builddir)/src/mesa/main \
+            -iquote $(top_builddir)/src/mapi \
+            -iquote $(top_builddir)/src/glsl \
+            -iquote $(top_srcdir)/src/mesa/main \
+            -iquote $(top_srcdir)/src/mapi \
+            -iquote $(top_srcdir)/src/glsl \
+            -iquote $(top_srcdir)/src/glsl/glcpp \
+            -iquote $(top_srcdir)/src/talloc \
+            -iquote $(top_srcdir)/src/gallium/include \
+            -iquote $(top_srcdir)/src/gallium/auxiliary
+
+matypes_deps := \
+	$(top_builddir)/mesa_gen_matypes \
+	$(top_srcdir)/src/mesa/main/mtypes.h \
+	$(top_srcdir)/src/mesa/tnl/t_context.h
+
+##ifeq ($(TARGET_ARCH),x86)
+##USER_CFLAGS += -DUSE_X86_ASM
+##endif
+
+MESAGL_LIBRARY_SOURCES_C := \
+            $(addprefix $(top_srcdir)/src/, $(SHARED_LIB_SOURCES)) \
+            $(addprefix $(top_srcdir)/src/, $(MESA3DGL_SOURCES))
+
+MESAGL_LIBRARY_SOURCES_CXX := \
+            mesa3dgl_
+
+#MM- core-linklibs : linklibs-mesa
+
+#
+# Build Mesa3DGL.library
+#
+
+USER_LDFLAGS := \
+  -L$(top_libdir) \
+  -Wl,--start-group -lglapi -lmesa -lglsl -lgalliumauxiliary -lgallium -lglcpp -lmesautil -Wl,--end-group \
+  -lpthread -lposixc -lstdcio -lstdc
+
+%build_module_library mmake=mesa3dgl-library \
+  modname=mesa3dgl modtype=library \
+  conffile=$(SRCDIR)/workbench/libs/gl/gl.conf \
+  files="$(MESAGL_LIBRARY_SOURCES_C)" \
+  cxxfiles="$(MESAGL_LIBRARY_SOURCES_CXX)" \
+  uselibs=""
+
+%common
