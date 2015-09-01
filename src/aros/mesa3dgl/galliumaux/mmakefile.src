@@ -1,0 +1,59 @@
+#   $Id: mmakefile.src 48628 2013-12-25 15:14:46Z deadwood $
+#
+#   Generate libgalliumauxiliary.a
+#
+
+include $(TOP)/config/make.cfg
+
+CUR_MESADIR := src/gallium/auxiliary
+include $(SRCDIR)/$(CURDIR)/../mesa.cfg
+include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
+
+#MM- mesa3dgl-linklibs : mesa3dgl-linklibs-galliumauxiliary
+#MM mesa3dgl-linklibs-galliumauxiliary : mesa3dgl-linklibs-glsl
+
+MESA3DGL_GALLIUM_AUXILIARY_C_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(filter %.c, $(C_SOURCES) $(NIR_SOURCES))))
+
+GALLIUM_AUXILIARY_GENERATED_SOURCES = \
+            $(top_builddir)/$(CUR_MESADIR)/indices/u_indices_gen.c \
+            $(top_builddir)/$(CUR_MESADIR)/indices/u_unfilled_gen.c \
+            $(top_builddir)/$(CUR_MESADIR)/util/u_format_table.c
+
+MESA3DGL_GALLIUM_AUXILIARY_SOURCES_C := \
+            $(MESA3DGL_GALLIUM_AUXILIARY_C_SOURCES:.c=) \
+            $(GALLIUM_AUXILIARY_GENERATED_SOURCES:.c=)
+
+USER_INCLUDES := \
+            $(USER_INCLUDES) \
+            -iquote $(top_srcdir)/src/gallium/include \
+            -iquote $(top_srcdir)/src/gallium/auxiliary \
+            -iquote $(top_srcdir)/src/gallium/auxiliary/util \
+            -iquote $(top_srcdir)/src/gallium/auxiliary/indices \
+            -iquote $(top_builddir)/src/glsl/nir
+
+USER_CFLAGS := $(USER_CFLAGS)
+##-DHAVE_LLVM=0x0209 -D__STDC_CONSTANT_MACROS
+
+$(top_builddir)/$(CUR_MESADIR)/util/u_format_table.c: $(top_srcdir)/$(CUR_MESADIR)/util/u_format_table.py
+	@mkdir -p $(dir $@)
+	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
+	@$(PYTHON) $(PYTHON_FLAGS) $(top_srcdir)/$(CUR_MESADIR)/util/u_format_table.py $(top_srcdir)/$(CUR_MESADIR)/util/u_format.csv > $@
+
+$(top_builddir)/$(CUR_MESADIR)/indices/u_indices_gen.c: $(top_srcdir)/$(CUR_MESADIR)/indices/u_indices_gen.py
+	@mkdir -p $(dir $@)
+	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
+	@$(PYTHON) $(PYTHON_FLAGS) $(top_srcdir)/$(CUR_MESADIR)/indices/u_indices_gen.py > $@
+
+$(top_builddir)/$(CUR_MESADIR)/indices/u_unfilled_gen.c: $(top_srcdir)/$(CUR_MESADIR)/indices/u_unfilled_gen.py
+	@mkdir -p $(dir $@)
+	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
+	@$(PYTHON) $(PYTHON_FLAGS) $(top_srcdir)/$(CUR_MESADIR)/indices/u_unfilled_gen.py > $@
+
+#MM
+mesa3dgl-linklibs-galliumauxiliary-generated : $(GALLIUM_AUXILIARY_GENERATED_SOURCES)
+
+%build_linklib mmake=mesa3dgl-linklibs-galliumauxiliary libname=galliumauxiliary \
+    libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) \
+    files="$(MESA3DGL_GALLIUM_AUXILIARY_SOURCES_C)"
+
+%common

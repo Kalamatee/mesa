@@ -28,6 +28,11 @@
 #ifndef SP_LIMITS_H
 #define SP_LIMITS_H
 
+#if defined(__AROS__)
+#if !defined(assert)
+#define assert(x)
+#endif
+#endif
 
 #define SP_MAX_TEXTURE_SIZE (1 * 1024 * 1024 * 1024ULL)  /* 1GB for now */
 #define SP_MAX_TEXTURE_2D_LEVELS 15  /* 16K x 16K */

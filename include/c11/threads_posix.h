@@ -50,6 +50,13 @@ Configuration macro:
 
 #include <pthread.h>
 
+#if defined(__AROS__)
+#undef VOLATILE
+#undef RESTRICT
+#undef STATIC
+#define pthread_sigmask(a,b,c)  (1)
+#endif
+
 /*---------------------------- macros ----------------------------*/
 #define ONCE_FLAG_INIT PTHREAD_ONCE_INIT
 #ifdef INIT_ONCE_STATIC_INIT

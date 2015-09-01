@@ -18,6 +18,10 @@
 #include "querymatrix.h"
 #include "main/get.h"
 
+#if defined(__AROS__)
+#undef fpclassify
+#define fpclassify(x) FP_NORMAL
+#endif
 
 /**
  * This is from the GL_OES_query_matrix extension specification:

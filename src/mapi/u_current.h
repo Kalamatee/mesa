@@ -38,6 +38,8 @@ extern __thread struct mapi_table *u_current_table
 extern __thread void *u_current_context
     __attribute__((tls_model("initial-exec")));
 
+#elif defined(__AROS__)
+
 #else /* GLX_USE_TLS */
 
 extern struct mapi_table *u_current_table;
@@ -70,6 +72,8 @@ u_current_get_table(void)
 {
 #ifdef GLX_USE_TLS
    return u_current_table;
+#elif defined(__AROS__)
+    return u_current_get_table_internal();
 #else
    return (likely(u_current_table) ?
          u_current_table : u_current_get_table_internal());
@@ -81,6 +85,8 @@ u_current_get_context(void)
 {
 #ifdef GLX_USE_TLS
    return u_current_context;
+#elif defined(__AROS__)
+    return u_current_get_context_internal();
 #else
    return likely(u_current_context) ? u_current_context : u_current_get_context_internal();
 #endif
