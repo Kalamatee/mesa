@@ -47,6 +47,12 @@
 #endif
 
 
+#ifdef PIPE_OS_AROS
+#include <proto/exec.h>
+#include <aros/symbolsets.h> /* For ADD2INIT */
+#include "os/os_time.h"
+#endif
+
 /* pipe_thread
  */
 typedef thrd_t pipe_thread;
@@ -99,6 +105,7 @@ static inline void pipe_thread_setname( const char *name )
 
 /* pipe_mutex
  */
+#if !defined(PIPE_OS_AROS)
 typedef mtx_t pipe_mutex;
 
 #define pipe_static_mutex(mutex) \
@@ -115,7 +122,6 @@ typedef mtx_t pipe_mutex;
 
 #define pipe_mutex_unlock(mutex) \
    (void) mtx_unlock(&(mutex))
-
 
 /* pipe_condvar
  */
@@ -136,6 +142,62 @@ typedef cnd_t pipe_condvar;
 #define pipe_condvar_broadcast(cond) \
    cnd_broadcast(&(cond))
 
+#else /* PIPE_OS_AROS */
+
+/* pipe_mutex
+ */
+typedef struct SignalSemaphore pipe_mutex;
+
+/* Declare variable, declare init function, add to auto init. Ugly but works. */
+#define pipe_static_mutex(mutex) \
+static pipe_mutex mutex;         \
+static void init##mutex()        \
+{                                \
+    pipe_mutex_init(mutex);      \
+}                                \
+ADD2INIT(init##mutex, 5);
+
+#define pipe_mutex_init(mutex) \
+   InitSemaphore(&mutex) 
+
+#define pipe_mutex_destroy(mutex) \
+   (void) mutex
+
+#define pipe_mutex_lock(mutex) \
+   ObtainSemaphore(&mutex)
+
+#define pipe_mutex_unlock(mutex) \
+   ReleaseSemaphore(&mutex)
+
+/* pipe_condvar
+ */
+typedef int64_t pipe_condvar;
+
+#define pipe_static_condvar(condvar) \
+   static pipe_condvar condvar = 1000
+
+#define pipe_condvar_init(condvar) \
+   (void) (condvar = 1000)
+
+#define pipe_condvar_destroy(condvar) \
+   (void) condvar
+
+/* Poor man's pthread_cond_wait():
+   Just release the mutex and sleep for one millisecond.
+   The caller's while() loop does all the work. */
+#define pipe_condvar_wait(condvar, mutex) \
+   do { pipe_mutex_unlock(mutex); \
+        os_time_sleep(condvar); \
+        pipe_mutex_lock(mutex); \
+   } while (0)
+
+#define pipe_condvar_signal(condvar) \
+   (void) condvar
+
+#define pipe_condvar_broadcast(condvar) \
+   (void) condvar
+
+#endif /* PIPE_OS_AROS */
 
 /*
  * pipe_barrier

@@ -1,0 +1,24 @@
+# $Id: mmakefile.src 48953 2014-04-19 19:26:09Z neil $
+include $(TOP)/config/make.cfg
+
+GALLIUM_PATH = $(SRCDIR)/$(CURDIR)/../../../../..
+CUR_MESADIR = src/gallium
+CUR_GALLIUMDIR = drivers/i915
+
+include $(GALLIUM_PATH)/../aros/mesa3dgl/mesa.cfg
+include $(GALLIUM_PATH)/$(CUR_GALLIUMDIR)/Makefile.sources
+
+I915_C_SOURCES := $(filter %.c, $(C_SOURCES))
+
+I915_SOURCES := \
+             $(addprefix $(GALLIUM_PATH)/drivers/i915/,$(I915_C_SOURCES:.c=))
+
+USER_INCLUDES := \
+            $(USER_INCLUDES) \
+            -iquote $(GALLIUM_PATH)/drivers \
+            -iquote $(GALLIUM_PATH)/include \
+            -iquote $(GALLIUM_PATH)/auxiliary
+
+%build_linklib mmake=intelgma-linklibs-gallium_i915 libname=gallium_i915 libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR)/$(CUR_GALLIUMDIR) files="$(I915_SOURCES)"
+
+%common

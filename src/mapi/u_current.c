@@ -108,9 +108,17 @@ __thread void *u_current_context
 
 #else
 
+#if defined(__AROS__)
+#include "aros/tls.h"
+
+DECLARE_STATIC_TLS(u_current_table);
+DECLARE_STATIC_TLS(u_current_context);
+
+#else
 struct mapi_table *u_current_table =
    (struct mapi_table *) table_noop_array;
 void *u_current_context;
+#endif
 
 tss_t u_current_table_tsd;
 static tss_t u_current_context_tsd;
@@ -232,6 +240,8 @@ u_current_set_context(const void *ptr)
 
 #if defined(GLX_USE_TLS)
    u_current_context = (void *) ptr;
+#elif defined(__AROS__)
+   InsertIntoTLS(u_current_context, (APTR)ptr);
 #else
    tss_set(u_current_context_tsd, (void *) ptr);
    u_current_context = (ThreadSafe) ? NULL : (void *) ptr;
@@ -248,6 +258,8 @@ u_current_get_context_internal(void)
 {
 #if defined(GLX_USE_TLS)
    return u_current_context;
+#elif defined(__AROS__)
+   return GetFromTLS(u_current_context);
 #else
    return ThreadSafe ? tss_get(u_current_context_tsd) : u_current_context;
 #endif
@@ -270,6 +282,8 @@ u_current_set_table(const struct mapi_table *tbl)
 
 #if defined(GLX_USE_TLS)
    u_current_table = (struct mapi_table *) tbl;
+#elif defined(__AROS__)
+   InsertIntoTLS(u_current_table, (APTR)tbl);
 #else
    tss_set(u_current_table_tsd, (void *) tbl);
    u_current_table = (ThreadSafe) ? NULL : (void *) tbl;
@@ -284,6 +298,12 @@ u_current_get_table_internal(void)
 {
 #if defined(GLX_USE_TLS)
    return u_current_table;
+#elif defined(__AROS__)
+   struct mapi_table *tbl;
+   tbl = (struct mapi_table *)GetFromTLS(u_current_table);
+   if (tbl == NULL)
+       tbl = (struct mapi_table *) table_noop_array;
+   return tbl;
 #else
    if (ThreadSafe)
       return (struct mapi_table *) tss_get(u_current_table_tsd);

@@ -70,7 +70,7 @@ os_time_get(void)
 /*
  * Sleep.
  */
-#if defined(PIPE_OS_UNIX)
+#if defined(PIPE_OS_UNIX) || defined(PIPE_OS_AROS)
 #define os_time_sleep(_usecs) usleep(_usecs)
 #else
 void
