@@ -64,6 +64,57 @@ typedef void (*dxtCompressTexFuncExt)(GLint srccomps, GLint width,
 
 static dxtCompressTexFuncExt ext_tx_compress_dxtn = NULL;
 
+#if defined(__AROS__)
+#include <proto/exec.h>
+#include <proto/dxtn.h>
+struct Library *_mesa_dxtn_base = NULL;
+#define DXTNBase _mesa_dxtn_base
+
+static void aros_fetch_2d_texel_rgb_dxt1( GLint srcRowstride, const GLubyte *pixdata, GLint col, GLint row, GLvoid *texelOut ){
+    DXT1_Fetch2DRGBTexel(srcRowstride, pixdata, col, row, texelOut);
+}
+static void aros_fetch_2d_texel_rgba_dxt1( GLint srcRowstride, const GLubyte *pixdata, GLint col, GLint row, GLvoid *texelOut ){
+    DXT1_Fetch2DRGBATexel(srcRowstride, pixdata, col, row, texelOut);
+}
+static void aros_fetch_2d_texel_rgba_dxt3( GLint srcRowstride, const GLubyte *pixdata, GLint col, GLint row, GLvoid *texelOut ){
+    DXT3_Fetch2DRGBATexel(srcRowstride, pixdata, col, row, texelOut);
+}
+static void aros_fetch_2d_texel_rgba_dxt5( GLint srcRowstride, const GLubyte *pixdata, GLint col, GLint row, GLvoid *texelOut ){
+    DXT5_Fetch2DRGBATexel(srcRowstride, pixdata, col, row, texelOut);
+}
+static void aros_tx_compress_dxtn(GLint srccomps, GLint width,
+                                      GLint height, const GLubyte *srcPixData,
+                                      GLenum destformat, GLubyte *dest,
+                                      GLint dstRowStride){
+    DXTN_CompressTex(srccomps, width, height, srcPixData, destformat, dest, dstRowStride);
+}
+
+void
+_mesa_init_texture_s3tc( struct gl_context *ctx )
+{
+   /* called during context initialization */
+   ctx->Mesa_DXTn = GL_FALSE;
+   if (!DXTNBase) {
+      DXTNBase = OpenLibrary("dxtn.library", 0);
+      if (!DXTNBase) {
+	 _mesa_warning(ctx, "couldn't open dxtn.library, software DXTn "
+	    "compression/decompression unavailable");
+      }
+      else {
+         /* the fetch functions are not per context! Might be problematic... */
+         fetch_ext_rgb_dxt1 =  aros_fetch_2d_texel_rgb_dxt1;
+         fetch_ext_rgba_dxt1 = aros_fetch_2d_texel_rgba_dxt1;
+         fetch_ext_rgba_dxt3 = aros_fetch_2d_texel_rgba_dxt3;
+         fetch_ext_rgba_dxt5 = aros_fetch_2d_texel_rgba_dxt5;
+         ext_tx_compress_dxtn = aros_tx_compress_dxtn;
+      }
+   }
+   if (DXTNBase) {
+      ctx->Mesa_DXTn = GL_TRUE;
+   }
+}
+
+#else
 static void *dxtlibhandle = NULL;
 
 
@@ -113,6 +164,7 @@ _mesa_init_texture_s3tc( struct gl_context *ctx )
       ctx->Mesa_DXTn = GL_TRUE;
    }
 }
+#endif
 
 /**
  * Store user's image in rgb_dxt1 format.
