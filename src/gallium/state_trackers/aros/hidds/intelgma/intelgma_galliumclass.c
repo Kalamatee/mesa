@@ -212,14 +212,14 @@ static VOID IntelGMA_ReleaseBuffers(struct i915_winsys *iws)
             if( ! iws->buffer_is_busy(0, buf ) )
             {
                 i--;
-                D(bug("[GMA winsys]     destroy %p\n",buf));
+                D(bug("[IntelGMA:Gallium]     destroy %p\n",buf));
                 Remove(node);
                 buf->magic = 0;
                 IntelGMA_GfxMemFree(buf->allocated_map, buf->allocated_size);
                 FREE(buf);
             }
         }
-        D(if(i) bug("[GMA winsys] unused_buffers left:%d\n",i));
+        D(if(i) bug("[IntelGMA:Gallium] unused_buffers left:%d\n",i));
         ReleaseSemaphore(&UnusedBuffersListLock);
     }
 }
