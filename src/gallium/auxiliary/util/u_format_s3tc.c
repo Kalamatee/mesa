@@ -125,7 +125,7 @@ static void aros_tx_compress_dxtn(int src_comps,
                            const uint8_t *src,
                            enum util_format_dxtn dst_format,
                            uint8_t *dst,
-                           int dst_stride)
+                           int dst_stride){
     DXTN_CompressTex(src_comps, width, height, src, (GLenum)dst_format, dst, dst_stride);
 }
 
