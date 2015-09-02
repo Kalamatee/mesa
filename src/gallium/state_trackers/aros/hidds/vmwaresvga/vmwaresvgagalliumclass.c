@@ -1,27 +1,25 @@
 /*
-    Copyright 2010, The AROS Development Team. All rights reserved.
+    Copyright 2015, The AROS Development Team. All rights reserved.
     $Id: vmwaresvgagalliumclass.c 50414 2015-04-18 11:21:09Z wawa $
 */
 
-#include <hidd/gallium.h>
-#include <proto/oop.h>
+#define DEBUG 0
 #include <aros/debug.h>
 
+#include <proto/exec.h>
+#include <proto/graphics.h>
+#include <proto/utility.h>
+#include <proto/oop.h>
+
+#include <aros/libcall.h>
+#include <aros/asmcall.h>
+#include <aros/symbolsets.h>
+#include <utility/tagitem.h>
+
+#include <hidd/gallium.h>
 #include <gallium/gallium.h>
 
-#include "pipe/p_screen.h"
-#include "vmwaresvga/sp_texture.h"
-#include "vmwaresvga/sp_public.h"
-#include "vmwaresvga/sp_screen.h"
-#include "util/u_format.h"
-#include "util/u_math.h"
-#include "state_tracker/sw_winsys.h"
-
 #include "vmwaresvga_intern.h"
-
-#include <proto/cybergraphics.h>
-#include <proto/graphics.h>
-#include <cybergraphx/cybergraphics.h>
 
 #if (AROS_BIG_ENDIAN == 1)
 #define AROS_PIXFMT RECTFMT_RAW   /* Big Endian Archs. */
@@ -34,95 +32,39 @@
 #undef HiddGalliumAttrBase
 #define HiddGalliumAttrBase   (SD(cl)->hiddGalliumAB)
 
-struct HIDDVMWareSVGAData
-{
-};
-
-/*  Displaytarget support code */
-struct HiddVMWareSVGADisplaytarget
-{
-    APTR data;
-};
-
-struct HiddVMWareSVGADisplaytarget * HiddVMWareSVGADisplaytarget(struct sw_displaytarget * dt)
-{
-    return (struct HiddVMWareSVGADisplaytarget *)dt;
-}
-
-static struct sw_displaytarget *
-HiddVMWareSVGACreateDisplaytarget(struct sw_winsys *winsys, unsigned tex_usage,
-    enum pipe_format format, unsigned width, unsigned height,
-    unsigned alignment, unsigned *stride)
-{
-    struct HiddVMWareSVGADisplaytarget * spdt = 
-        AllocVec(sizeof(struct HiddVMWareSVGADisplaytarget), MEMF_PUBLIC | MEMF_CLEAR);
-    
-    *stride = align(util_format_get_stride(format, width), alignment);
-    spdt->data = AllocVec(*stride * height, MEMF_PUBLIC | MEMF_CLEAR);
-    
-    return (struct sw_displaytarget *)spdt;
-}
-
-static void
-HiddVMWareSVGADestroyDisplaytarget(struct sw_winsys *ws, struct sw_displaytarget *dt)
-{
-    struct HiddVMWareSVGADisplaytarget * spdt = HiddVMWareSVGADisplaytarget(dt);
-    
-    if (spdt)
-    {
-        FreeVec(spdt->data);
-        FreeVec(spdt);
-    }
-}
-
-static void *
-HiddVMWareSVGAMapDisplaytarget(struct sw_winsys *ws, struct sw_displaytarget *dt,
-    unsigned flags)
-{
-    struct HiddVMWareSVGADisplaytarget * spdt = HiddVMWareSVGADisplaytarget(dt);
-    return spdt->data;
-}
-
-static void
-HiddVMWareSVGAUnMapDisplaytarget(struct sw_winsys *ws, struct sw_displaytarget *dt)
-{
-    /* No op */
-}
 
 /*  Displaytarget support code ends */
 
-OOP_Object *METHOD(VMWareSVGAGallium, Root, New)
+OOP_Object *METHOD(GalliumVMWareSVGA, Root, New)
 {
-    o = (OOP_Object *)OOP_DoSuperMethod(cl, o, (OOP_Msg) msg);
+    IPTR interfaceVers;
 
+    D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    interfaceVers = GetTagData(aHidd_Gallium_InterfaceVersion, -1, msg->attrList);
+    if (interfaceVers != GALLIUM_INTERFACE_VERSION)
+        return NULL;
+
+    o = (OOP_Object *)OOP_DoSuperMethod(cl, o, (OOP_Msg) msg);
     if (0)
     {
-        struct HIDDVMWareSVGAData * HIDDVMWareSVGA_Data = OOP_INST_DATA(cl, o);
-        struct sw_winsys *vmwaresvga_ws = NULL;
+        struct HIDDGalliumVMWareSVGAData * data = OOP_INST_DATA(cl, o);
 
-        OOP_GetAttr(o, aHidd_Gallium_WinSys, &vmwaresvga_ws);
-
-        if (vmwaresvga_ws)
-        {
-            /* Fill in with functions is displaytarget is ever used*/
-            vmwaresvga_ws->destroy                            = NULL;
-            vmwaresvga_ws->is_displaytarget_format_supported  = NULL;
-            vmwaresvga_ws->displaytarget_create               = HiddVMWareSVGACreateDisplaytarget;
-            vmwaresvga_ws->displaytarget_from_handle          = NULL;
-            vmwaresvga_ws->displaytarget_get_handle           = NULL;
-            vmwaresvga_ws->displaytarget_map                  = HiddVMWareSVGAMapDisplaytarget;
-            vmwaresvga_ws->displaytarget_unmap                = HiddVMWareSVGAUnMapDisplaytarget;
-            vmwaresvga_ws->displaytarget_display              = NULL;
-            vmwaresvga_ws->displaytarget_destroy              = HiddVMWareSVGADestroyDisplaytarget;
-        }
+        data->wsi.destroy                            = NULL;
     }
 
     return o;
 }
 
-VOID METHOD(VMWareSVGAGallium, Root, Get)
+VOID METHOD(GalliumVMWareSVGA, Root, Dispose)
 {
-    struct HIDDVMWareSVGAData * HIDDVMWareSVGA_Data = OOP_INST_DATA(cl, o);
+    D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+}
+
+VOID METHOD(GalliumVMWareSVGA, Root, Get)
+{
     ULONG idx;
 
     if (IS_GALLIUM_ATTR(msg->attrID, idx))
@@ -140,77 +82,22 @@ VOID METHOD(VMWareSVGAGallium, Root, Get)
     OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 }
 
-APTR METHOD(VMWareSVGAGallium, Hidd_Gallium, CreatePipeScreen)
+APTR METHOD(GalliumVMWareSVGA, Hidd_Gallium, CreatePipeScreen)
 {
-    struct HIDDVMWareSVGAData * HIDDVMWareSVGA_Data = OOP_INST_DATA(cl, o);
+    struct HIDDGalliumVMWareSVGAData * data = OOP_INST_DATA(cl, o);
     struct pipe_screen *screen = NULL;
-    struct sw_winsys *vmwaresvga_ws = NULL;
 
-#if (0)
-    struct HiddVMWareSVGAWinSys * vmwaresvgaws;
+    D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
 
-    vmwaresvgaws = HiddVMWareSVGACreateVMWareSVGAWinSys();
-    if (vmwaresvgaws == NULL)
-        return NULL;
-#endif
+    screen = svga_screen_create(&data->wsi);
 
-    OOP_GetAttr(o, aHidd_Gallium_WinSys, &vmwaresvga_ws);
-
-    if (vmwaresvga_ws)
-    {
-        screen = vmwaresvga_create_screen(vmwaresvga_ws);
-        if (screen)
-        {
-#if (0)
-        /* Force a pipe_winsys pointer (Mesa 7.9 or never) */
-        screen->winsys = (struct pipe_winsys *)vmwaresvgaws;
-
-        /* Preserve pointer to HIDD driver */
-        vmwaresvgaws->base.driver = o;
-#endif
-        }
-    }
+    D(bug("[VMWareSVGA:Gallium] %s: screen @ 0x%p\n", __PRETTY_FUNCTION__, screen));
 
     return screen;
 
 }
 
-VOID METHOD(VMWareSVGAGallium, Hidd_Gallium, DisplayResource)
+VOID METHOD(GalliumVMWareSVGA, Hidd_Gallium, DisplayResource)
 {
-    struct vmwaresvga_resource * spr = vmwaresvga_resource(msg->resource);
-    struct RastPort * rp;
-    struct sw_winsys * vmwaresvga_ws = NULL;
-    APTR * data = spr->data;
-
-    OOP_GetAttr(o, aHidd_Gallium_WinSys, &vmwaresvga_ws);
-
-    if (vmwaresvga_ws)
-    {
-        if ((data == NULL) && (spr->dt != NULL))
-            data = vmwaresvga_ws->displaytarget_map(vmwaresvga_ws, spr->dt, 0);
-
-        if (data)
-        {
-            rp = CreateRastPort();
-
-            rp->BitMap = msg->bitmap;
-
-            WritePixelArray(
-                data, 
-                msg->srcx,
-                msg->srcy,
-                spr->stride[0],
-                rp, 
-                msg->dstx, 
-                msg->dsty, 
-                msg->width, 
-                msg->height, 
-                AROS_PIXFMT);
-
-            FreeRastPort(rp);
-        }
-
-        if ((spr->data == NULL) && (data != NULL))
-            vmwaresvga_ws->displaytarget_unmap(vmwaresvga_ws, spr->dt);
-    }
+    D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
 }

@@ -6,6 +6,8 @@
     $Id: vmwaresvga_intern.h 33556 2010-06-12 12:57:12Z deadwood $
 */
 
+#include "svga/svga_winsys.h"
+#include "svga/svga_public.h"
 
 #include LC_LIBDEFS_FILE
 
@@ -13,6 +15,7 @@
 
 struct HIDDGalliumVMWareSVGAData
 {
+    struct svga_winsys_screen wsi;
 };
 
 struct vmwaresvgastaticdata 
