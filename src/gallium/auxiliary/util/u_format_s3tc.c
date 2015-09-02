@@ -143,7 +143,7 @@ util_format_s3tc_init(void)
 
     DXTNBase = OpenLibrary("dxtn.library", 0);
     if (!DXTNBase) {
-        _mesa_warning(ctx, "couldn't open dxtn.library, software DXTn "
+        debug_printf(ctx, "couldn't open dxtn.library, software DXTn "
             "compression/decompression unavailable");
         return;
     }
