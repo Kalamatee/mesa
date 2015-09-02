@@ -21,6 +21,15 @@
 
 #include "vmwaresvga_intern.h"
 
+#include "util/u_memory.h"
+#include "pipebuffer/pb_buffer.h"
+
+struct VMWareSVGAPBBuf
+{
+    struct pb_buffer pbbuf;
+    void *map;
+};
+
 #if (AROS_BIG_ENDIAN == 1)
 #define AROS_PIXFMT RECTFMT_RAW   /* Big Endian Archs. */
 #else
@@ -32,24 +41,37 @@
 #undef HiddGalliumAttrBase
 #define HiddGalliumAttrBase   (SD(cl)->hiddGalliumAB)
 
-SVGA3dHardwareVersion VMWareSVGA_GetHWVersion(struct svga_winsys_screen *sws)
+// ****************************************************************************
+//                                               winsys/support functions
+// ****************************************************************************
+
+static SVGA3dHardwareVersion VMWareSVGA_GetHWVersion(struct svga_winsys_screen *sws)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    return 0;
 }
 
-boolean VMWareSVGA_GetCap(struct svga_winsys_screen *sws,
+static boolean VMWareSVGA_GetCap(struct svga_winsys_screen *sws,
               SVGA3dDevCapIndex index,
               SVGA3dDevCapResult *result)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return FALSE;
 }
    
-struct svga_winsys_context *VMWareSVGA_ContextCreate(struct svga_winsys_screen *sws)
+static struct svga_winsys_context *VMWareSVGA_ContextCreate(struct svga_winsys_screen *sws)
 {
+    struct svga_winsys_context *wsctx;
+
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    wsctx = CALLOC_STRUCT(svga_winsys_context);
+
+    return wsctx;
 }
 
-struct svga_winsys_surface *VMWareSVGA_SurfaceCreate(struct svga_winsys_screen *sws,
+static struct svga_winsys_surface *VMWareSVGA_SurfaceCreate(struct svga_winsys_screen *sws,
                      SVGA3dSurfaceFlags flags,
                      SVGA3dSurfaceFormat format,
                      unsigned usage,
@@ -58,128 +80,166 @@ struct svga_winsys_surface *VMWareSVGA_SurfaceCreate(struct svga_winsys_screen *
                      uint32 numMipLevels,
                      unsigned sampleCount)
 {
+    struct svga_winsys_surface *surf = NULL;
+
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+#if (0)
+    surf = CALLOC_STRUCT(svga_winsys_surface);
+#endif
+
+    return surf;
 }
 
-struct svga_winsys_surface *VMWareSVGA_SurfaceFromHandle(struct svga_winsys_screen *sws,
+static struct svga_winsys_surface *VMWareSVGA_SurfaceFromHandle(struct svga_winsys_screen *sws,
                           struct winsys_handle *whandle,
                           SVGA3dSurfaceFormat *format)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return NULL;
 }
 
-boolean VMWareSVGA_SurfaceGetHandle(struct svga_winsys_screen *sws,
+static boolean VMWareSVGA_SurfaceGetHandle(struct svga_winsys_screen *sws,
                          struct svga_winsys_surface *surface,
                          unsigned stride,
                          struct winsys_handle *whandle)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return FALSE;
 }
 
-boolean VMWareSVGA_SurfaceIsFlushed(struct svga_winsys_screen *sws,
+static boolean VMWareSVGA_SurfaceIsFlushed(struct svga_winsys_screen *sws,
                          struct svga_winsys_surface *surface)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return TRUE;
 }
 
-void VMWareSVGA_SurfaceReference(struct svga_winsys_screen *sws,
+static void VMWareSVGA_SurfaceReference(struct svga_winsys_screen *sws,
 			struct svga_winsys_surface **pdst,
 			struct svga_winsys_surface *src)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
 }
 
-boolean VMWareSVGA_SurfaceCanCreate(struct svga_winsys_screen *sws,
+static boolean VMWareSVGA_SurfaceCanCreate(struct svga_winsys_screen *sws,
                          SVGA3dSurfaceFormat format,
                          SVGA3dSize size,
                          uint32 numLayers,
                          uint32 numMipLevels)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return TRUE;
 }
 
-struct svga_winsys_buffer *VMWareSVGA_BufferCreate( struct svga_winsys_screen *sws, 
+static struct svga_winsys_buffer *VMWareSVGA_BufferCreate( struct svga_winsys_screen *sws, 
 	             unsigned alignment, 
 	             unsigned usage,
 	             unsigned size )
 {
+    struct VMWareSVGAPBBuf *buf;
+
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    buf = CALLOC_STRUCT(VMWareSVGAPBBuf);
+
+    return (struct svga_winsys_buffer *)buf;
 }
 
-void *VMWareSVGA_BufferMap( struct svga_winsys_screen *sws, 
+static void *VMWareSVGA_BufferMap( struct svga_winsys_screen *sws, 
 	          struct svga_winsys_buffer *buf,
 		  unsigned usage )
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    return ((struct VMWareSVGAPBBuf *)(buf))->map;
 }
    
-void VMWareSVGA_BufferUnMap( struct svga_winsys_screen *sws, 
+static void VMWareSVGA_BufferUnMap( struct svga_winsys_screen *sws, 
                     struct svga_winsys_buffer *buf )
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
 }
 
-void VMWareSVGA_BufferDestroy( struct svga_winsys_screen *sws,
+static void VMWareSVGA_BufferDestroy( struct svga_winsys_screen *sws,
 	              struct svga_winsys_buffer *buf )
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    FREE(buf);
 }
 
-void VMWareSVGA_FenceReference( struct svga_winsys_screen *sws,
+static void VMWareSVGA_FenceReference( struct svga_winsys_screen *sws,
                        struct pipe_fence_handle **pdst,
                        struct pipe_fence_handle *src )
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
 }
 
-int VMWareSVGA_FenceSignalled( struct svga_winsys_screen *sws,
+static int VMWareSVGA_FenceSignalled( struct svga_winsys_screen *sws,
                            struct pipe_fence_handle *fence,
                            unsigned flag )
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return 0;
 }
 
-int VMWareSVGA_FenceFinish( struct svga_winsys_screen *sws,
+static int VMWareSVGA_FenceFinish( struct svga_winsys_screen *sws,
                         struct pipe_fence_handle *fence,
                         unsigned flag )
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return 0;
 }
 
-struct svga_winsys_gb_shader *VMWareSVGA_ShaderCreate(struct svga_winsys_screen *sws,
+static struct svga_winsys_gb_shader *VMWareSVGA_ShaderCreate(struct svga_winsys_screen *sws,
 		    SVGA3dShaderType shaderType,
 		    const uint32 *bytecode,
 		    uint32 bytecodeLen)
 {
+    struct svga_winsys_gb_shader *shader = NULL;
+
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return shader;
 }
 
-void VMWareSVGA_ShaderDestroy(struct svga_winsys_screen *sws,
+static void VMWareSVGA_ShaderDestroy(struct svga_winsys_screen *sws,
 		     struct svga_winsys_gb_shader *shader)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
 }
 
-struct svga_winsys_gb_query *VMWareSVGA_QueryCreate(struct svga_winsys_screen *sws, uint32 len)
+static struct svga_winsys_gb_query *VMWareSVGA_QueryCreate(struct svga_winsys_screen *sws, uint32 len)
 {
+    struct svga_winsys_gb_query *query = NULL;
+
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return query;
 }
 
-void VMWareSVGA_QueryDestroy(struct svga_winsys_screen *sws,
+static void VMWareSVGA_QueryDestroy(struct svga_winsys_screen *sws,
 		    struct svga_winsys_gb_query *query)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
 }
 
-int VMWareSVGA_QueryInit(struct svga_winsys_screen *sws,
+static int VMWareSVGA_QueryInit(struct svga_winsys_screen *sws,
                        struct svga_winsys_gb_query *query,
                        unsigned offset,
                        SVGA3dQueryState queryState)
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+
+    return 0;
 }
 
-void VMWareSVGA_QueryGetResult(struct svga_winsys_screen *sws,
+static void VMWareSVGA_QueryGetResult(struct svga_winsys_screen *sws,
                        struct svga_winsys_gb_query *query,
                        unsigned offset,
                        SVGA3dQueryState *queryState,
@@ -187,6 +247,10 @@ void VMWareSVGA_QueryGetResult(struct svga_winsys_screen *sws,
 {
     D(bug("[VMWareSVGA:Gallium] %s()\n", __PRETTY_FUNCTION__));
 }
+
+// ****************************************************************************
+//                                                                Gallium Hidd Methods
+// ****************************************************************************
 
 OOP_Object *METHOD(GalliumVMWareSVGA, Root, New)
 {
