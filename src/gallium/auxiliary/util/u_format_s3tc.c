@@ -143,19 +143,20 @@ util_format_s3tc_init(void)
 
     DXTNBase = OpenLibrary("dxtn.library", 0);
     if (!DXTNBase) {
-        debug_printf(ctx, "couldn't open dxtn.library, software DXTn "
+        debug_printf("couldn't open dxtn.library, software DXTn "
             "compression/decompression unavailable");
         return;
     }
     /* the fetch functions are not per context! Might be problematic... */
-    fetch_ext_rgb_dxt1 =  aros_fetch_2d_texel_rgb_dxt1;
-    fetch_ext_rgba_dxt1 = aros_fetch_2d_texel_rgba_dxt1;
-    fetch_ext_rgba_dxt3 = aros_fetch_2d_texel_rgba_dxt3;
-    fetch_ext_rgba_dxt5 = aros_fetch_2d_texel_rgba_dxt5;
-    ext_tx_compress_dxtn = aros_tx_compress_dxtn;
+    util_format_dxt1_rgb_fetch =  aros_fetch_2d_texel_rgb_dxt1;
+    util_format_dxt1_rgba_fetch = aros_fetch_2d_texel_rgba_dxt1;
+    util_format_dxt3_rgba_fetch = aros_fetch_2d_texel_rgba_dxt3;
+    util_format_dxt5_rgba_fetch = aros_fetch_2d_texel_rgba_dxt5;
+    util_format_dxtn_pack = aros_tx_compress_dxtn;
    util_format_s3tc_enabled = TRUE;
 }
 #else
+
 #if defined(_WIN32) || defined(WIN32)
 #define DXTN_LIBNAME "dxtn.dll"
 #elif defined(__APPLE__)
