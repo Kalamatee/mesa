@@ -94,8 +94,7 @@ util_format_dxtn_pack_t util_format_dxtn_pack = util_format_dxtn_pack_stub;
 #if defined(__AROS__)
 #include <proto/exec.h>
 #include <proto/dxtn.h>
-struct Library *_mesa_dxtn_base = NULL;
-#define DXTNBase _mesa_dxtn_base
+struct Library *DXTNBase = NULL;
 
 static void aros_fetch_2d_texel_rgb_dxt1(int src_stride,
                                  const uint8_t *src,
