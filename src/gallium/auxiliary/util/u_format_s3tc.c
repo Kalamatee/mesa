@@ -30,15 +30,6 @@
 #include "util/format_srgb.h"
 
 
-#if defined(_WIN32) || defined(WIN32)
-#define DXTN_LIBNAME "dxtn.dll"
-#elif defined(__APPLE__)
-#define DXTN_LIBNAME "libtxc_dxtn.dylib"
-#else
-#define DXTN_LIBNAME "libtxc_dxtn.so"
-#endif
-
-
 static void
 util_format_dxt1_rgb_fetch_stub(int src_stride,
                                 const uint8_t *src,
@@ -100,6 +91,79 @@ util_format_dxtn_fetch_t util_format_dxt5_rgba_fetch = util_format_dxt5_rgba_fet
 
 util_format_dxtn_pack_t util_format_dxtn_pack = util_format_dxtn_pack_stub;
 
+#if defined(__AROS__)
+#include <proto/exec.h>
+#include <proto/dxtn.h>
+struct Library *_mesa_dxtn_base = NULL;
+#define DXTNBase _mesa_dxtn_base
+
+static void aros_fetch_2d_texel_rgb_dxt1(int src_stride,
+                                 const uint8_t *src,
+                                 int col, int row,
+                                 uint8_t *dst ){
+    DXT1_Fetch2DRGBTexel(src_stride, src, col, row, dst);
+}
+static void aros_fetch_2d_texel_rgba_dxt1(int src_stride,
+                                 const uint8_t *src,
+                                 int col, int row,
+                                 uint8_t *dst ){
+    DXT1_Fetch2DRGBATexel(src_stride, src, col, row, dst);
+}
+static void aros_fetch_2d_texel_rgba_dxt3(int src_stride,
+                                 const uint8_t *src,
+                                 int col, int row,
+                                 uint8_t *dst ){
+    DXT3_Fetch2DRGBATexel(src_stride, src, col, row, dst);
+}
+static void aros_fetch_2d_texel_rgba_dxt5(int src_stride,
+                                 const uint8_t *src,
+                                 int col, int row,
+                                 uint8_t *dst ){
+    DXT5_Fetch2DRGBATexel(src_stride, src, col, row, dst);
+}
+static void aros_tx_compress_dxtn(int src_comps,
+                           int width, int height,
+                           const uint8_t *src,
+                           enum util_format_dxtn dst_format,
+                           uint8_t *dst,
+                           int dst_stride)
+    DXTN_CompressTex(src_comps, width, height, src, (GLenum)dst_format, dst, dst_stride);
+}
+
+void
+util_format_s3tc_init(void)
+{
+    static boolean first_time = TRUE;
+
+    if (!first_time)
+        return;
+    first_time = FALSE;
+
+    if (util_format_s3tc_enabled)
+      return;
+
+    DXTNBase = OpenLibrary("dxtn.library", 0);
+    if (!DXTNBase) {
+        _mesa_warning(ctx, "couldn't open dxtn.library, software DXTn "
+            "compression/decompression unavailable");
+        return;
+    }
+    /* the fetch functions are not per context! Might be problematic... */
+    fetch_ext_rgb_dxt1 =  aros_fetch_2d_texel_rgb_dxt1;
+    fetch_ext_rgba_dxt1 = aros_fetch_2d_texel_rgba_dxt1;
+    fetch_ext_rgba_dxt3 = aros_fetch_2d_texel_rgba_dxt3;
+    fetch_ext_rgba_dxt5 = aros_fetch_2d_texel_rgba_dxt5;
+    ext_tx_compress_dxtn = aros_tx_compress_dxtn;
+   util_format_s3tc_enabled = TRUE;
+}
+#else
+#if defined(_WIN32) || defined(WIN32)
+#define DXTN_LIBNAME "dxtn.dll"
+#elif defined(__APPLE__)
+#define DXTN_LIBNAME "libtxc_dxtn.dylib"
+#else
+#define DXTN_LIBNAME "libtxc_dxtn.so"
+#endif
 
 void
 util_format_s3tc_init(void)
@@ -156,7 +220,7 @@ util_format_s3tc_init(void)
    util_format_dxtn_pack = (util_format_dxtn_pack_t)tx_compress_dxtn;
    util_format_s3tc_enabled = TRUE;
 }
-
+#endif
 
 /*
  * Pixel fetch.
