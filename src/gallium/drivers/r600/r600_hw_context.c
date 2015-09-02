@@ -235,7 +235,7 @@ void r600_flush_emit(struct r600_context *rctx)
 		/* Use of WAIT_UNTIL is deprecated on Cayman+ */
 		if (rctx->b.family < CHIP_CAYMAN) {
 			/* wait for things to settle */
-			r600_write_config_reg(cs, R_008040_WAIT_UNTIL, wait_until);
+			radeon_set_config_reg(cs, R_008040_WAIT_UNTIL, wait_until);
 		}
 	}
 
@@ -269,7 +269,7 @@ void r600_context_gfx_flush(void *context, unsigned flags,
 
 	/* old kernels and userspace don't set SX_MISC, so we must reset it to 0 here */
 	if (ctx->b.chip_class == R600) {
-		r600_write_context_reg(cs, R_028350_SX_MISC, 0);
+		radeon_set_context_reg(cs, R_028350_SX_MISC, 0);
 	}
 
 	/* force to keep tiling flags */
@@ -417,9 +417,9 @@ void r600_cp_dma_copy_buffer(struct r600_context *rctx,
 		}
 
 		/* This must be done after r600_need_cs_space. */
-		src_reloc = r600_context_bo_reloc(&rctx->b, &rctx->b.rings.gfx, (struct r600_resource*)src,
+		src_reloc = radeon_add_to_buffer_list(&rctx->b, &rctx->b.rings.gfx, (struct r600_resource*)src,
 						  RADEON_USAGE_READ, RADEON_PRIO_MIN);
-		dst_reloc = r600_context_bo_reloc(&rctx->b, &rctx->b.rings.gfx, (struct r600_resource*)dst,
+		dst_reloc = radeon_add_to_buffer_list(&rctx->b, &rctx->b.rings.gfx, (struct r600_resource*)dst,
 						  RADEON_USAGE_WRITE, RADEON_PRIO_MIN);
 
 		radeon_emit(cs, PKT3(PKT3_CP_DMA, 4, 0));
@@ -470,9 +470,9 @@ void r600_dma_copy_buffer(struct r600_context *rctx,
 	for (i = 0; i < ncopy; i++) {
 		csize = size < R600_DMA_COPY_MAX_SIZE_DW ? size : R600_DMA_COPY_MAX_SIZE_DW;
 		/* emit reloc before writing cs so that cs is always in consistent state */
-		r600_context_bo_reloc(&rctx->b, &rctx->b.rings.dma, rsrc, RADEON_USAGE_READ,
+		radeon_add_to_buffer_list(&rctx->b, &rctx->b.rings.dma, rsrc, RADEON_USAGE_READ,
 				      RADEON_PRIO_MIN);
-		r600_context_bo_reloc(&rctx->b, &rctx->b.rings.dma, rdst, RADEON_USAGE_WRITE,
+		radeon_add_to_buffer_list(&rctx->b, &rctx->b.rings.dma, rdst, RADEON_USAGE_WRITE,
 				      RADEON_PRIO_MIN);
 		cs->buf[cs->cdw++] = DMA_PACKET(DMA_PACKET_COPY, 0, 0, csize);
 		cs->buf[cs->cdw++] = dst_offset & 0xfffffffc;

@@ -44,13 +44,12 @@ static void si_destroy_context(struct pipe_context *context)
 	pipe_resource_reference(&sctx->gsvs_ring, NULL);
 	pipe_resource_reference(&sctx->tf_ring, NULL);
 	pipe_resource_reference(&sctx->null_const_buf.buffer, NULL);
-	r600_resource_reference(&sctx->border_color_table, NULL);
+	r600_resource_reference(&sctx->border_color_buffer, NULL);
+	free(sctx->border_color_table);
 	r600_resource_reference(&sctx->scratch_buffer, NULL);
 	sctx->b.ws->fence_reference(&sctx->last_gfx_fence, NULL);
 
 	si_pm4_free_state(sctx, sctx->init_config, ~0);
-	si_pm4_delete_state(sctx, gs_rings, sctx->gs_rings);
-	si_pm4_delete_state(sctx, tf_ring, sctx->tf_state);
 	for (i = 0; i < Elements(sctx->vgt_shader_config); i++)
 		si_pm4_delete_state(sctx, vgt_shader_config, sctx->vgt_shader_config[i]);
 
@@ -72,8 +71,6 @@ static void si_destroy_context(struct pipe_context *context)
 
 	if (sctx->blitter)
 		util_blitter_destroy(sctx->blitter);
-
-	si_pm4_cleanup(sctx);
 
 	r600_common_context_cleanup(&sctx->b);
 
@@ -141,21 +138,26 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 						sscreen->b.trace_bo->cs_buf : NULL);
 	sctx->b.rings.gfx.flush = si_context_gfx_flush;
 
+	/* Border colors. */
+	sctx->border_color_table = malloc(SI_MAX_BORDER_COLORS *
+					  sizeof(*sctx->border_color_table));
+	if (!sctx->border_color_table)
+		goto fail;
+
+	sctx->border_color_buffer = (struct r600_resource*)
+		pipe_buffer_create(screen, PIPE_BIND_CUSTOM, PIPE_USAGE_DEFAULT,
+				   SI_MAX_BORDER_COLORS *
+				   sizeof(*sctx->border_color_table));
+	if (!sctx->border_color_buffer)
+		goto fail;
+
+	sctx->border_color_map =
+		ws->buffer_map(sctx->border_color_buffer->cs_buf,
+			       NULL, PIPE_TRANSFER_WRITE);
+	if (!sctx->border_color_map)
+		goto fail;
+
 	si_init_all_descriptors(sctx);
-
-	/* Initialize cache_flush. */
-	sctx->cache_flush = si_atom_cache_flush;
-	sctx->atoms.s.cache_flush = &sctx->cache_flush;
-
-	sctx->msaa_sample_locs = si_atom_msaa_sample_locs;
-	sctx->atoms.s.msaa_sample_locs = &sctx->msaa_sample_locs;
-
-	sctx->msaa_config = si_atom_msaa_config;
-	sctx->atoms.s.msaa_config = &sctx->msaa_config;
-
-	sctx->atoms.s.streamout_begin = &sctx->b.streamout.begin_atom;
-	sctx->atoms.s.streamout_enable = &sctx->b.streamout.enable_atom;
-
 	si_init_state_functions(sctx);
 	si_init_shader_functions(sctx);
 
@@ -166,6 +168,8 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	if (sctx->blitter == NULL)
 		goto fail;
 	sctx->blitter->draw_rectangle = r600_draw_rectangle;
+
+	sctx->sample_mask.sample_mask = 0xffff;
 
 	/* these must be last */
 	si_begin_new_cs(sctx);
@@ -211,6 +215,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 
 	return &sctx->b.b;
 fail:
+	fprintf(stderr, "radeonsi: Failed to create a context.\n");
 	si_destroy_context(&sctx->b.b);
 	return NULL;
 }
@@ -369,7 +374,7 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 		return 8;
 
 	case PIPE_CAP_MAX_VIEWPORTS:
-		return 16;
+		return SI_MAX_VIEWPORTS;
 
 	/* Timer queries, present when the clock frequency is non zero. */
 	case PIPE_CAP_QUERY_TIMESTAMP:

@@ -98,11 +98,13 @@ os_log_message(const char *message)
 }
 
 
+#if !defined(PIPE_SUBSYSTEM_EMBEDDED)
 const char *
 os_get_option(const char *name)
 {
    return getenv(name);
 }
+#endif /* !PIPE_SUBSYSTEM_EMBEDDED */
 
 
 /**
