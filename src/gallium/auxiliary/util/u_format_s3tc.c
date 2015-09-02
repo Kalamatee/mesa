@@ -94,7 +94,8 @@ util_format_dxtn_pack_t util_format_dxtn_pack = util_format_dxtn_pack_stub;
 #if defined(__AROS__)
 #include <proto/exec.h>
 #include <proto/dxtn.h>
-struct Library *DXTNBase = NULL;
+struct Library *_mesa_dxtn_base = NULL;
+#define DXTNBase _mesa_dxtn_base
 
 static void aros_fetch_2d_texel_rgb_dxt1(int src_stride,
                                  const uint8_t *src,
@@ -125,7 +126,7 @@ static void aros_tx_compress_dxtn(int src_comps,
                            const uint8_t *src,
                            enum util_format_dxtn dst_format,
                            uint8_t *dst,
-                           int dst_stride){
+                           int dst_stride)
     DXTN_CompressTex(src_comps, width, height, src, (GLenum)dst_format, dst, dst_stride);
 }
 
@@ -143,30 +144,26 @@ util_format_s3tc_init(void)
 
     DXTNBase = OpenLibrary("dxtn.library", 0);
     if (!DXTNBase) {
-        debug_printf("couldn't open dxtn.library, software DXTn "
+        _mesa_warning(ctx, "couldn't open dxtn.library, software DXTn "
             "compression/decompression unavailable");
         return;
     }
     /* the fetch functions are not per context! Might be problematic... */
-    util_format_dxt1_rgb_fetch =  aros_fetch_2d_texel_rgb_dxt1;
-    util_format_dxt1_rgba_fetch = aros_fetch_2d_texel_rgba_dxt1;
-    util_format_dxt3_rgba_fetch = aros_fetch_2d_texel_rgba_dxt3;
-    util_format_dxt5_rgba_fetch = aros_fetch_2d_texel_rgba_dxt5;
-    util_format_dxtn_pack = aros_tx_compress_dxtn;
+    fetch_ext_rgb_dxt1 =  aros_fetch_2d_texel_rgb_dxt1;
+    fetch_ext_rgba_dxt1 = aros_fetch_2d_texel_rgba_dxt1;
+    fetch_ext_rgba_dxt3 = aros_fetch_2d_texel_rgba_dxt3;
+    fetch_ext_rgba_dxt5 = aros_fetch_2d_texel_rgba_dxt5;
+    ext_tx_compress_dxtn = aros_tx_compress_dxtn;
    util_format_s3tc_enabled = TRUE;
 }
 #else
-
 #if defined(_WIN32) || defined(WIN32)
 #define DXTN_LIBNAME "dxtn.dll"
-#elif defined(__CYGWIN__)
-#define DXTN_LIBNAME "cygtxc_dxtn.dll"
 #elif defined(__APPLE__)
 #define DXTN_LIBNAME "libtxc_dxtn.dylib"
 #else
 #define DXTN_LIBNAME "libtxc_dxtn.so"
 #endif
-
 
 void
 util_format_s3tc_init(void)
