@@ -21,6 +21,8 @@ VMWARESVGA_HIDD_SOURCES := \
 
 USER_INCLUDES := \
             $(USER_INCLUDES) \
+            -iquote $(GALLIUM_PATH)/drivers/svga/include \
+            -iquote $(GALLIUM_PATH)/drivers/svga \
             -iquote $(GALLIUM_PATH)/drivers \
             -iquote $(GALLIUM_PATH)/include \
             -iquote $(GALLIUM_PATH)/auxiliary
@@ -30,7 +32,7 @@ USER_LDFLAGS := \
   -lgalliumauxiliary -lmesautil \
   -lstdcio -lstdc
 
-#%build_module mmake=hidd-vmwaresvga modname=vmwaresvga modtype=hidd \
-#    files="$(VMWARESVGA_HIDD_SOURCES)" uselibs=""
+%build_module mmake=hidd-vmwaresvga modname=vmwaresvga modtype=hidd \
+    files="$(VMWARESVGA_HIDD_SOURCES)" uselibs=""
 
 %common
