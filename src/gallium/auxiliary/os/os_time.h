@@ -38,7 +38,7 @@
 
 #include "pipe/p_config.h"
 
-#if defined(PIPE_OS_UNIX)
+#if defined(PIPE_OS_UNIX) || defined(PIPE_OS_AROS)
 #  include <unistd.h> /* usleep */
 #endif
 
