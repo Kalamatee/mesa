@@ -260,6 +260,7 @@ static const struct brw_tracked_state *gen7_compute_atoms[] =
    &brw_cs_image_surfaces,
    &gen7_cs_push_constants,
    &brw_cs_abo_surfaces,
+   &brw_texture_surfaces,
    &brw_cs_state,
 };
 
@@ -351,6 +352,7 @@ static const struct brw_tracked_state *gen8_compute_atoms[] =
    &brw_cs_image_surfaces,
    &gen7_cs_push_constants,
    &brw_cs_abo_surfaces,
+   &brw_texture_surfaces,
    &brw_cs_state,
 };
 
@@ -797,7 +799,7 @@ brw_pipeline_state_finished(struct brw_context *brw,
                             enum brw_pipeline pipeline)
 {
    /* Save all dirty state into the other pipelines */
-   for (int i = 0; i < BRW_NUM_PIPELINES; i++) {
+   for (unsigned i = 0; i < BRW_NUM_PIPELINES; i++) {
       if (i != pipeline) {
          brw->state.pipelines[i].mesa |= brw->NewGLState;
          brw->state.pipelines[i].brw |= brw->ctx.NewDriverState;

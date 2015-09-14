@@ -580,8 +580,8 @@ nir_dest_for_reg(nir_register *reg)
    return dest;
 }
 
-void nir_src_copy(nir_src *dest, const nir_src *src, void *mem_ctx);
-void nir_dest_copy(nir_dest *dest, const nir_dest *src, void *mem_ctx);
+void nir_src_copy(nir_src *dest, const nir_src *src, void *instr_or_if);
+void nir_dest_copy(nir_dest *dest, const nir_dest *src, nir_instr *instr);
 
 typedef struct {
    nir_src src;
@@ -629,10 +629,6 @@ typedef struct {
 
    unsigned write_mask : 4; /* ignored if dest.is_ssa is true */
 } nir_alu_dest;
-
-void nir_alu_src_copy(nir_alu_src *dest, const nir_alu_src *src, void *mem_ctx);
-void nir_alu_dest_copy(nir_alu_dest *dest, const nir_alu_dest *src,
-                       void *mem_ctx);
 
 typedef enum {
    nir_type_invalid = 0, /* Not a valid type */
@@ -701,6 +697,11 @@ typedef struct nir_alu_instr {
    nir_alu_dest dest;
    nir_alu_src src[];
 } nir_alu_instr;
+
+void nir_alu_src_copy(nir_alu_src *dest, const nir_alu_src *src,
+                      nir_alu_instr *instr);
+void nir_alu_dest_copy(nir_alu_dest *dest, const nir_alu_dest *src,
+                       nir_alu_instr *instr);
 
 /* is this source channel used? */
 static inline bool
@@ -944,7 +945,8 @@ typedef enum {
    nir_texop_txs,                /**< Texture size */
    nir_texop_lod,                /**< Texture lod query */
    nir_texop_tg4,                /**< Texture gather */
-   nir_texop_query_levels       /**< Texture levels query */
+   nir_texop_query_levels,       /**< Texture levels query */
+   nir_texop_texture_samples,    /**< Texture samples query */
 } nir_texop;
 
 typedef struct {
@@ -1016,6 +1018,7 @@ nir_tex_instr_dest_size(nir_tex_instr *instr)
    case nir_texop_lod:
       return 2;
 
+   case nir_texop_texture_samples:
    case nir_texop_query_levels:
       return 1;
 
@@ -1477,6 +1480,14 @@ typedef struct nir_shader {
 
    /** The shader stage, such as MESA_SHADER_VERTEX. */
    gl_shader_stage stage;
+
+   struct {
+      /** The maximum number of vertices the geometry shader might write. */
+      unsigned vertices_out;
+
+      /** 1 .. MAX_GEOMETRY_SHADER_INVOCATIONS */
+      unsigned invocations;
+   } gs;
 } nir_shader;
 
 #define nir_foreach_overload(shader, overload)                        \
@@ -1608,6 +1619,17 @@ nir_after_instr(nir_instr *instr)
 }
 
 static inline nir_cursor
+nir_after_block_before_jump(nir_block *block)
+{
+   nir_instr *last_instr = nir_block_last_instr(block);
+   if (last_instr && last_instr->type == nir_instr_type_jump) {
+      return nir_before_instr(last_instr);
+   } else {
+      return nir_after_block(block);
+   }
+}
+
+static inline nir_cursor
 nir_before_cf_node(nir_cf_node *node)
 {
    if (node->type == nir_cf_node_block)
@@ -1713,12 +1735,14 @@ bool nir_srcs_equal(nir_src src1, nir_src src2);
 void nir_instr_rewrite_src(nir_instr *instr, nir_src *src, nir_src new_src);
 void nir_instr_move_src(nir_instr *dest_instr, nir_src *dest, nir_src *src);
 void nir_if_rewrite_condition(nir_if *if_stmt, nir_src new_src);
+void nir_instr_rewrite_dest(nir_instr *instr, nir_dest *dest,
+                            nir_dest new_dest);
 
 void nir_ssa_dest_init(nir_instr *instr, nir_dest *dest,
                        unsigned num_components, const char *name);
 void nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
                       unsigned num_components, const char *name);
-void nir_ssa_def_rewrite_uses(nir_ssa_def *def, nir_src new_src, void *mem_ctx);
+void nir_ssa_def_rewrite_uses(nir_ssa_def *def, nir_src new_src);
 
 /* visits basic blocks in source-code order */
 typedef bool (*nir_foreach_block_cb)(nir_block *block, void *state);
@@ -1774,6 +1798,8 @@ void nir_lower_var_copies(nir_shader *shader);
 void nir_lower_global_vars_to_local(nir_shader *shader);
 
 void nir_lower_locals_to_regs(nir_shader *shader);
+
+void nir_lower_outputs_to_temporaries(nir_shader *shader);
 
 void nir_assign_var_locations(struct exec_list *var_list,
                               unsigned *size,
@@ -1841,6 +1867,8 @@ bool nir_opt_remove_phis(nir_shader *shader);
 bool nir_opt_undef(nir_shader *shader);
 
 void nir_sweep(nir_shader *shader);
+
+gl_system_value nir_system_value_from_intrinsic(nir_intrinsic_op intrin);
 
 #ifdef __cplusplus
 } /* extern "C" */

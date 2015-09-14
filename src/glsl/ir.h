@@ -1914,7 +1914,8 @@ enum ir_texture_opcode {
    ir_txs,		/**< Texture size */
    ir_lod,		/**< Texture lod query */
    ir_tg4,		/**< Texture gather */
-   ir_query_levels      /**< Texture levels query */
+   ir_query_levels,     /**< Texture levels query */
+   ir_texture_samples,  /**< Texture samples query */
 };
 
 
@@ -2513,6 +2514,9 @@ _mesa_glsl_initialize_variables(exec_list *instructions,
 				struct _mesa_glsl_parse_state *state);
 
 extern void
+_mesa_glsl_initialize_derived_variables(gl_shader *shader);
+
+extern void
 _mesa_glsl_initialize_functions(_mesa_glsl_parse_state *state);
 
 extern void
@@ -2523,11 +2527,13 @@ _mesa_glsl_find_builtin_function(_mesa_glsl_parse_state *state,
                                  const char *name, exec_list *actual_parameters);
 
 extern ir_function *
-_mesa_glsl_find_builtin_function_by_name(_mesa_glsl_parse_state *state,
-                                         const char *name);
+_mesa_glsl_find_builtin_function_by_name(const char *name);
 
 extern gl_shader *
 _mesa_glsl_get_builtin_function_shader(void);
+
+extern ir_function_signature *
+_mesa_get_main_function_signature(gl_shader *sh);
 
 extern void
 _mesa_glsl_release_functions(void);

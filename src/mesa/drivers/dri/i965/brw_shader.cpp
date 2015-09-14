@@ -195,6 +195,7 @@ is_scalar_shader_stage(struct brw_context *brw, int stage)
 {
    switch (stage) {
    case MESA_SHADER_FRAGMENT:
+   case MESA_SHADER_COMPUTE:
       return true;
    case MESA_SHADER_VERTEX:
       return brw->intelScreen->compiler->scalar_vs;
@@ -321,9 +322,6 @@ process_glsl_ir(gl_shader_stage stage,
       progress = do_common_optimization(shader->ir, true, true,
                                         options, ctx->Const.NativeIntegers) || progress;
    } while (progress);
-
-   if (options->NirOptions != NULL)
-      lower_output_reads(stage, shader->ir);
 
    validate_ir_tree(shader->ir);
 
@@ -621,6 +619,8 @@ brw_instruction_name(enum opcode op)
       return "tg4_offset";
    case SHADER_OPCODE_TG4_OFFSET_LOGICAL:
       return "tg4_offset_logical";
+   case SHADER_OPCODE_SAMPLEINFO:
+      return "sampleinfo";
 
    case SHADER_OPCODE_SHADER_TIME_ADD:
       return "shader_time_add";

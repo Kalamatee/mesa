@@ -30,12 +30,6 @@
 #include "nir.h"
 #include "nir_builder.h"
 
-static nir_ssa_def *
-channel(nir_builder *b, nir_ssa_def *def, int c)
-{
-   return nir_swizzle(b, def, (unsigned[4]){c, c, c, c}, 1, false);
-}
-
 static bool
 nir_lower_tex_projector_block(nir_block *block, void *void_state)
 {
@@ -49,7 +43,7 @@ nir_lower_tex_projector_block(nir_block *block, void *void_state)
       b->cursor = nir_before_instr(&tex->instr);
 
       /* Find the projector in the srcs list, if present. */
-      int proj_index;
+      unsigned proj_index;
       for (proj_index = 0; proj_index < tex->num_srcs; proj_index++) {
          if (tex->src[proj_index].src_type == nir_tex_src_projector)
             break;
@@ -60,7 +54,7 @@ nir_lower_tex_projector_block(nir_block *block, void *void_state)
          nir_frcp(b, nir_ssa_for_src(b, tex->src[proj_index].src, 1));
 
       /* Walk through the sources projecting the arguments. */
-      for (int i = 0; i < tex->num_srcs; i++) {
+      for (unsigned i = 0; i < tex->num_srcs; i++) {
          switch (tex->src[i].src_type) {
          case nir_tex_src_coord:
          case nir_tex_src_comparitor:
@@ -79,21 +73,21 @@ nir_lower_tex_projector_block(nir_block *block, void *void_state)
             switch (tex->coord_components) {
             case 4:
                projected = nir_vec4(b,
-                                    channel(b, projected, 0),
-                                    channel(b, projected, 1),
-                                    channel(b, projected, 2),
-                                    channel(b, unprojected, 3));
+                                    nir_channel(b, projected, 0),
+                                    nir_channel(b, projected, 1),
+                                    nir_channel(b, projected, 2),
+                                    nir_channel(b, unprojected, 3));
                break;
             case 3:
                projected = nir_vec3(b,
-                                    channel(b, projected, 0),
-                                    channel(b, projected, 1),
-                                    channel(b, unprojected, 2));
+                                    nir_channel(b, projected, 0),
+                                    nir_channel(b, projected, 1),
+                                    nir_channel(b, unprojected, 2));
                break;
             case 2:
                projected = nir_vec2(b,
-                                    channel(b, projected, 0),
-                                    channel(b, unprojected, 1));
+                                    nir_channel(b, projected, 0),
+                                    nir_channel(b, unprojected, 1));
                break;
             default:
                unreachable("bad texture coord count for array");
@@ -111,7 +105,7 @@ nir_lower_tex_projector_block(nir_block *block, void *void_state)
        */
       nir_instr_rewrite_src(&tex->instr, &tex->src[proj_index].src,
                             NIR_SRC_INIT);
-      for (int i = proj_index + 1; i < tex->num_srcs; i++) {
+      for (unsigned i = proj_index + 1; i < tex->num_srcs; i++) {
          tex->src[i-1].src_type = tex->src[i].src_type;
          nir_instr_move_src(&tex->instr, &tex->src[i-1].src, &tex->src[i].src);
       }

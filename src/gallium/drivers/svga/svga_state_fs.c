@@ -136,42 +136,36 @@ compile_fs(struct svga_context *svga,
       debug_printf("Failed to compile fragment shader,"
                    " using dummy shader instead.\n");
       variant = get_compiled_dummy_shader(svga, fs, key);
-      if (!variant) {
-         ret = PIPE_ERROR;
-         goto fail;
-      }
    }
-
-   if (svga_shader_too_large(svga, variant)) {
+   else if (svga_shader_too_large(svga, variant)) {
       /* too big, use dummy shader */
       debug_printf("Shader too large (%u bytes),"
                    " using dummy shader instead.\n",
                    (unsigned) (variant->nr_tokens
                                * sizeof(variant->tokens[0])));
+      /* Free the too-large variant */
+      svga_destroy_shader_variant(svga, SVGA3D_SHADERTYPE_PS, variant);
+      /* Use simple pass-through shader instead */
       variant = get_compiled_dummy_shader(svga, fs, key);
-      if (!variant) {
-         ret = PIPE_ERROR;
-         goto fail;
-      }
+   }
+
+   if (!variant) {
+      return PIPE_ERROR;
    }
 
    ret = svga_define_shader(svga, SVGA3D_SHADERTYPE_PS, variant);
-   if (ret != PIPE_OK)
-      goto fail;
+   if (ret != PIPE_OK) {
+      svga_destroy_shader_variant(svga, SVGA3D_SHADERTYPE_PS, variant);
+      return ret;
+   }
 
    *out_variant = variant;
 
-   /* insert variants at head of linked list */
+   /* insert variant at head of linked list */
    variant->next = fs->base.variants;
    fs->base.variants = variant;
 
    return PIPE_OK;
-
-fail:
-   if (variant) {
-      svga_destroy_shader_variant(svga, SVGA3D_SHADERTYPE_PS, variant);
-   }
-   return ret;
 }
 
 

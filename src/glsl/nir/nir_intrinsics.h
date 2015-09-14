@@ -125,6 +125,8 @@ INTRINSIC(image_atomic_exchange, 3, ARR(4, 1, 1), true, 1, 1, 0, 0)
 INTRINSIC(image_atomic_comp_swap, 4, ARR(4, 1, 1, 1), true, 1, 1, 0, 0)
 INTRINSIC(image_size, 0, ARR(), true, 4, 1, 0,
           NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINSIC_CAN_REORDER)
+INTRINSIC(image_samples, 0, ARR(), true, 1, 1, 0,
+          NIR_INTRINSIC_CAN_ELIMINATE | NIR_INTRINSIC_CAN_REORDER)
 
 #define SYSTEM_VALUE(name, components) \
    INTRINSIC(load_##name, 0, ARR(), true, components, 0, 0, \
@@ -139,6 +141,8 @@ SYSTEM_VALUE(sample_id, 1)
 SYSTEM_VALUE(sample_pos, 2)
 SYSTEM_VALUE(sample_mask_in, 1)
 SYSTEM_VALUE(invocation_id, 1)
+SYSTEM_VALUE(local_invocation_id, 3)
+SYSTEM_VALUE(work_group_id, 3)
 
 /*
  * The format of the indices depends on the type of the load.  For uniforms,

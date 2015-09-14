@@ -138,6 +138,11 @@ glsl_to_nir(struct gl_shader *sh, const nir_shader_compiler_options *options)
    v2.run(sh->ir);
    visit_exec_list(sh->ir, &v1);
 
+   nir_lower_outputs_to_temporaries(shader);
+
+   shader->gs.vertices_out = sh->Geom.VerticesOut;
+   shader->gs.invocations = sh->Geom.Invocations;
+
    return shader;
 }
 
@@ -642,6 +647,8 @@ nir_visitor::visit(ir_call *ir)
          op = nir_intrinsic_memory_barrier;
       } else if (strcmp(ir->callee_name(), "__intrinsic_image_size") == 0) {
          op = nir_intrinsic_image_size;
+      } else if (strcmp(ir->callee_name(), "__intrinsic_image_samples") == 0) {
+         op = nir_intrinsic_image_samples;
       } else {
          unreachable("not reached");
       }
@@ -668,6 +675,7 @@ nir_visitor::visit(ir_call *ir)
       case nir_intrinsic_image_atomic_xor:
       case nir_intrinsic_image_atomic_exchange:
       case nir_intrinsic_image_atomic_comp_swap:
+      case nir_intrinsic_image_samples:
       case nir_intrinsic_image_size: {
          nir_ssa_undef_instr *instr_undef =
             nir_ssa_undef_instr_create(shader, 1);
@@ -691,7 +699,8 @@ nir_visitor::visit(ir_call *ir)
                               info->dest_components, NULL);
          }
 
-         if (op == nir_intrinsic_image_size)
+         if (op == nir_intrinsic_image_size ||
+             op == nir_intrinsic_image_samples)
             break;
 
          /* Set the address argument, extending the coordinate vector to four
@@ -1001,7 +1010,6 @@ nir_visitor::visit(ir_expression *ir)
       nir_intrinsic_instr *load = nir_intrinsic_instr_create(this->shader, op);
       load->num_components = ir->type->vector_elements;
       load->const_index[0] = const_index ? const_index->value.u[0] : 0; /* base offset */
-      load->const_index[1] = 1; /* number of vec4's */
       load->src[0] = evaluate_rvalue(ir->operands[0]);
       if (!const_index)
          load->src[1] = evaluate_rvalue(ir->operands[1]);
@@ -1714,6 +1722,11 @@ nir_visitor::visit(ir_texture *ir)
 
    case ir_query_levels:
       op = nir_texop_query_levels;
+      num_srcs = 0;
+      break;
+
+   case ir_texture_samples:
+      op = nir_texop_texture_samples;
       num_srcs = 0;
       break;
 

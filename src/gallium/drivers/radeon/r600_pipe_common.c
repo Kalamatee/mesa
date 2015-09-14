@@ -231,7 +231,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 		rctx->max_db = 4;
 
 	rctx->b.transfer_map = u_transfer_map_vtbl;
-	rctx->b.transfer_flush_region = u_default_transfer_flush_region;
+	rctx->b.transfer_flush_region = u_transfer_flush_region_vtbl;
 	rctx->b.transfer_unmap = u_transfer_unmap_vtbl;
 	rctx->b.transfer_inline_write = u_default_transfer_inline_write;
         rctx->b.memory_barrier = r600_memory_barrier;
@@ -531,11 +531,7 @@ const char *r600_get_llvm_processor_name(enum radeon_family family)
 	case CHIP_KAVERI: return "kaveri";
 	case CHIP_HAWAII: return "hawaii";
 	case CHIP_MULLINS:
-#if HAVE_LLVM >= 0x0305
 		return "mullins";
-#else
-		return "kabini";
-#endif
 	case CHIP_TONGA: return "tonga";
 	case CHIP_ICELAND: return "iceland";
 	case CHIP_CARRIZO: return "carrizo";

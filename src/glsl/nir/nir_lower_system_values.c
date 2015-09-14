@@ -70,6 +70,12 @@ convert_instr(nir_intrinsic_instr *instr)
    case SYSTEM_VALUE_INVOCATION_ID:
       op = nir_intrinsic_load_invocation_id;
       break;
+   case SYSTEM_VALUE_LOCAL_INVOCATION_ID:
+      op = nir_intrinsic_load_local_invocation_id;
+      break;
+   case SYSTEM_VALUE_WORK_GROUP_ID:
+      op = nir_intrinsic_load_work_group_id;
+      break;
    default:
       unreachable("not reached");
    }
@@ -80,8 +86,7 @@ convert_instr(nir_intrinsic_instr *instr)
       nir_ssa_dest_init(&new_instr->instr, &new_instr->dest,
                         instr->dest.ssa.num_components, NULL);
       nir_ssa_def_rewrite_uses(&instr->dest.ssa,
-                               nir_src_for_ssa(&new_instr->dest.ssa),
-                               mem_ctx);
+                               nir_src_for_ssa(&new_instr->dest.ssa));
    } else {
       nir_dest_copy(&new_instr->dest, &instr->dest, mem_ctx);
    }

@@ -42,6 +42,7 @@
 #include "brw_eu.h"
 #include "brw_wm.h"
 #include "brw_fs.h"
+#include "brw_cs.h"
 #include "brw_cfg.h"
 #include "brw_dead_control_flow.h"
 #include "main/uniforms.h"
@@ -877,6 +878,7 @@ fs_visitor::implied_mrf_writes(fs_inst *inst)
    case SHADER_OPCODE_TXL:
    case SHADER_OPCODE_TXS:
    case SHADER_OPCODE_LOD:
+   case SHADER_OPCODE_SAMPLEINFO:
       return 1;
    case FS_OPCODE_FB_WRITE:
       return 2;
@@ -1393,6 +1395,9 @@ fs_visitor::assign_curb_setup()
 	 }
       }
    }
+
+   /* This may be updated in assign_urb_setup or assign_vs_urb_setup. */
+   this->first_non_payload_grf = payload.num_regs + prog_data->curb_read_length;
 }
 
 void
@@ -1507,8 +1512,7 @@ fs_visitor::assign_urb_setup()
    }
 
    /* Each attribute is 4 setup channels, each of which is half a reg. */
-   this->first_non_payload_grf =
-      urb_start + prog_data->num_varying_inputs * 2;
+   this->first_non_payload_grf += prog_data->num_varying_inputs * 2;
 }
 
 void
@@ -1523,8 +1527,7 @@ fs_visitor::assign_vs_urb_setup()
       count++;
 
    /* Each attribute is 4 regs. */
-   this->first_non_payload_grf =
-      payload.num_regs + prog_data->curb_read_length + count * 4;
+   this->first_non_payload_grf += count * 4;
 
    unsigned vue_entries =
       MAX2(count, vs_prog_data->base.vue_map.num_slots);
@@ -4729,6 +4732,15 @@ fs_visitor::setup_cs_payload()
    assert(devinfo->gen >= 7);
 
    payload.num_regs = 1;
+
+   if (prog->SystemValuesRead & SYSTEM_BIT_LOCAL_INVOCATION_ID) {
+      const unsigned local_id_dwords =
+         brw_cs_prog_local_id_payload_dwords(prog, dispatch_width);
+      assert((local_id_dwords & 0x7) == 0);
+      const unsigned local_id_regs = local_id_dwords / 8;
+      payload.local_invocation_id_reg = payload.num_regs;
+      payload.num_regs += local_id_regs;
+   }
 }
 
 void

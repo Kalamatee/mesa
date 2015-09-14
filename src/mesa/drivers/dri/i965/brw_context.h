@@ -498,6 +498,7 @@ struct brw_cs_prog_data {
    GLuint dispatch_grf_start_reg_16;
    unsigned local_size[3];
    unsigned simd_size;
+   bool uses_barrier;
 };
 
 /**
@@ -1517,7 +1518,7 @@ struct brw_context
 
    int num_atoms[BRW_NUM_PIPELINES];
    const struct brw_tracked_state render_atoms[60];
-   const struct brw_tracked_state compute_atoms[5];
+   const struct brw_tracked_state compute_atoms[6];
 
    /* If (INTEL_DEBUG & DEBUG_BATCH) */
    struct {

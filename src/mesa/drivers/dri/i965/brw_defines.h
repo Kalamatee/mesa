@@ -65,10 +65,10 @@
 #define _3DPRIM_TRIFAN            0x06
 #define _3DPRIM_QUADLIST          0x07
 #define _3DPRIM_QUADSTRIP         0x08
-#define _3DPRIM_LINELIST_ADJ      0x09
-#define _3DPRIM_LINESTRIP_ADJ     0x0A
-#define _3DPRIM_TRILIST_ADJ       0x0B
-#define _3DPRIM_TRISTRIP_ADJ      0x0C
+#define _3DPRIM_LINELIST_ADJ      0x09 /* G45+ */
+#define _3DPRIM_LINESTRIP_ADJ     0x0A /* G45+ */
+#define _3DPRIM_TRILIST_ADJ       0x0B /* G45+ */
+#define _3DPRIM_TRISTRIP_ADJ      0x0C /* G45+ */
 #define _3DPRIM_TRISTRIP_REVERSE  0x0D
 #define _3DPRIM_POLYGON           0x0E
 #define _3DPRIM_RECTLIST          0x0F
@@ -77,7 +77,7 @@
 #define _3DPRIM_LINESTRIP_CONT    0x12
 #define _3DPRIM_LINESTRIP_BF      0x13
 #define _3DPRIM_LINESTRIP_CONT_BF 0x14
-#define _3DPRIM_TRIFAN_NOSTIPPLE  0x15
+#define _3DPRIM_TRIFAN_NOSTIPPLE  0x16
 
 /* We use this offset to be able to pass native primitive types in struct
  * _mesa_prim::mode.  Native primitive types are BRW_PRIM_OFFSET +
@@ -979,6 +979,7 @@ enum opcode {
    SHADER_OPCODE_TG4_LOGICAL,
    SHADER_OPCODE_TG4_OFFSET,
    SHADER_OPCODE_TG4_OFFSET_LOGICAL,
+   SHADER_OPCODE_SAMPLEINFO,
 
    /**
     * Combines multiple sources of size 1 into a larger virtual GRF.
@@ -1511,6 +1512,7 @@ enum brw_message_target {
 #define GEN7_SAMPLER_MESSAGE_SAMPLE_GATHER4      8
 #define GEN5_SAMPLER_MESSAGE_LOD                 9
 #define GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO      10
+#define GEN6_SAMPLER_MESSAGE_SAMPLE_SAMPLEINFO   11
 #define GEN7_SAMPLER_MESSAGE_SAMPLE_GATHER4_C    16
 #define GEN7_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO   17
 #define GEN7_SAMPLER_MESSAGE_SAMPLE_GATHER4_PO_C 18
@@ -1694,7 +1696,13 @@ enum brw_message_target {
 
 #define BRW_URB_OPCODE_WRITE_HWORD  0
 #define BRW_URB_OPCODE_WRITE_OWORD  1
-#define GEN8_URB_OPCODE_SIMD8_WRITE  7
+#define BRW_URB_OPCODE_READ_HWORD   2
+#define BRW_URB_OPCODE_READ_OWORD   3
+#define GEN7_URB_OPCODE_ATOMIC_MOV  4
+#define GEN7_URB_OPCODE_ATOMIC_INC  5
+#define GEN8_URB_OPCODE_ATOMIC_ADD  6
+#define GEN8_URB_OPCODE_SIMD8_WRITE 7
+#define GEN8_URB_OPCODE_SIMD8_READ  8
 
 #define BRW_URB_SWIZZLE_NONE          0
 #define BRW_URB_SWIZZLE_INTERLEAVE    1
@@ -2682,6 +2690,8 @@ enum brw_wm_barycentric_interp_mode {
 # define MEDIA_CURBE_READ_OFFSET_SHIFT          0
 # define MEDIA_CURBE_READ_OFFSET_MASK           INTEL_MASK(15, 0)
 /* GEN7 DW5, GEN8+ DW6 */
+# define MEDIA_BARRIER_ENABLE_SHIFT             21
+# define MEDIA_BARRIER_ENABLE_MASK              INTEL_MASK(21, 21)
 # define MEDIA_GPGPU_THREAD_COUNT_SHIFT         0
 # define MEDIA_GPGPU_THREAD_COUNT_MASK          INTEL_MASK(7, 0)
 # define GEN8_MEDIA_GPGPU_THREAD_COUNT_SHIFT    0

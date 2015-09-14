@@ -275,6 +275,8 @@ public:
    void emit_fb_writes();
    void emit_urb_writes();
    void emit_cs_terminate();
+   fs_reg *emit_cs_local_invocation_id_setup();
+   fs_reg *emit_cs_work_group_id_setup();
 
    void emit_barrier();
 
@@ -364,6 +366,7 @@ public:
       uint8_t sample_pos_reg;
       uint8_t sample_mask_in_reg;
       uint8_t barycentric_coord_reg[BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT];
+      uint8_t local_invocation_id_reg;
 
       /** The number of thread payload registers the hardware will supply. */
       uint8_t num_regs;

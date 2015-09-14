@@ -273,6 +273,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
 	case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
 	case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
+	case PIPE_CAP_TGSI_TXQS:
 		return 1;
 
 	case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
@@ -500,6 +501,9 @@ static int r600_get_shader_param(struct pipe_screen* pscreen, unsigned shader, e
 			return PIPE_SHADER_IR_TGSI;
 		}
 	case PIPE_SHADER_CAP_DOUBLES:
+		if (rscreen->b.family == CHIP_CYPRESS ||
+			rscreen->b.family == CHIP_CAYMAN || rscreen->b.family == CHIP_ARUBA)
+			return 1;
 		return 0;
 	case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
 	case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:

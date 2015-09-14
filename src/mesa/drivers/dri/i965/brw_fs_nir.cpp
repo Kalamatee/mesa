@@ -337,6 +337,20 @@ emit_system_values_block(nir_block *block, void *void_visitor)
                                  BRW_REGISTER_TYPE_D));
          break;
 
+      case nir_intrinsic_load_local_invocation_id:
+         assert(v->stage == MESA_SHADER_COMPUTE);
+         reg = &v->nir_system_values[SYSTEM_VALUE_LOCAL_INVOCATION_ID];
+         if (reg->file == BAD_FILE)
+            *reg = *v->emit_cs_local_invocation_id_setup();
+         break;
+
+      case nir_intrinsic_load_work_group_id:
+         assert(v->stage == MESA_SHADER_COMPUTE);
+         reg = &v->nir_system_values[SYSTEM_VALUE_WORK_GROUP_ID];
+         if (reg->file == BAD_FILE)
+            *reg = *v->emit_cs_work_group_id_setup();
+         break;
+
       default:
          break;
       }
@@ -1436,6 +1450,11 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       break;
    }
 
+   case nir_intrinsic_image_samples:
+      /* The driver does not support multi-sampled images. */
+      bld.MOV(retype(dest, BRW_REGISTER_TYPE_D), fs_reg(1));
+      break;
+
    case nir_intrinsic_load_front_face:
       bld.MOV(retype(dest, BRW_REGISTER_TYPE_D),
               *emit_frontfacing_interpolation());
@@ -1444,35 +1463,16 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
    case nir_intrinsic_load_vertex_id:
       unreachable("should be lowered by lower_vertex_id()");
 
-   case nir_intrinsic_load_vertex_id_zero_base: {
-      fs_reg vertex_id = nir_system_values[SYSTEM_VALUE_VERTEX_ID_ZERO_BASE];
-      assert(vertex_id.file != BAD_FILE);
-      dest.type = vertex_id.type;
-      bld.MOV(dest, vertex_id);
-      break;
-   }
-
-   case nir_intrinsic_load_base_vertex: {
-      fs_reg base_vertex = nir_system_values[SYSTEM_VALUE_BASE_VERTEX];
-      assert(base_vertex.file != BAD_FILE);
-      dest.type = base_vertex.type;
-      bld.MOV(dest, base_vertex);
-      break;
-   }
-
-   case nir_intrinsic_load_instance_id: {
-      fs_reg instance_id = nir_system_values[SYSTEM_VALUE_INSTANCE_ID];
-      assert(instance_id.file != BAD_FILE);
-      dest.type = instance_id.type;
-      bld.MOV(dest, instance_id);
-      break;
-   }
-
-   case nir_intrinsic_load_sample_mask_in: {
-      fs_reg sample_mask_in = nir_system_values[SYSTEM_VALUE_SAMPLE_MASK_IN];
-      assert(sample_mask_in.file != BAD_FILE);
-      dest.type = sample_mask_in.type;
-      bld.MOV(dest, sample_mask_in);
+   case nir_intrinsic_load_vertex_id_zero_base:
+   case nir_intrinsic_load_base_vertex:
+   case nir_intrinsic_load_instance_id:
+   case nir_intrinsic_load_sample_mask_in:
+   case nir_intrinsic_load_sample_id: {
+      gl_system_value sv = nir_system_value_from_intrinsic(instr->intrinsic);
+      fs_reg val = nir_system_values[sv];
+      assert(val.file != BAD_FILE);
+      dest.type = val.type;
+      bld.MOV(dest, val);
       break;
    }
 
@@ -1482,14 +1482,6 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       dest.type = sample_pos.type;
       bld.MOV(dest, sample_pos);
       bld.MOV(offset(dest, bld, 1), offset(sample_pos, bld, 1));
-      break;
-   }
-
-   case nir_intrinsic_load_sample_id: {
-      fs_reg sample_id = nir_system_values[SYSTEM_VALUE_SAMPLE_ID];
-      assert(sample_id.file != BAD_FILE);
-      dest.type = sample_id.type;
-      bld.MOV(dest, sample_id);
       break;
    }
 
@@ -1727,7 +1719,20 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
 
    case nir_intrinsic_barrier:
       emit_barrier();
+      if (stage == MESA_SHADER_COMPUTE)
+         ((struct brw_cs_prog_data *) prog_data)->uses_barrier = true;
       break;
+
+   case nir_intrinsic_load_local_invocation_id:
+   case nir_intrinsic_load_work_group_id: {
+      gl_system_value sv = nir_system_value_from_intrinsic(instr->intrinsic);
+      fs_reg val = nir_system_values[sv];
+      assert(val.file != BAD_FILE);
+      dest.type = val.type;
+      for (unsigned i = 0; i < 3; i++)
+         bld.MOV(offset(dest, bld, i), offset(val, bld, i));
+      break;
+   }
 
    default:
       unreachable("unknown intrinsic");
@@ -1869,6 +1874,16 @@ fs_visitor::nir_emit_texture(const fs_builder &bld, nir_tex_instr *instr)
    case nir_texop_txf_ms: op = ir_txf_ms; break;
    case nir_texop_txl: op = ir_txl; break;
    case nir_texop_txs: op = ir_txs; break;
+   case nir_texop_texture_samples: {
+      fs_reg dst = retype(get_nir_dest(instr->dest), BRW_REGISTER_TYPE_D);
+      fs_inst *inst = bld.emit(SHADER_OPCODE_SAMPLEINFO, dst,
+                               bld.vgrf(BRW_REGISTER_TYPE_D, 1),
+                               sampler_reg);
+      inst->mlen = 1;
+      inst->header_size = 1;
+      inst->base_mrf = -1;
+      return;
+   }
    default:
       unreachable("unknown texture opcode");
    }

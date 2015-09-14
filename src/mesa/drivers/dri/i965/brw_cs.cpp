@@ -225,11 +225,17 @@ brw_codegen_cs_prog(struct brw_context *brw,
 static void
 brw_cs_populate_key(struct brw_context *brw, struct brw_cs_prog_key *key)
 {
+   struct gl_context *ctx = &brw->ctx;
    /* BRW_NEW_COMPUTE_PROGRAM */
    const struct brw_compute_program *cp =
       (struct brw_compute_program *) brw->compute_program;
+   const struct gl_program *prog = (struct gl_program *) cp;
 
    memset(key, 0, sizeof(*key));
+
+   /* _NEW_TEXTURE */
+   brw_populate_sampler_prog_key_data(ctx, prog, brw->cs.base.sampler_count,
+                                      &key->tex);
 
    /* The unique compute program ID */
    key->program_string_id = cp->id;
@@ -248,8 +254,11 @@ brw_upload_cs_prog(struct brw_context *brw)
    if (!cp)
       return;
 
-   if (!brw_state_dirty(brw, 0, BRW_NEW_COMPUTE_PROGRAM))
+   if (!brw_state_dirty(brw, _NEW_TEXTURE, BRW_NEW_COMPUTE_PROGRAM))
       return;
+
+   brw->cs.base.sampler_count =
+      _mesa_fls(ctx->ComputeProgram._Current->Base.SamplersUsed);
 
    brw_cs_populate_key(brw, &key);
 
@@ -315,6 +324,7 @@ brw_upload_cs_state(struct brw_context *brw)
    uint32_t offset;
    uint32_t *desc = (uint32_t*) brw_state_batch(brw, AUB_TRACE_SURFACE_STATE,
                                                 8 * 4, 64, &offset);
+   struct gl_program *prog = (struct gl_program *) brw->compute_program;
    struct brw_stage_state *stage_state = &brw->cs.base;
    struct brw_cs_prog_data *cs_prog_data = brw->cs.prog_data;
    struct brw_stage_prog_data *prog_data = &cs_prog_data->base;
@@ -331,8 +341,15 @@ brw_upload_cs_state(struct brw_context *brw)
                                             prog_data->binding_table.size_bytes,
                                             32, &stage_state->bind_bo_offset);
 
+   unsigned local_id_dwords = 0;
+
+   if (prog->SystemValuesRead & SYSTEM_BIT_LOCAL_INVOCATION_ID) {
+      local_id_dwords =
+         brw_cs_prog_local_id_payload_dwords(prog, cs_prog_data->simd_size);
+   }
+
    unsigned push_constant_data_size =
-      prog_data->nr_params * sizeof(gl_constant_value);
+      (prog_data->nr_params + local_id_dwords) * sizeof(gl_constant_value);
    unsigned reg_aligned_constant_size = ALIGN(push_constant_data_size, 32);
    unsigned push_constant_regs = reg_aligned_constant_size / 32;
    unsigned threads = get_cs_thread_count(cs_prog_data);
@@ -413,7 +430,8 @@ brw_upload_cs_state(struct brw_context *brw)
    if (brw->gen >= 8)
       desc[dw++] = 0; /* Kernel Start Pointer High */
    desc[dw++] = 0;
-   desc[dw++] = 0;
+   desc[dw++] = stage_state->sampler_offset |
+      ((stage_state->sampler_count + 3) / 4);
    desc[dw++] = stage_state->bind_bo_offset;
    desc[dw++] = SET_FIELD(push_constant_regs, MEDIA_CURBE_READ_LENGTH);
    const uint32_t media_threads =
@@ -421,7 +439,9 @@ brw_upload_cs_state(struct brw_context *brw)
       SET_FIELD(threads, GEN8_MEDIA_GPGPU_THREAD_COUNT) :
       SET_FIELD(threads, MEDIA_GPGPU_THREAD_COUNT);
    assert(threads <= brw->max_cs_threads);
-   desc[dw++] = media_threads;
+   desc[dw++] =
+      SET_FIELD(cs_prog_data->uses_barrier, MEDIA_BARRIER_ENABLE) |
+      media_threads;
 
    BEGIN_BATCH(4);
    OUT_BATCH(MEDIA_INTERFACE_DESCRIPTOR_LOAD << 16 | (4 - 2));
@@ -446,6 +466,84 @@ const struct brw_tracked_state brw_cs_state = {
 
 
 /**
+ * We are building the local ID push constant data using the simplest possible
+ * method. We simply push the local IDs directly as they should appear in the
+ * registers for the uvec3 gl_LocalInvocationID variable.
+ *
+ * Therefore, for SIMD8, we use 3 full registers, and for SIMD16 we use 6
+ * registers worth of push constant space.
+ *
+ * Note: Any updates to brw_cs_prog_local_id_payload_dwords,
+ * fill_local_id_payload or fs_visitor::emit_cs_local_invocation_id_setup need
+ * to coordinated.
+ *
+ * FINISHME: There are a few easy optimizations to consider.
+ *
+ * 1. If gl_WorkGroupSize x, y or z is 1, we can just use zero, and there is
+ *    no need for using push constant space for that dimension.
+ *
+ * 2. Since GL_MAX_COMPUTE_WORK_GROUP_SIZE is currently 1024 or less, we can
+ *    easily use 16-bit words rather than 32-bit dwords in the push constant
+ *    data.
+ *
+ * 3. If gl_WorkGroupSize x, y or z is small, then we can use bytes for
+ *    conveying the data, and thereby reduce push constant usage.
+ *
+ */
+unsigned
+brw_cs_prog_local_id_payload_dwords(const struct gl_program *prog,
+                                    unsigned dispatch_width)
+{
+   return 3 * dispatch_width;
+}
+
+
+static void
+fill_local_id_payload(const struct brw_cs_prog_data *cs_prog_data,
+                      void *buffer, unsigned *x, unsigned *y, unsigned *z)
+{
+   uint32_t *param = (uint32_t *)buffer;
+   for (unsigned i = 0; i < cs_prog_data->simd_size; i++) {
+      param[0 * cs_prog_data->simd_size + i] = *x;
+      param[1 * cs_prog_data->simd_size + i] = *y;
+      param[2 * cs_prog_data->simd_size + i] = *z;
+
+      (*x)++;
+      if (*x == cs_prog_data->local_size[0]) {
+         *x = 0;
+         (*y)++;
+         if (*y == cs_prog_data->local_size[1]) {
+            *y = 0;
+            (*z)++;
+            if (*z == cs_prog_data->local_size[2])
+               *z = 0;
+         }
+      }
+   }
+}
+
+
+fs_reg *
+fs_visitor::emit_cs_local_invocation_id_setup()
+{
+   assert(stage == MESA_SHADER_COMPUTE);
+
+   fs_reg *reg = new(this->mem_ctx) fs_reg(vgrf(glsl_type::uvec3_type));
+
+   struct brw_reg src =
+      brw_vec8_grf(payload.local_invocation_id_reg, 0);
+   src = retype(src, BRW_REGISTER_TYPE_UD);
+   bld.MOV(*reg, src);
+   src.nr += dispatch_width / 8;
+   bld.MOV(offset(*reg, bld, 1), src);
+   src.nr += dispatch_width / 8;
+   bld.MOV(offset(*reg, bld, 2), src);
+
+   return reg;
+}
+
+
+/**
  * Creates a region containing the push constants for the CS on gen7+.
  *
  * Push constants are constant values (such as GLSL uniforms) that are
@@ -465,6 +563,12 @@ brw_upload_cs_push_constants(struct brw_context *brw,
    struct gl_context *ctx = &brw->ctx;
    const struct brw_stage_prog_data *prog_data =
       (brw_stage_prog_data*) cs_prog_data;
+   unsigned local_id_dwords = 0;
+
+   if (prog->SystemValuesRead & SYSTEM_BIT_LOCAL_INVOCATION_ID) {
+      local_id_dwords =
+         brw_cs_prog_local_id_payload_dwords(prog, cs_prog_data->simd_size);
+   }
 
    /* Updates the ParamaterValues[i] pointers for all parameters of the
     * basic type of PROGRAM_STATE_VAR.
@@ -472,14 +576,14 @@ brw_upload_cs_push_constants(struct brw_context *brw,
    /* XXX: Should this happen somewhere before to get our state flag set? */
    _mesa_load_state_parameters(ctx, prog->Parameters);
 
-   if (prog_data->nr_params == 0) {
+   if (prog_data->nr_params == 0 && local_id_dwords == 0) {
       stage_state->push_const_size = 0;
    } else {
       gl_constant_value *param;
       unsigned i, t;
 
       const unsigned push_constant_data_size =
-         prog_data->nr_params * sizeof(gl_constant_value);
+         (local_id_dwords + prog_data->nr_params) * sizeof(gl_constant_value);
       const unsigned reg_aligned_constant_size = ALIGN(push_constant_data_size, 32);
       const unsigned param_aligned_count =
          reg_aligned_constant_size / sizeof(*param);
@@ -495,9 +599,15 @@ brw_upload_cs_push_constants(struct brw_context *brw,
       STATIC_ASSERT(sizeof(gl_constant_value) == sizeof(float));
 
       /* _NEW_PROGRAM_CONSTANTS */
+      unsigned x = 0, y = 0, z = 0;
       for (t = 0; t < threads; t++) {
+         gl_constant_value *next_param = &param[t * param_aligned_count];
+         if (local_id_dwords > 0) {
+            fill_local_id_payload(cs_prog_data, (void*)next_param, &x, &y, &z);
+            next_param += local_id_dwords;
+         }
          for (i = 0; i < prog_data->nr_params; i++) {
-            param[t * param_aligned_count + i] = *prog_data->param[i];
+            next_param[i] = *prog_data->param[i];
          }
       }
 
@@ -533,3 +643,22 @@ const struct brw_tracked_state gen7_cs_push_constants = {
    },
    /* .emit = */ gen7_upload_cs_push_constants,
 };
+
+
+fs_reg *
+fs_visitor::emit_cs_work_group_id_setup()
+{
+   assert(stage == MESA_SHADER_COMPUTE);
+
+   fs_reg *reg = new(this->mem_ctx) fs_reg(vgrf(glsl_type::uvec3_type));
+
+   struct brw_reg r0_1(retype(brw_vec1_grf(0, 1), BRW_REGISTER_TYPE_UD));
+   struct brw_reg r0_6(retype(brw_vec1_grf(0, 6), BRW_REGISTER_TYPE_UD));
+   struct brw_reg r0_7(retype(brw_vec1_grf(0, 7), BRW_REGISTER_TYPE_UD));
+
+   bld.MOV(*reg, r0_1);
+   bld.MOV(offset(*reg, bld, 1), r0_6);
+   bld.MOV(offset(*reg, bld, 2), r0_7);
+
+   return reg;
+}
