@@ -219,6 +219,8 @@ fpclassify(double x)
       return FP_NAN;
    }
 }
+#elif defined(__AROS__)
+#define fpclassify(x) FP_NORMAL
 #else
 #error "Need to include or define an fpclassify function"
 #endif
