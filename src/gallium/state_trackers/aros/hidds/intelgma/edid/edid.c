@@ -6,7 +6,7 @@
 #define DEBUG 1
 
 #include <aros/debug.h>
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 
 #include <stdio.h>
 #include <stdint.h>
@@ -127,7 +127,7 @@ static void createSync(APTR edidpool, int x, int y, int refresh, struct TagItem 
                     sync.pixel / 1000, sync.width, sync.hstart, sync.hend, sync.htotal,
                     sync.height, sync.vstart, sync.vend, sync.vtotal));
 
-    PUSH_TAG(tagsptr, aHidd_Gfx_SyncTags, *poolptr);
+    PUSH_TAG(tagsptr, aHidd_DMEnum_SyncTags, *poolptr);
 
     PUSH_TAG(poolptr, aHidd_Sync_Description, description);
     PUSH_TAG(poolptr, aHidd_Sync_PixelClock, sync.pixel);
@@ -151,7 +151,7 @@ static void createSync(APTR edidpool, int x, int y, int refresh, struct TagItem 
     PUSH_TAG(poolptr, TAG_DONE, 0);
 }
 
-void EDIDParse(APTR edidpool, UBYTE *edid_data, struct TagItem **tagsptr, struct TagItem *poolptr)
+void EDIDParse(APTR edidpool, UBYTE *edid_data, struct TagItem **tagsptr, struct TagItem *poolptr, char **name)
 {
     uint8_t chksum = 0;
     char *description;
@@ -271,7 +271,7 @@ void EDIDParse(APTR edidpool, UBYTE *edid_data, struct TagItem **tagsptr, struct
                         ha, va, (int)(((pixel * 10 / (uint32_t)(ha + hb)) * 1000)
                         / ((uint32_t)(va + vb))));
 
-                PUSH_TAG(tagsptr, aHidd_Gfx_SyncTags, poolptr);
+                PUSH_TAG(tagsptr, aHidd_DMEnum_SyncTags, poolptr);
 
                 PUSH_TAG(&poolptr, aHidd_Sync_Description, description);
                 PUSH_TAG(&poolptr, aHidd_Sync_PixelClock, pixel*10000);
@@ -315,7 +315,14 @@ void EDIDParse(APTR edidpool, UBYTE *edid_data, struct TagItem **tagsptr, struct
                     break;
 
                 case 0xFC:
-                    D(bug("[EDID] %s: Monitor Name: %s\n", __PRETTY_FUNCTION__, &edid_data[i+5]));
+                    {
+                        D(bug("[EDID] %s: Monitor Name: %s\n", __PRETTY_FUNCTION__, &edid_data[i+5]));
+                        if (name)
+                        {
+                            *name = AllocVec(strlen(&edid_data[i+5]) +1, MEMF_ANY);
+                            sprintf(*name, "%s", &edid_data[i+5]);
+                        }
+                    }
                     break;
 
                 case 0xFB:

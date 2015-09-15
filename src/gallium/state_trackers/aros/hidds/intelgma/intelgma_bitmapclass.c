@@ -3,7 +3,7 @@
     $Id$
 */
 
-#define DEBUG 0
+#define DEBUG 1
 #include <aros/debug.h>
 
 #include <proto/oop.h>
@@ -14,13 +14,13 @@
 #include <aros/asmcall.h>
 #include <aros/symbolsets.h>
 #include <utility/tagitem.h>
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 #include <hidd/i2c.h>
 
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "intelgma_gfx.h"
+#include "intelgma_hidd.h"
 #include "intelG45_regs.h"
 
 #if defined(INTELGMA_COMPOSIT)
@@ -62,178 +62,182 @@ static BOOL CanAccelerateBlits(UWORD product_id)
 
 OOP_Object *METHOD(BitMapIntelGMA, Root, New)
 {
-    OOP_Object *drv = GetTagData(aHidd_BitMap_GfxHidd, NULL, msg->attrList);
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
-    EnterFunc(bug("[IntelGMA:BitMap] Bitmap::New(0x%p)\n", drv));
-
-    if (drv)
+    o = (OOP_Object *)OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+    if (o)
     {
-        o = (OOP_Object *)OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
-        if (o)
+        GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+
+        IPTR width, height, depth;
+        UBYTE bytesPerPixel;
+        IPTR displayable;
+
+        OOP_Object *pf;
+
+        InitSemaphore(&bm->bmLock);
+
+        D(bug("[IntelGMA:BitMap] Super called. o=%p\n", o));
+
+        /* cache the bitmaps display, and its enumerator */
+        OOP_GetAttr(o, aHidd_BitMap_Display, &bm->display);
+        OOP_GetAttr(bm->display, aHidd_Display_DMEnumerator, &bm->dmenum);
+
+        OOP_GetAttr(o, aHidd_BitMap_Width,  &width);
+        OOP_GetAttr(o, aHidd_BitMap_Height, &height);
+        OOP_GetAttr(o, aHidd_BitMap_PixFmt, (APTR)&pf);
+        OOP_GetAttr(pf, aHidd_PixFmt_Depth, &depth);
+        OOP_GetAttr(o, aHidd_BitMap_Displayable, &displayable);
+
+        bm->onbm = displayable;
+
+        D(bug("[IntelGMA:BitMap] width=%d height=%d depth=%d\n", width, height, depth));
+
+        if (width == 0 || height == 0 || depth == 0)
         {
-            GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+            bug("[IntelGMA:BitMap] size mismatch!\n");
+        }
 
-            IPTR width, height, depth;
-            UBYTE bytesPerPixel;
-            IPTR displayable;
+        if (depth == 24)
+                depth = 32;
 
-            OOP_Object *pf;
+        if (depth <= 8)
+            bytesPerPixel = 1;
+        else if (depth <= 16)
+            bytesPerPixel = 2;
+        else
+            bytesPerPixel = 4;
 
-            InitSemaphore(&bm->bmLock);
+        bm->width = width;
+        bm->height = height;
+        bm->pitch = (width * bytesPerPixel + 63) & ~63;
+        bm->depth = depth;
+        bm->bpp = bytesPerPixel;
+        bm->framebuffer = AllocBitmapArea(sd, bm->width, bm->height, bm->bpp);
+        bm->fbgfx = TRUE;
+        bm->state = NULL;
+        bm->bitmap = o;
+        bm->usecount = 0;
+        bm->fbid = 0; /* Default value */
 
-            D(bug("[IntelGMA:BitMap] Super called. o=%p\n", o));
-
-            bm->drv = drv;
-
-            OOP_GetAttr(o, aHidd_BitMap_Width,  &width);
-            OOP_GetAttr(o, aHidd_BitMap_Height, &height);
-            OOP_GetAttr(o, aHidd_BitMap_PixFmt, (APTR)&pf);
-            OOP_GetAttr(pf, aHidd_PixFmt_Depth, &depth);
-            OOP_GetAttr(o, aHidd_BitMap_Displayable, &displayable);
-
-            bm->onbm = displayable;
-
-            D(bug("[IntelGMA:BitMap] width=%d height=%d depth=%d\n", width, height, depth));
-
-            if (width == 0 || height == 0 || depth == 0)
-            {
-                bug("[IntelGMA:BitMap] size mismatch!\n");
-            }
-
-            if (depth == 24)
-                    depth = 32;
-
-            if (depth <= 8)
-                bytesPerPixel = 1;
-            else if (depth <= 16)
-                bytesPerPixel = 2;
-            else
-                bytesPerPixel = 4;
-
-            bm->width = width;
-            bm->height = height;
-            bm->pitch = (width * bytesPerPixel + 63) & ~63;
-            bm->depth = depth;
-            bm->bpp = bytesPerPixel;
-            bm->framebuffer = AllocBitmapArea(sd, bm->width, bm->height, bm->bpp, TRUE);
-            bm->fbgfx = TRUE;
-            bm->state = NULL;
-            bm->bitmap = o;
-            bm->usecount = 0;
-            bm->xoffset = 0;
-            bm->yoffset = 0;
-            bm->fbid = 0; /* Default value */
-
-                    if (displayable) bm->displayable = TRUE; else bm->displayable = FALSE;
 #if defined(INTELGMA_COMPOSIT)
-                    //bm->compositing = sd->compositing;
-            bm->compositing = (OOP_Object *)
-                GetTagData(aHidd_BitMap_IntelGMA_CompositorHidd, 0, msg->attrList);
-            /* FIXME: check if compositing hidd was passed */
+        bm->xoffset = 0;
+        bm->yoffset = 0;
+
+                //bm->compositing = sd->compositing;
+        bm->compositing = (OOP_Object *)
+            GetTagData(aHidd_BitMap_IntelGMA_CompositorHidd, 0, msg->attrList);
+        /* FIXME: check if compositing hidd was passed */
+
 #endif
 
-            if (displayable)
+        if (displayable)
+        {
+            bm->displayable = TRUE;
+
+            if ((bm->framebuffer != -1))
             {
-                if ((bm->framebuffer != -1))
+                HIDDT_ModeID modeid;
+                OOP_Object *sync;
+
+                bm->fbgfx = TRUE;
+
+                /* We should be able to get modeID from the bitmap */
+                OOP_GetAttr(o, aHidd_BitMap_ModeID, &modeid);
+
+                D(bug("[IntelGMA:BitMap] BM_ModeID=%x\n", modeid));
+
+                if (modeid != vHidd_ModeID_Invalid)
                 {
-                    HIDDT_ModeID modeid;
-                    OOP_Object *sync;
+                    IPTR pixel;
+                    IPTR hdisp, vdisp, hstart, hend, htotal, vstart, vend, vtotal, flags;
+                    OOP_Object *dmenum;
 
-                    bm->fbgfx = TRUE;
+                    /* Get Sync and PixelFormat properties */
+                    struct pHidd_DMEnum_GetMode __getmodemsg = {
+                        mID:  sd->mid_GetMode,
+                        modeID: modeid,
+                        syncPtr:    &sync,
+                        pixFmtPtr:  &pf,
+                    }, *getmodemsg = &__getmodemsg;
 
-                    /* We should be able to get modeID from the bitmap */
-                    OOP_GetAttr(o, aHidd_BitMap_ModeID, &modeid);
+                    D(bug("[IntelGMA:BitMap] Querying Mode...\n"));
+                    OOP_DoMethod(bm->dmenum, (OOP_Msg)getmodemsg);
 
-                    D(bug("[IntelGMA:BitMap] BM_ModeID=%x\n", modeid));
+                    D(bug("[IntelGMA:BitMap] sync @ 0x%p, pixfmt @ 0x%p\n", sync, pf));
 
-                    if (modeid != vHidd_ModeID_Invalid)
+                    OOP_GetAttr(sync, aHidd_Sync_PixelClock,    &pixel);
+                    OOP_GetAttr(sync, aHidd_Sync_HDisp,         &hdisp);
+                    OOP_GetAttr(sync, aHidd_Sync_VDisp,         &vdisp);
+                    OOP_GetAttr(sync, aHidd_Sync_HSyncStart,    &hstart);
+                    OOP_GetAttr(sync, aHidd_Sync_VSyncStart,    &vstart);
+                    OOP_GetAttr(sync, aHidd_Sync_HSyncEnd,      &hend);
+                    OOP_GetAttr(sync, aHidd_Sync_VSyncEnd,      &vend);
+                    OOP_GetAttr(sync, aHidd_Sync_HTotal,        &htotal);
+                    OOP_GetAttr(sync, aHidd_Sync_VTotal,        &vtotal);
+                    OOP_GetAttr(sync, aHidd_Sync_Flags,			&flags);
+
+                    bm->state = (GMAState_t *)AllocVecPooled(sd->MemPool,
+                            sizeof(GMAState_t));
+
+                    D(bug("[IntelGMA:BitMap] allocated state data @ 0x%p\n", bm->state));
+
+                    pixel /= 1000;
+
+                    if (bm->state)
                     {
-                        IPTR pixel;
-                        IPTR hdisp, vdisp, hstart, hend, htotal, vstart, vend, vtotal, flags;
+                        G45_InitMode(sd, bm->state, width, height, depth, pixel, bm->framebuffer,
+                                    hdisp, vdisp,
+                                    hstart, hend, htotal,
+                                    vstart, vend, vtotal, flags);
 
-                        /* Get Sync and PixelFormat properties */
-                        struct pHidd_Gfx_GetMode __getmodemsg = {
-                            mID:  sd->mid_GetMode,
-                            modeID: modeid,
-                            syncPtr:    &sync,
-                            pixFmtPtr:  &pf,
-                        }, *getmodemsg = &__getmodemsg;
-
-                        D(bug("[IntelGMA:BitMap] Querying Mode...\n"));
-                        OOP_DoMethod(bm->drv, (OOP_Msg)getmodemsg);
-
-                        D(bug("[IntelGMA:BitMap] sync @ 0x%p, pixfmt @ 0x%p\n", sync, pf));
-
-                        OOP_GetAttr(sync, aHidd_Sync_PixelClock,    &pixel);
-                        OOP_GetAttr(sync, aHidd_Sync_HDisp,         &hdisp);
-                        OOP_GetAttr(sync, aHidd_Sync_VDisp,         &vdisp);
-                        OOP_GetAttr(sync, aHidd_Sync_HSyncStart,    &hstart);
-                        OOP_GetAttr(sync, aHidd_Sync_VSyncStart,    &vstart);
-                        OOP_GetAttr(sync, aHidd_Sync_HSyncEnd,      &hend);
-                        OOP_GetAttr(sync, aHidd_Sync_VSyncEnd,      &vend);
-                        OOP_GetAttr(sync, aHidd_Sync_HTotal,        &htotal);
-                        OOP_GetAttr(sync, aHidd_Sync_VTotal,        &vtotal);
-                        OOP_GetAttr(sync, aHidd_Sync_Flags,			&flags);
-
-                        bm->state = (GMAState_t *)AllocVecPooled(sd->MemPool,
-                                sizeof(GMAState_t));
-
-                        D(bug("[IntelGMA:BitMap] allocated state data @ 0x%p\n", bm->state));
-
-                        pixel /= 1000;
-
-                        if (bm->state)
+                        if (!sd->flags & SDFLAG_INITIALISED)
                         {
-                            G45_InitMode(sd, bm->state, width, height, depth, pixel, bm->framebuffer,
-                                        hdisp, vdisp,
-                                        hstart, hend, htotal,
-                                        vstart, vend, vtotal, flags);
-
-                            if (!sd->flags & SDFLAG_INITIALISED)
-                            {
-                                sd->VisibleBitmap = bm;
-                                G45_LoadState(sd, bm->state);
-                            }
-
-                            D(bug("[IntelGMA] displayable Bitmap::new = %p\n", o));
-
-                            return o;
+                            sd->VisibleBitmap = bm;
+                            G45_LoadState(sd, bm->state);
                         }
-                    }
-                    else
-                    {
-                        D(bug("[IntelGMA] invalid mode\n"));
+
+                        D(bug("[IntelGMA] displayable Bitmap::new = %p\n", o));
+
+                        return o;
                     }
                 }
                 else
                 {
-                        bm->framebuffer = (IPTR)AllocMem(bm->pitch * bm->height,
-                                        MEMF_PUBLIC | MEMF_CLEAR);
-                        bm->fbgfx = FALSE;
-
-                        return o;
+                    D(bug("[IntelGMA] invalid mode\n"));
                 }
             }
             else
             {
-                if (bm->framebuffer == -1)
-                {
                     bm->framebuffer = (IPTR)AllocMem(bm->pitch * bm->height,
-                                MEMF_PUBLIC | MEMF_CLEAR);
+                                    MEMF_PUBLIC | MEMF_CLEAR);
                     bm->fbgfx = FALSE;
-                }
 
-                if (bm->framebuffer != 0)
-                {
-                                    D(bug("[IntelGMA] not displayable Bitmap::new = %p\n", o));
                     return o;
-                }
+            }
+        }
+        else
+        {
+            bm->displayable = FALSE;
+
+            if (bm->framebuffer == -1)
+            {
+                bm->framebuffer = (IPTR)AllocMem(bm->pitch * bm->height,
+                            MEMF_PUBLIC | MEMF_CLEAR);
+                bm->fbgfx = FALSE;
             }
 
-            OOP_MethodID disp_mid = sd->mid_Dispose;
-            OOP_CoerceMethod(cl, o, (OOP_Msg) &disp_mid);
+            if (bm->framebuffer != 0)
+            {
+                D(bug("[IntelGMA] not displayable Bitmap::new = %p\n", o));
+                return o;
+            }
         }
+
+        OOP_MethodID disp_mid = sd->mid_Dispose;
+        OOP_CoerceMethod(cl, o, (OOP_Msg) &disp_mid);
     }
+
     return NULL;
 }
 
@@ -243,42 +247,41 @@ VOID METHOD(BitMapIntelGMA, Root, Dispose)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
     LOCK_BITMAP
-    LOCK_HW
-
-    if (bm->fbgfx)
     {
-    	DO_FLUSH();
-
-        FreeBitmapArea(sd, bm->framebuffer, bm->width, bm->height, bm->bpp);
-
-        if (sd->VisibleBitmap == bm)
+        LOCK_HW
         {
-        	sd->VisibleBitmap = NULL;
-        }
+            if (bm->fbgfx)
+            {
+                DO_FLUSH();
 
-        bm->framebuffer = -1;
-        bm->fbgfx = 0;
-    }
-    else
-    {
-        if (bm->framebuffer)
-            FreeMem((APTR)bm->framebuffer, bm->pitch * bm->height);
-    }
+                FreeBitmapArea(sd, bm->framebuffer, bm->width, bm->height, bm->bpp);
 
-    if (bm->state)
-        FreeVecPooled(sd->MemPool, bm->state);
+                if (sd->VisibleBitmap == bm)
+                {
+                        sd->VisibleBitmap = NULL;
+                }
 
-    bm->state = NULL;
+                bm->framebuffer = -1;
+                bm->fbgfx = 0;
+            }
+            else
+            {
+                if (bm->framebuffer)
+                    FreeMem((APTR)bm->framebuffer, bm->pitch * bm->height);
+            }
+
+            if (bm->state)
+                FreeVecPooled(sd->MemPool, bm->state);
+
+            bm->state = NULL;
 
 #if 0
-    RADEONWaitForIdleMMIO(sd);
-
-
-    FreeVecPooled(sd->memPool, bm->addresses);
-
+            RADEONWaitForIdleMMIO(sd);
+            FreeVecPooled(sd->memPool, bm->addresses);
 #endif
-
-    UNLOCK_HW
+        }
+        UNLOCK_HW
+    }
     UNLOCK_BITMAP
 
     OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
@@ -411,195 +414,199 @@ static inline void setup_engine(OOP_Class *cl, OOP_Object *o, GMABitMap_t *bm)
 
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutPixel)
 {
-	GMABitMap_t *bm = OOP_INST_DATA(cl, o);
-	void *ptr;
+    GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+    void *ptr;
 
 //	if (msg->x >= 0 && msg->x < bm->width && msg->y >= 0 && msg->y < bm->height)
-	{
-		LOCK_BITMAP
+    {
+        LOCK_BITMAP
+        {
+            if (bm->fbgfx)
+            {
+                LOCK_HW
+                {
+                    DO_FLUSH();
+                }
+                UNLOCK_HW
+            }
 
-		if (bm->fbgfx)
-		{
-			LOCK_HW
-			DO_FLUSH();
-			UNLOCK_HW
-		}
+            ptr = (void *)(bm->framebuffer + msg->y * bm->pitch);
+            if (bm->fbgfx)
+                ptr = (void *)((IPTR)ptr + (IPTR)sd->Card.Framebuffer);
 
-		if (bm->fbgfx)
-			ptr = (void *)(bm->framebuffer + sd->Card.Framebuffer + msg->y * bm->pitch);
-		else
-			ptr = (void *)(bm->framebuffer + msg->y * bm->pitch);
-
-
-		switch (bm->bpp)
-		{
-		case 1:
-			((UBYTE *)ptr)[msg->x] = msg->pixel;
-			break;
-		case 2:
-			((UWORD *)ptr)[msg->x] = msg->pixel;
-			break;
-		case 4:
-			((ULONG *)ptr)[msg->x] = msg->pixel;
-			break;
-		}
-
-		UNLOCK_BITMAP
-	}
+            switch (bm->bpp)
+            {
+            case 1:
+                ((UBYTE *)ptr)[msg->x] = msg->pixel;
+                break;
+            case 2:
+                ((UWORD *)ptr)[msg->x] = msg->pixel;
+                break;
+            case 4:
+                ((ULONG *)ptr)[msg->x] = msg->pixel;
+                break;
+            }
+        }
+        UNLOCK_BITMAP
+    }
 }
 
 HIDDT_Pixel METHOD(BitMapIntelGMA, Hidd_BitMap, GetPixel)
 {
-	GMABitMap_t *bm = OOP_INST_DATA(cl, o);
-	void *ptr;
-	HIDDT_Pixel pixel = 0;
+    GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+    HIDDT_Pixel pixel = 0;
+    void *ptr;
 
-	LOCK_BITMAP
+    LOCK_BITMAP
+    {
+        if (bm->fbgfx)
+        {
+            LOCK_HW
+            {
+                DO_FLUSH();
+            }
+            UNLOCK_HW
+        }
 
-	if (bm->fbgfx)
-	{
-		LOCK_HW
-		DO_FLUSH();
-		UNLOCK_HW
-	}
+        ptr = (void *)(bm->framebuffer + msg->y * bm->pitch);
+        if (bm->fbgfx)
+            ptr = (void *)((IPTR)ptr + (IPTR)sd->Card.Framebuffer);
 
-    if (bm->fbgfx)
-        ptr = sd->Card.Framebuffer;
-    else
-        ptr = NULL;
-    ptr += bm->framebuffer + msg->y * bm->pitch;
+        switch (bm->bpp)
+        {
+        case 1:
+                pixel = ((UBYTE *)ptr)[msg->x];
+                break;
+        case 2:
+                pixel = ((UWORD *)ptr)[msg->x];
+                break;
+        case 4:
+                pixel = ((ULONG *)ptr)[msg->x];
+                break;
+        }
+    }
+    UNLOCK_BITMAP
 
-	switch (bm->bpp)
-	{
-	case 1:
-		pixel = ((UBYTE *)ptr)[msg->x];
-		break;
-	case 2:
-		pixel = ((UWORD *)ptr)[msg->x];
-		break;
-	case 4:
-		pixel = ((ULONG *)ptr)[msg->x];
-		break;
-	}
-
-	UNLOCK_BITMAP
-
-	return pixel;
+    return pixel;
 }
 
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, DrawPixel)
 {
-    GMABitMap_t *bm = OOP_INST_DATA(cl, o);
-    void *ptr;
-	OOP_Object *gc = msg->gc;
+    GMABitMap_t         *bm = OOP_INST_DATA(cl, o);
+    OOP_Object          *gc = msg->gc;
+    HIDDT_Pixel     	src, dest = 0, val;
+    HIDDT_DrawMode  	mode;
+    HIDDT_Pixel     	writeMask;
+    void                *ptr;
 
-    HIDDT_Pixel     	    	    src, dest = 0, val;
-    HIDDT_DrawMode  	    	    mode;
-    HIDDT_Pixel     	    	    writeMask;
-
+    ptr = (void *)(bm->framebuffer + msg->y * bm->pitch);
     if (bm->fbgfx)
-        ptr = sd->Card.Framebuffer;
-    else
-        ptr = NULL;
-    ptr += bm->framebuffer + msg->y * bm->pitch;
+        ptr = (void *)((IPTR)ptr + (IPTR)sd->Card.Framebuffer);
 
     src       = GC_FG(gc);
     mode      = GC_DRMD(gc);
 
     LOCK_BITMAP
-
-	if (bm->fbgfx)
-	{
-		LOCK_HW
-		DO_FLUSH();
-		UNLOCK_HW
-	}
-
-    if (vHidd_GC_DrawMode_Copy == mode && GC_COLMASK(gc) == ~0)
-	{
-		val = src;
-	}
-	else
-	{
-		switch (bm->bpp)
-	    {
-	        case 1:
-	            dest = ((UBYTE *)ptr)[msg->x];
-	            break;
-	        case 2:
-	            dest = ((UWORD *)ptr)[msg->x];
-	            break;
-	        case 4:
-	            dest = ((ULONG *)ptr)[msg->x];
-	            break;
-	    }
-
-		writeMask = ~GC_COLMASK(gc) & dest;
-
-		val = 0;
-
-		if(mode & 1) val = ( src &  dest);
-		if(mode & 2) val = ( src & ~dest) | val;
-		if(mode & 4) val = (~src &  dest) | val;
-		if(mode & 8) val = (~src & ~dest) | val;
-
-		val = (val & (writeMask | GC_COLMASK(gc) )) | writeMask;
-	}
-
-	if (bm->fbgfx)
-	{
-		LOCK_HW
-		DO_FLUSH();
-		UNLOCK_HW
-	}
-
-	switch (bm->bpp)
     {
-        case 1:
-            ((UBYTE *)ptr)[msg->x] = val;
-            break;
-        case 2:
-            ((UWORD *)ptr)[msg->x] = val;
-            break;
-        case 4:
-            ((ULONG *)ptr)[msg->x] = val;
-            break;
-    }
+	if (bm->fbgfx)
+	{
+            LOCK_HW
+            {
+                DO_FLUSH();
+            }
+            UNLOCK_HW
+	}
 
+        if (vHidd_GC_DrawMode_Copy == mode && GC_COLMASK(gc) == ~0)
+        {
+            val = src;
+        }
+        else
+        {
+            switch (bm->bpp)
+            {
+                case 1:
+                    dest = ((UBYTE *)ptr)[msg->x];
+                    break;
+                case 2:
+                    dest = ((UWORD *)ptr)[msg->x];
+                    break;
+                case 4:
+                    dest = ((ULONG *)ptr)[msg->x];
+                    break;
+            }
+
+            writeMask = ~GC_COLMASK(gc) & dest;
+
+            val = 0;
+
+            if(mode & 1)
+                val = ( src &  dest);
+            if(mode & 2)
+                val = ( src & ~dest) | val;
+            if(mode & 4)
+                val = (~src &  dest) | val;
+            if(mode & 8)
+                val = (~src & ~dest) | val;
+
+            val = (val & (writeMask | GC_COLMASK(gc) )) | writeMask;
+        }
+
+        if (bm->fbgfx)
+        {
+            LOCK_HW
+            {
+                DO_FLUSH();
+            }
+            UNLOCK_HW
+        }
+
+        switch (bm->bpp)
+        {
+            case 1:
+                ((UBYTE *)ptr)[msg->x] = val;
+                break;
+            case 2:
+                ((UWORD *)ptr)[msg->x] = val;
+                break;
+            case 4:
+                ((ULONG *)ptr)[msg->x] = val;
+                break;
+        }
+    }
     UNLOCK_BITMAP
 }
 
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, DrawEllipse)
 {
-	GMABitMap_t *bm = OOP_INST_DATA(cl, o);
-	OOP_Object *gc = msg->gc;
-	WORD    	x = msg->rx, y = 0;     /* ellipse points */
-	HIDDT_Pixel     	    	    src;
-	HIDDT_DrawMode  	    	    mode;
+    GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+    OOP_Object *gc = msg->gc;
+    WORD    	x = msg->rx, y = 0;     /* ellipse points */
+    HIDDT_Pixel     	    	    src;
+    HIDDT_DrawMode  	    	    mode;
 
-	/* intermediate terms to speed up loop */
-	LONG    	t1 = msg->rx * msg->rx, t2 = t1 << 1, t3 = t2 << 1;
-	LONG    	t4 = msg->ry * msg->ry, t5 = t4 << 1, t6 = t5 << 1;
-	LONG    	t7 = msg->rx * t5, t8 = t7 << 1, t9 = 0L;
-	LONG    	d1 = t2 - t7 + (t4 >> 1);    /* error terms */
-	LONG    	d2 = (t1 >> 1) - t8 + t5;
+    /* intermediate terms to speed up loop */
+    LONG    	t1 = msg->rx * msg->rx, t2 = t1 << 1, t3 = t2 << 1;
+    LONG    	t4 = msg->ry * msg->ry, t5 = t4 << 1, t6 = t5 << 1;
+    LONG    	t7 = msg->rx * t5, t8 = t7 << 1, t9 = 0L;
+    LONG    	d1 = t2 - t7 + (t4 >> 1);    /* error terms */
+    LONG    	d2 = (t1 >> 1) - t8 + t5;
 
-	APTR    	doclip = GC_DOCLIP(gc);
+    APTR    	doclip = GC_DOCLIP(gc);
 
     src       = GC_FG(gc);
     mode      = GC_DRMD(gc);
 
-	void _drawpixel(int x, int y)
-	{
-		OUT_RING((2 << 29) | (0x24 << 22) );
-		OUT_RING((y << 16) | x);
-	}
+    void _drawpixel(int x, int y)
+    {
+            OUT_RING((2 << 29) | (0x24 << 22) );
+            OUT_RING((y << 16) | x);
+    }
 
-	LOCK_BITMAP
+    LOCK_BITMAP
 
     if (bm->fbgfx)
     {
-
     	LOCK_HW
 
     	uint32_t br00, br01, br24, br25, br09, br05, br06, br07;
@@ -986,19 +993,25 @@ ULONG METHOD(BitMapIntelGMA, Hidd_BitMap, BytesPerLine)
 BOOL METHOD(BitMapIntelGMA, Hidd_BitMap, ObtainDirectAccess)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+    IPTR VideoData;
+
     LOCK_BITMAP
-    IPTR VideoData = bm->framebuffer;
+
+    VideoData = bm->framebuffer;
     if (bm->fbgfx)
     {
         VideoData += (IPTR)sd->Card.Framebuffer;
-		LOCK_HW
-		DO_FLUSH();
-		UNLOCK_HW
+        LOCK_HW
+        {
+            DO_FLUSH();
+        }
+        UNLOCK_HW
     }
     *msg->addressReturn = (UBYTE*)VideoData;
     *msg->widthReturn = bm->pitch / bm->bpp;
     *msg->heightReturn = bm->height;
     *msg->bankSizeReturn = *msg->memSizeReturn = bm->pitch * bm->height;
+
     return TRUE;
 }
 
@@ -1022,6 +1035,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, ReleaseDirectAccess)
         };
         OOP_DoMethod(bm->compositing, (OOP_Msg)&brcmsg);    
     }
+#else
+    OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 #endif
 }
 
@@ -1029,63 +1044,63 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, ReleaseDirectAccess)
 
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, FillRect)
 {
-	GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+    GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
-	LOCK_BITMAP
+    LOCK_BITMAP
 
-	if (bm->fbgfx)
-	{
-		LOCK_HW
+    if (bm->fbgfx)
+    {
+        LOCK_HW
 
-		uint32_t br00,br13,br14,br09,br16;
+        uint32_t br00,br13,br14,br09,br16;
 
-		br00 = (2 << 29) | (0x40 << 22) | 3;
+        br00 = (2 << 29) | (0x40 << 22) | 3;
 
-		if (bm->bpp == 4)
-			br00 |= 3 << 20;
+        if (bm->bpp == 4)
+            br00 |= 3 << 20;
 
-		br13 = (ROP_table[GC_DRMD(msg->gc)].pattern) | (bm->pitch);
-		switch (bm->bpp)
-		{
-		case 4:
-			br13 |= (3 << 24);
-			break;
-		case 2:
-			br13 |= 1 << 24;
-			break;
-		default:
-			break;
-		}
+        br13 = (ROP_table[GC_DRMD(msg->gc)].pattern) | (bm->pitch);
+        switch (bm->bpp)
+        {
+        case 4:
+            br13 |= (3 << 24);
+            break;
+        case 2:
+            br13 |= 1 << 24;
+            break;
+        default:
+            break;
+        }
 
-		br14 = ((msg->maxY - msg->minY+1) << 16) | ((msg->maxX - msg->minX+1) * bm->bpp);
+        br14 = ((msg->maxY - msg->minY+1) << 16) | ((msg->maxX - msg->minX+1) * bm->bpp);
 
-		br09 = bm->framebuffer + msg->minX * bm->bpp + msg->minY * bm->pitch;
-		br16 = GC_FG(msg->gc);
+        br09 = bm->framebuffer + msg->minX * bm->bpp + msg->minY * bm->pitch;
+        br16 = GC_FG(msg->gc);
 
-		START_RING(6);
-		OUT_RING(br00);
-		OUT_RING(br13);
-		OUT_RING(br14);
-		OUT_RING(br09);
-		OUT_RING(br16);
-		OUT_RING(0);
-		ADVANCE_RING();
+        START_RING(6);
+        OUT_RING(br00);
+        OUT_RING(br13);
+        OUT_RING(br14);
+        OUT_RING(br09);
+        OUT_RING(br16);
+        OUT_RING(0);
+        ADVANCE_RING();
 
-		DO_FLUSH();
-		UNLOCK_HW
-	}
-	else
-		OOP_DoSuperMethod(cl, o, (OOP_Msg) msg);
+        DO_FLUSH();
+        UNLOCK_HW
+    }
+    else
+        OOP_DoSuperMethod(cl, o, (OOP_Msg) msg);
 
-	UNLOCK_BITMAP
+    UNLOCK_BITMAP
 }
 
 /* Unaccelerated functions */
 
 static inline int do_alpha(int a, int v)
 {
-	int tmp = a*v;
-	return ((tmp << 8) + tmp + 32768) >> 16;
+    int tmp = a*v;
+    return ((tmp << 8) + tmp + 32768) >> 16;
 }
 
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutAlphaImage)
@@ -1105,7 +1120,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutAlphaImage)
         ULONG y = msg->y;
         ULONG x;
 
-		/* We're not going to use the 2D engine now. Therefore, flush the chip */
+        /* We're not going to use the 2D engine now. Therefore, flush the chip */
         LOCK_HW
         DO_FLUSH();
         UNLOCK_HW
@@ -1269,7 +1284,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutAlphaImage)
         	}
         }
         else
-        	OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+            OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
     }
     else
     	OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
@@ -1518,117 +1533,117 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutImage)
 
 			    	if (pages)
 			    	{
-			    		LOCK_HW
+                                    LOCK_HW
 
-		    			/* Get two buffers in different GTT regions and _surely_ in different CPU cache lines */
-		    			uint32_t *buffer_1 = (uint32_t *)(((intptr_t)pages + 4095) & ~4095);
-		    			uint32_t *buffer_2 = &buffer_1[line_width / 4];
-		    			uint32_t *buffer_3 = &buffer_2[line_width / 4];
-		    			uint32_t *buffer_4 = &buffer_3[line_width / 4];
+                                    /* Get two buffers in different GTT regions and _surely_ in different CPU cache lines */
+                                    uint32_t *buffer_1 = (uint32_t *)(((intptr_t)pages + 4095) & ~4095);
+                                    uint32_t *buffer_2 = &buffer_1[line_width / 4];
+                                    uint32_t *buffer_3 = &buffer_2[line_width / 4];
+                                    uint32_t *buffer_4 = &buffer_3[line_width / 4];
 
-		    			uint32_t y;
-		    			const uint32_t height = msg->height;
-		    			uint8_t *src = msg->pixels;
-		    			uint32_t x_add = msg->modulo;
+                                    uint32_t y;
+                                    const uint32_t height = msg->height;
+                                    uint8_t *src = msg->pixels;
+                                    uint32_t x_add = msg->modulo;
 
-		        	    D(bug("[IntelGMA] Unknown PutImage(%d, %d) with buffers at %p\n", msg->width, msg->height, buffer_1));
+                                    D(bug("[IntelGMA] Unknown PutImage(%d, %d) with buffers at %p\n", msg->width, msg->height, buffer_1));
 
-		    			uint32_t *buffer[4] = { buffer_1, buffer_2, buffer_3, buffer_4 };
-		    			intptr_t virt[4] = { sd->ScratchArea, sd->ScratchArea + line_width,
-											 sd->ScratchArea + 2*line_width, sd->ScratchArea + 3*line_width  };
+                                    uint32_t *buffer[4] = { buffer_1, buffer_2, buffer_3, buffer_4 };
+                                    intptr_t virt[4] = { sd->ScratchArea, sd->ScratchArea + line_width,
+                                                                                     sd->ScratchArea + 2*line_width, sd->ScratchArea + 3*line_width  };
 
-		    			HIDDT_PixelFormat *srcpf, *dstpf;
+                                    HIDDT_PixelFormat *srcpf, *dstpf;
 
-		    			srcpf = (HIDDT_PixelFormat *)HIDD_Gfx_GetPixFmt(
-                            bm->drv, msg->pixFmt);
-		    			OOP_GetAttr(o, aHidd_BitMap_PixFmt, (APTR)&dstpf);
+                                    srcpf = (HIDDT_PixelFormat *)HIDD_DMEnum_GetPixFmt(
+                                        bm->dmenum, msg->pixFmt);
+                                    OOP_GetAttr(o, aHidd_BitMap_PixFmt, (APTR)&dstpf);
 
-		    			/* Attach memory, if necessary */
-		        		if (sd->AttachedMemory != (intptr_t)buffer_1 || sd->AttachedSize != 4 * line_width)
-		        		{
-		        			G45_AttachCacheableMemory(sd, (intptr_t)buffer_1, sd->ScratchArea, 4 * line_width);
-		        			sd->AttachedMemory = (intptr_t)buffer_1;
-		        			sd->AttachedSize = 4 * line_width;
-		        		}
+                                    /* Attach memory, if necessary */
+                                    if (sd->AttachedMemory != (intptr_t)buffer_1 || sd->AttachedSize != 4 * line_width)
+                                    {
+                                            G45_AttachCacheableMemory(sd, (intptr_t)buffer_1, sd->ScratchArea, 4 * line_width);
+                                            sd->AttachedMemory = (intptr_t)buffer_1;
+                                            sd->AttachedSize = 4 * line_width;
+                                    }
 
-		        		/* Both buffers are not busy */
-		        		writel(1, &sd->HardwareStatusPage[17]);
-		        		writel(1, &sd->HardwareStatusPage[18]);
-		        		writel(1, &sd->HardwareStatusPage[19]);
-		        		writel(1, &sd->HardwareStatusPage[20]);
+                                    /* Both buffers are not busy */
+                                    writel(1, &sd->HardwareStatusPage[17]);
+                                    writel(1, &sd->HardwareStatusPage[18]);
+                                    writel(1, &sd->HardwareStatusPage[19]);
+                                    writel(1, &sd->HardwareStatusPage[20]);
 
-		        		for (y=0; y < height; y++)
-		        		{
-		        			const uint8_t current = y & 3;
-							uint32_t *dst = buffer[current];
-							APTR _src = src;
+                                    for (y=0; y < height; y++)
+                                    {
+                                        const uint8_t current = y & 3;
+                                        uint32_t *dst = buffer[current];
+                                        APTR _src = src;
 
-							/* Wait until dst buffer is ready */
-							while(readl(&sd->HardwareStatusPage[17 + current]) == 0);
+                                        /* Wait until dst buffer is ready */
+                                        while(readl(&sd->HardwareStatusPage[17 + current]) == 0);
 
-							/* Convert! */
-							HIDD_BM_ConvertPixels(o, &_src, srcpf,
-                                msg->modulo, (APTR *)&dst, dstpf,
-                                msg->modulo, msg->width, 1, NULL);
+                                        /* Convert! */
+                                        HIDD_BM_ConvertPixels(o, &_src, srcpf,
+                                            msg->modulo, (APTR *)&dst, dstpf,
+                                            msg->modulo, msg->width, 1, NULL);
 
-							/* Mark buffer as busy */
-							writel(0, &sd->HardwareStatusPage[17 + current]);
+                                        /* Mark buffer as busy */
+                                        writel(0, &sd->HardwareStatusPage[17 + current]);
 
-							/* Prepare the Blit command */
-							uint32_t br00, br13, br14, br09, br11, br12;
+                                        /* Prepare the Blit command */
+                                        uint32_t br00, br13, br14, br09, br11, br12;
 
-							br00 = (2 << 29) | (0x43 << 22) | (4);
-							br00 |= 3 << 20;
+                                        br00 = (2 << 29) | (0x43 << 22) | (4);
+                                        br00 |= 3 << 20;
 
-							br13 = bm->pitch | ROP3_S;
-							br13 |= 3 << 24;
+                                        br13 = bm->pitch | ROP3_S;
+                                        br13 |= 3 << 24;
 
-							br14 = (msg->width * bm->bpp) | (1) << 16;
-							br09 = bm->framebuffer + bm->pitch * (msg->y + y) + bm->bpp * msg->x;
-							br11 = msg->width * bm->bpp;
-							br12 = virt[current];
+                                        br14 = (msg->width * bm->bpp) | (1) << 16;
+                                        br09 = bm->framebuffer + bm->pitch * (msg->y + y) + bm->bpp * msg->x;
+                                        br11 = msg->width * bm->bpp;
+                                        br12 = virt[current];
 
-							START_RING(12);
+                                        START_RING(12);
 
-							OUT_RING(br00);
-							OUT_RING(br13);
-							OUT_RING(br14);
-							OUT_RING(br09);
-							OUT_RING(br11);
-							OUT_RING(br12);
+                                        OUT_RING(br00);
+                                        OUT_RING(br13);
+                                        OUT_RING(br14);
+                                        OUT_RING(br09);
+                                        OUT_RING(br11);
+                                        OUT_RING(br12);
 
-							OUT_RING((4 << 23));
-							OUT_RING(0);
+                                        OUT_RING((4 << 23));
+                                        OUT_RING(0);
 
-							OUT_RING((0x21 << 23) | 1);
-							OUT_RING((17 + current) << 2);
-							OUT_RING(1);
-							OUT_RING(0);
+                                        OUT_RING((0x21 << 23) | 1);
+                                        OUT_RING((17 + current) << 2);
+                                        OUT_RING(1);
+                                        OUT_RING(0);
 
-							ADVANCE_RING();
+                                        ADVANCE_RING();
 
-							/*
-							 * Right now the buffer is busy. The commands will flush buffer and set the proper flag (17+current) back to 1.
-							 * During that time it is fully safe to advance the loop and work on another buffer with CPU.
-							 */
-							src += x_add;
-		        		}
+                                        /*
+                                         * Right now the buffer is busy. The commands will flush buffer and set the proper flag (17+current) back to 1.
+                                         * During that time it is fully safe to advance the loop and work on another buffer with CPU.
+                                         */
+                                        src += x_add;
+                                    }
 
-						/* Wait until both buffer are ready */
-						while(readl(&sd->HardwareStatusPage[17]) == 0);
-						while(readl(&sd->HardwareStatusPage[18]) == 0);
-						while(readl(&sd->HardwareStatusPage[19]) == 0);
-						while(readl(&sd->HardwareStatusPage[20]) == 0);
+                                    /* Wait until both buffer are ready */
+                                    while(readl(&sd->HardwareStatusPage[17]) == 0);
+                                    while(readl(&sd->HardwareStatusPage[18]) == 0);
+                                    while(readl(&sd->HardwareStatusPage[19]) == 0);
+                                    while(readl(&sd->HardwareStatusPage[20]) == 0);
 
-			    		UNLOCK_HW
+                                    UNLOCK_HW
 
-			    		FreeVecPooled(sd->MemPool, pages);
+                                    FreeVecPooled(sd->MemPool, pages);
 			    	}
 			    	else
-			        	OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+                                    OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 				}
 				else
-					OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+                                    OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 				break;
 		} /* switch(msg->pixFmt) */
     }
@@ -1766,12 +1781,14 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, GetImage)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     int done = 0;
+    IPTR VideoData;
 
     LOCK_BITMAP
 
 //    bug("[IntelGMA] GetImage(%d, %d, fmt %d)\n", msg->width, msg->height, msg->pixFmt);
 
-    IPTR VideoData = bm->framebuffer;
+     if (!(VideoData = bm->framebuffer))
+         return;
 
     if (bm->fbgfx)
     {

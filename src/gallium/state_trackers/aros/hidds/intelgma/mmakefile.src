@@ -7,10 +7,11 @@ include $(GALLIUM_PATH)/../aros/mesa3dgl/mesa.cfg
 
 IGMA_HIDD_SOURCES := \
             intelgma_init \
-            intelgma_gfxclass \
+            intelgma_hiddclass \
+            intelgma_displayclass \
             intelgma_i2cclass \
             intelgma_bitmapclass \
-            intelgma_lowlevel \
+            intelgma_support \
             intelgma_memory \
             intelgma_compositorclass \
             intelgma_startup \

@@ -4,7 +4,7 @@
 */
 
 #include <graphics/rastport.h>
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 #include <proto/alib.h>
 #include <proto/layers.h>
 #include <proto/graphics.h>

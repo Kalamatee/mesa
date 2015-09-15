@@ -14,13 +14,13 @@
 #include <aros/asmcall.h>
 #include <aros/symbolsets.h>
 #include <utility/tagitem.h>
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 #include <hidd/i2c.h>
 
 #include <stdint.h>
 #include <stdlib.h>
 
-#include "intelgma_gfx.h"
+#include "intelgma_hidd.h"
 #include "intelG45_regs.h"
 
 typedef struct {
@@ -569,7 +569,7 @@ void G45_SaveState(struct g45staticdata *sd, GMAState_t *state)
     D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
 }
 
-IPTR AllocBitmapArea(struct g45staticdata *sd, ULONG width, ULONG height, ULONG bpp, BOOL clear)
+IPTR AllocBitmapArea(struct g45staticdata *sd, ULONG width, ULONG height, ULONG bpp)
 {
     IPTR result;
 
@@ -579,8 +579,6 @@ IPTR AllocBitmapArea(struct g45staticdata *sd, ULONG width, ULONG height, ULONG 
     LOCK_HW
 
     result = (IPTR)AllocGfxMem(sd, 1024 + ((width * bpp + 63) & ~63) * height);
-
-    UNLOCK_HW
 
     if (result)
     	result +=512;
@@ -594,21 +592,9 @@ IPTR AllocBitmapArea(struct g45staticdata *sd, ULONG width, ULONG height, ULONG 
     if (result == 0)
         result--;
     else
-    {
-#if (0)
-        if (clear)
-        {
-            uint8_t i,b,
-                *pixel = (uint8_t *)result;
-
-            for(i = 0; i < width * height; i++)
-                for(b = 0; b < bpp; b++)
-                    *pixel++ = 0;
-        }
-#endif
         result -= (IPTR)sd->Card.Framebuffer;
-    }
 
+    UNLOCK_HW
 
     /* Generic thing. Will be extended later */
     return result;

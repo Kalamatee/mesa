@@ -13,6 +13,6 @@ struct DisplayDevice
     struct TagItem *dd_SyncModes;
 };
 
-extern void EDIDParse(APTR edidpool, UBYTE *edid_data, struct TagItem **tagsptr, struct TagItem *poolptr);
+extern void EDIDParse(APTR edidpool, UBYTE *edid_data, struct TagItem **tagsptr, struct TagItem *poolptr, char **name);
 
 #endif /* _DISPLAY_H_ */

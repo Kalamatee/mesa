@@ -46,6 +46,7 @@ struct GalliumBase
     struct Library              *fallbackmodule;
 
     OOP_Class                   *basegallium;
+    OOP_AttrBase                displayAttrBase;
     OOP_AttrBase                galliumAttrBase;
     OOP_AttrBase                bmAttrBase;
 
@@ -56,6 +57,8 @@ struct GalliumBase
 
 #define GB(lb)  ((struct GalliumBase *)lb)
 
+#undef HiddDisplayAttrBase
+#define HiddDisplayAttrBase      (GB(GalliumBase)->displayAttrBase)
 #undef HiddBitMapAttrBase
 #define HiddBitMapAttrBase      (GB(GalliumBase)->bmAttrBase)
 #undef HiddGalliumAttrBase

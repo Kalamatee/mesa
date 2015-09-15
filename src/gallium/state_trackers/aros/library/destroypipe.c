@@ -9,7 +9,7 @@
 #include <proto/utility.h>
 #include <proto/intuition.h>
 
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 
 #include <stdio.h>
 

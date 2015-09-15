@@ -7,7 +7,7 @@
 #include <proto/exec.h>
 #include <proto/oop.h>
 
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 
 #include LC_LIBDEFS_FILE
 #include "gallium_intern.h"
@@ -16,6 +16,10 @@ CONST_STRPTR softpipe_str = "softpipe";
 
 static int Init(LIBBASETYPEPTR LIBBASE)
 {
+    LIBBASE->displayAttrBase = OOP_ObtainAttrBase((STRPTR)IID_Hidd_Display);
+    if (!LIBBASE->displayAttrBase)
+        return FALSE;
+
     LIBBASE->bmAttrBase = OOP_ObtainAttrBase((STRPTR)IID_Hidd_BitMap);
     if (!LIBBASE->bmAttrBase)
         return FALSE;
@@ -37,11 +41,15 @@ static int Init(LIBBASETYPEPTR LIBBASE)
 
 static int Expunge(LIBBASETYPEPTR LIBBASE)
 {
+    
+    if (LIBBASE->galliumAttrBase)
+        OOP_ReleaseAttrBase((STRPTR)IID_Hidd_Gallium);
+
     if (LIBBASE->bmAttrBase)
         OOP_ReleaseAttrBase((STRPTR)IID_Hidd_BitMap);
 
-    if (LIBBASE->galliumAttrBase)
-        OOP_ReleaseAttrBase((STRPTR)IID_Hidd_Gallium);
+    if (LIBBASE->displayAttrBase)
+        OOP_ReleaseAttrBase((STRPTR)IID_Hidd_Display);
 
     if (LIBBASE->fallbackmodule)
         CloseLibrary(LIBBASE->fallbackmodule);

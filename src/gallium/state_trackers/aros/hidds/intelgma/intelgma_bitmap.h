@@ -18,8 +18,10 @@ extern OOP_AttrBase HiddBitMapIntelGMAAttrBase;
 typedef struct HiddBitMapIntelGMAData {
     struct SignalSemaphore      bmLock;
 
-    OOP_Object                  *drv;        // Gfx OOP Object
-    OOP_Object                  *bitmap;        // BitMap OOP Object
+    OOP_Object                  *display;        // cached display object
+    OOP_Object                  *dmenum;
+
+    OOP_Object                  *bitmap;        // BitMap Object
     intptr_t	                framebuffer;    // Points to pixel data
     uint16_t	                width;          // Bitmap width
     uint16_t	                height;         // Bitmap height
@@ -37,9 +39,9 @@ typedef struct HiddBitMapIntelGMAData {
     /* Information connected with display */
 #if defined(INTELGMA_COMPOSIT)
     OOP_Object                  *compositor;   /* Compositor object used by bitmap */
-#endif
     LONG                        xoffset;        /* Offset to bitmap point that is displayed as (0,0) on screen */
     LONG                        yoffset;        /* Offset to bitmap point that is displayed as (0,0) on screen */
+#endif
     ULONG                       fbid;           /* Contains ID under which bitmap is registered as framebuffer or 
                                                    0 otherwise */
 } GMABitMap_t;
