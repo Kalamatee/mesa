@@ -30,7 +30,7 @@
 #include "intelG45_regs.h"
 
 #define sd ((struct g45staticdata*)SD(cl))
-extern struct Library *UtilityBase;
+extern struct UtilityBase *UtilityBase;
 
 OOP_Object *METHOD(IntelGMA, Root, New)
 {
