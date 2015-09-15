@@ -34,7 +34,7 @@
 #include <aros/debug.h>
 
 #include <proto/exec.h>
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 
 #include "intelgma_intern.h"
 #include "intelG45_regs.h"

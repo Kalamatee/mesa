@@ -12,7 +12,7 @@
 
 #include <inttypes.h>
 
-#include "intelgma_gfx.h"
+#include "intelgma_hidd.h"
 #include "intelG45_regs.h"
 
 static void G45_AttachMemory(struct g45staticdata *sd, intptr_t physical,

@@ -13,11 +13,15 @@
 #include <exec/memory.h>
 #include <devices/timer.h>
 #include <oop/oop.h>
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 #include <hidd/pci.h>
 #include <hidd/i2c.h>
 
 #include <stdint.h>
+
+#ifndef INTELGMA_DISPLAY_H_
+#include "intelgma_display.h"
+#endif
 
 #ifndef INTELGMA_BITMAP_H_
 #include "intelgma_bitmap.h"
@@ -29,8 +33,6 @@
 
 #define CLID_Hidd_Gfx_IntelGMA		"hidd.gfx.intelgma"
 #define IID_Hidd_Gfx_IntelGMA		"hidd.gfx.intelgma"
-
-extern OOP_AttrBase HiddGfxIntelGMAAttrBase;
 
 #define KBYTES                          1024
 #define MBYTES                          (1024 * 1024)
@@ -71,6 +73,8 @@ struct g45chip {
 
 struct HiddGfxIntelGMAData
 {
+    OOP_Object *gma_display;
+    OOP_Object *gma_dmenum;
     APTR gma_GalliumData;
 
     /* TODO: Move driver instance data here from staticdata */
@@ -114,6 +118,7 @@ struct g45staticdata
     uint32_t				DDCPort;
 
     OOP_Class *				IntelGMAClass;
+    OOP_Class *                         displayclass;
     OOP_Class *				IntelI2C;
     OOP_Class *				BMClass;
 #if defined(INTELGMA_COMPOSIT)
@@ -177,18 +182,6 @@ struct g45staticdata
     LONG pointery;
 };
 
-enum
-{
-    aoHidd_Gfx_IntelGMA_GalliumData = 0,
-
-    num_Hidd_Gfx_IntelGMA_Attrs
-};
-
-#define aHidd_Gfx_IntelGMA_GalliumData (HiddBitMapIntelGMAAttrBase + aoHidd_Gfx_IntelGMA_GalliumData)
-
-#define IS_INTELGMA_ATTR(attr, idx) \
-    (((idx) = (attr) - HiddGfxIntelGMAAttrBase) < num_Hidd_Gfx_IntelGMA_Attrs)
-
 #define SD(cl) ((struct g45staticdata *)cl->UserData)
 
 #define METHOD(base, id, name) \
@@ -204,6 +197,7 @@ enum
 #define UNLOCK_HW        { ReleaseSemaphore(&sd->HWLock); }
 
 extern const struct OOP_InterfaceDescr IntelGMA_ifdescr[];
+extern const struct OOP_InterfaceDescr IntelGMADisplay_ifdescr[];
 extern const struct OOP_InterfaceDescr BitMapIntelGMA_ifdescr[];
 extern const struct OOP_InterfaceDescr INTELI2C_ifdescr[];
 
@@ -222,7 +216,7 @@ void G45_InitMode(struct g45staticdata *sd, GMAState_t *state,
         uint16_t hdisp, uint16_t vdisp, uint16_t hstart, uint16_t hend, uint16_t htotal,
         uint16_t vstart, uint16_t vend, uint16_t vtotal, uint32_t flags);
 void G45_LoadState(struct g45staticdata *sd, GMAState_t *state);
-IPTR AllocBitmapArea(struct g45staticdata *sd, ULONG width, ULONG height, ULONG bpp, BOOL clear);
+IPTR AllocBitmapArea(struct g45staticdata *sd, ULONG width, ULONG height, ULONG bpp);
 VOID FreeBitmapArea(struct g45staticdata *sd, IPTR bmp, ULONG width, ULONG height, ULONG bpp);
 VOID delay_ms(struct g45staticdata *sd, uint32_t msec);
 VOID delay_us(struct g45staticdata *sd, uint32_t usec);

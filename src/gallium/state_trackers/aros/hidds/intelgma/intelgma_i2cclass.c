@@ -14,7 +14,7 @@
 #include <stdint.h>
 
  
-#include "intelgma_gfx.h"
+#include "intelgma_hidd.h"
 #include "intelG45_regs.h"
 
 void METHOD(INTELI2C, Hidd_I2C, PutBits)

@@ -10,7 +10,7 @@ include $(SRCDIR)/$(CURDIR)/../mesa.cfg
 include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
 
 #MM- mesa3dgl-linklibs : mesa3dgl-linklibs-galliumauxiliary
-#MM mesa3dgl-linklibs-galliumauxiliary : mesa3dgl-linklibs-glsl
+#MM mesa3dgl-linklibs-galliumauxiliary : workbench-libs-dxtn-includes mesa3dgl-linklibs-glsl
 
 MESA3DGL_GALLIUM_AUXILIARY_C_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(filter %.c, $(C_SOURCES) $(NIR_SOURCES))))
 

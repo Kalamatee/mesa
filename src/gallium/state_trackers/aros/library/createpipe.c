@@ -9,7 +9,7 @@
 #include <proto/utility.h>
 #include <proto/intuition.h>
 
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 
 #include <stdio.h>
 
@@ -87,14 +87,15 @@
     if (friendbm  && IS_HIDD_BM(friendbm))
     {
         OOP_Object *bmObj = HIDD_BM_OBJ(friendbm);
-        OOP_Object *gfxdrv = NULL;
-
         if (bmObj)
         {
-            OOP_GetAttr(bmObj, aHidd_BitMap_GfxHidd, &gfxdrv);
+            OOP_Object *displayhidd;
+            OOP_GetAttr(bmObj, aHidd_BitMap_Display, &displayhidd);
 
-            if (gfxdrv)
-                *driver = HIDD_Gfx_CreateObject(gfxdrv, GB(GalliumBase)->basegallium, galliumTags);
+            if (displayhidd)
+            {
+                *driver = HIDD_Display_CreateObject(displayhidd, GB(GalliumBase)->basegallium, galliumTags);
+            }
         }
     }
 

@@ -3,7 +3,7 @@
     $Id: intelG45_init.c 50703 2015-05-18 00:54:09Z neil $
 */
 
-#define DEBUG 0
+#define DEBUG 1
 #include <aros/debug.h>
 
 #include <proto/exec.h>
@@ -13,14 +13,14 @@
 #include <aros/symbolsets.h>
 #include <oop/oop.h>
 #include <graphics/driver.h>
-#include <hidd/graphics.h>
+#include <hidd/gfx.h>
 #include <hidd/pci.h>
 #include <hidd/i2c.h>
 
 #include <strings.h>
 #include <stdlib.h>
 
-#include "intelgma_gfx.h"
+#include "intelgma_hidd.h"
 #include "intelG45_regs.h"
 
 #if defined(INTELGMA_COMPOSIT)
@@ -537,4 +537,4 @@ int G45_Init(struct g45staticdata *sd)
     return FALSE;
 }
 
-ADD2LIBS((STRPTR)"graphics.hidd", 0, static struct Library *, __gfxbase);
+ADD2LIBS((STRPTR)"gfx.hidd", 0, static struct Library *, __gfxbase);

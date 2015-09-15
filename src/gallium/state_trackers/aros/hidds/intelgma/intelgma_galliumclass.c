@@ -19,7 +19,7 @@
 #include <hidd/gallium.h>
 #include <gallium/gallium.h>
 
-#include "intelgma_gfx.h"
+#include "intelgma_hidd.h"
 #include "intelgma_gallium.h"
 #include "intelgma_winsys.h"
 #include "intelG45_regs.h"
