@@ -840,7 +840,9 @@ void fs_visitor::compute_clip_distance(gl_clip_plane *clip_planes)
    const fs_builder abld = bld.annotate("user clip distances");
 
    this->outputs[VARYING_SLOT_CLIP_DIST0] = vgrf(glsl_type::vec4_type);
+   this->output_components[VARYING_SLOT_CLIP_DIST0] = 4;
    this->outputs[VARYING_SLOT_CLIP_DIST1] = vgrf(glsl_type::vec4_type);
+   this->output_components[VARYING_SLOT_CLIP_DIST1] = 4;
 
    for (int i = 0; i < key->nr_userclip_plane_consts; i++) {
       fs_reg u = userplane[i];
@@ -972,8 +974,10 @@ fs_visitor::emit_urb_writes()
                sources[length++] = reg;
             }
          } else {
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < output_components[varying]; i++)
                sources[length++] = offset(this->outputs[varying], bld, i);
+            for (int i = output_components[varying]; i < 4; i++)
+               sources[length++] = fs_reg(0);
          }
          break;
       }
@@ -1041,12 +1045,14 @@ fs_visitor::emit_barrier()
 
    fs_reg payload = fs_reg(GRF, alloc.allocate(1), BRW_REGISTER_TYPE_UD);
 
+   const fs_builder pbld = bld.exec_all().group(8, 0);
+
    /* Clear the message payload */
-   bld.exec_all().MOV(payload, fs_reg(0u));
+   pbld.MOV(payload, fs_reg(0u));
 
    /* Copy bits 27:24 of r0.2 (barrier id) to the message payload reg.2 */
    fs_reg r0_2 = fs_reg(retype(brw_vec1_grf(0, 2), BRW_REGISTER_TYPE_UD));
-   bld.exec_all().AND(component(payload, 2), r0_2, fs_reg(0x0f000000u));
+   pbld.AND(component(payload, 2), r0_2, fs_reg(0x0f000000u));
 
    /* Emit a gateway "barrier" message using the payload we set up, followed
     * by a wait instruction.

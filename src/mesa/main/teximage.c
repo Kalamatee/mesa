@@ -534,7 +534,8 @@ _mesa_base_tex_format( struct gl_context *ctx, GLint internalFormat )
       }
    }
 
-   if (ctx->Extensions.EXT_texture_compression_latc) {
+   if (ctx->API == API_OPENGL_COMPAT &&
+       ctx->Extensions.EXT_texture_compression_latc) {
       switch (internalFormat) {
       case GL_COMPRESSED_LUMINANCE_LATC1_EXT:
       case GL_COMPRESSED_SIGNED_LUMINANCE_LATC1_EXT:
@@ -547,7 +548,8 @@ _mesa_base_tex_format( struct gl_context *ctx, GLint internalFormat )
       }
    }
 
-   if (ctx->Extensions.ATI_texture_compression_3dc) {
+   if (ctx->API == API_OPENGL_COMPAT &&
+       ctx->Extensions.ATI_texture_compression_3dc) {
       switch (internalFormat) {
       case GL_COMPRESSED_LUMINANCE_ALPHA_3DC_ATI:
          return GL_LUMINANCE_ALPHA;
@@ -556,7 +558,8 @@ _mesa_base_tex_format( struct gl_context *ctx, GLint internalFormat )
       }
    }
 
-   if (ctx->Extensions.OES_compressed_ETC1_RGB8_texture) {
+   if (_mesa_is_gles(ctx) &&
+      ctx->Extensions.OES_compressed_ETC1_RGB8_texture) {
       switch (internalFormat) {
       case GL_ETC1_RGB8_OES:
          return GL_RGB;
