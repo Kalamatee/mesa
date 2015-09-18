@@ -1427,12 +1427,38 @@ index_ssa_block(nir_block *block, void *state)
    return true;
 }
 
+/**
+ * The indices are applied top-to-bottom which has the very nice property
+ * that, if A dominates B, then A->index <= B->index.
+ */
 void
 nir_index_ssa_defs(nir_function_impl *impl)
 {
    unsigned index = 0;
    nir_foreach_block(impl, index_ssa_block, &index);
    impl->ssa_alloc = index;
+}
+
+static bool
+index_instrs_block(nir_block *block, void *state)
+{
+   unsigned *index = state;
+   nir_foreach_instr(block, instr)
+      instr->index = (*index)++;
+
+   return true;
+}
+
+/**
+ * The indices are applied top-to-bottom which has the very nice property
+ * that, if A dominates B, then A->index <= B->index.
+ */
+unsigned
+nir_index_instrs(nir_function_impl *impl)
+{
+   unsigned index = 0;
+   nir_foreach_block(impl, index_instrs_block, &index);
+   return index;
 }
 
 gl_system_value

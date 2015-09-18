@@ -278,6 +278,7 @@ typedef struct {
        *   - Fragment shader output: one of the values from \c gl_frag_result.
        *   - Uniforms: Per-stage uniform slot number for default uniform block.
        *   - Uniforms: Index within the uniform block definition for UBO members.
+       *   - Non-UBO Uniforms: uniform slot number.
        *   - Other: This field is not currently used.
        *
        * If the variable is a uniform, shader input, or shader output, and the
@@ -416,6 +417,9 @@ typedef struct nir_instr {
    struct exec_node node;
    nir_instr_type type;
    struct nir_block *block;
+
+   /** generic instruction index. */
+   unsigned index;
 
    /* A temporary for optimization and analysis passes to use for storing
     * flags.  For instance, DCE uses this to store the "dead/live" info.
@@ -1772,6 +1776,7 @@ nir_loop *nir_block_get_following_loop(nir_block *block);
 void nir_index_local_regs(nir_function_impl *impl);
 void nir_index_global_regs(nir_shader *shader);
 void nir_index_ssa_defs(nir_function_impl *impl);
+unsigned nir_index_instrs(nir_function_impl *impl);
 
 void nir_index_blocks(nir_function_impl *impl);
 
@@ -1820,6 +1825,7 @@ void nir_lower_vars_to_ssa(nir_shader *shader);
 
 void nir_remove_dead_variables(nir_shader *shader);
 
+void nir_move_vec_src_uses_to_dest(nir_shader *shader);
 void nir_lower_vec_to_movs(nir_shader *shader);
 void nir_lower_alu_to_scalar(nir_shader *shader);
 void nir_lower_load_const_to_scalar(nir_shader *shader);
@@ -1832,6 +1838,9 @@ void nir_lower_samplers(nir_shader *shader,
 void nir_lower_system_values(nir_shader *shader);
 void nir_lower_tex_projector(nir_shader *shader);
 void nir_lower_idiv(nir_shader *shader);
+
+void nir_lower_clip_vs(nir_shader *shader, unsigned ucp_enables);
+void nir_lower_clip_fs(nir_shader *shader, unsigned ucp_enables);
 
 void nir_lower_atomics(nir_shader *shader);
 void nir_lower_to_source_mods(nir_shader *shader);

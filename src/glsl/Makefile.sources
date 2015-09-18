@@ -35,6 +35,7 @@ NIR_FILES = \
 	nir/nir_live_variables.c \
 	nir/nir_lower_alu_to_scalar.c \
 	nir/nir_lower_atomics.c \
+	nir/nir_lower_clip.c \
 	nir/nir_lower_global_vars_to_local.c \
 	nir/nir_lower_load_const_to_scalar.c \
 	nir/nir_lower_locals_to_regs.c \
@@ -50,6 +51,7 @@ NIR_FILES = \
 	nir/nir_lower_var_copies.c \
 	nir/nir_lower_vec_to_movs.c \
 	nir/nir_metadata.c \
+	nir/nir_move_vec_src_uses_to_dest.c \
 	nir/nir_normalize_cubemap_coords.c \
 	nir/nir_opt_constant_folding.c \
 	nir/nir_opt_copy_propagate.c \
