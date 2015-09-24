@@ -32,6 +32,11 @@
  * moves with partial writes.
  */
 
+struct vec_to_movs_state {
+   nir_function_impl *impl;
+   bool progress;
+};
+
 static bool
 src_matches_dest_reg(nir_dest *dest, nir_src *src)
 {
@@ -63,18 +68,40 @@ insert_mov(nir_alu_instr *vec, unsigned start_idx, nir_shader *shader)
 
    mov->dest.write_mask = (1u << start_idx);
    mov->src[0].swizzle[start_idx] = vec->src[start_idx].swizzle[0];
+   mov->src[0].negate = vec->src[start_idx].negate;
+   mov->src[0].abs = vec->src[start_idx].abs;
 
    for (unsigned i = start_idx + 1; i < 4; i++) {
       if (!(vec->dest.write_mask & (1 << i)))
          continue;
 
-      if (nir_srcs_equal(vec->src[i].src, vec->src[start_idx].src)) {
+      if (nir_srcs_equal(vec->src[i].src, vec->src[start_idx].src) &&
+          vec->src[i].negate == vec->src[start_idx].negate &&
+          vec->src[i].abs == vec->src[start_idx].abs) {
          mov->dest.write_mask |= (1 << i);
          mov->src[0].swizzle[i] = vec->src[i].swizzle[0];
       }
    }
 
-   nir_instr_insert_before(&vec->instr, &mov->instr);
+   /* In some situations (if the vecN is involved in a phi-web), we can end
+    * up with a mov from a register to itself.  Some of those channels may end
+    * up doing nothing and there's no reason to have them as part of the mov.
+    */
+   if (src_matches_dest_reg(&mov->dest.dest, &mov->src[0].src) &&
+       !mov->src[0].abs && !mov->src[0].negate) {
+      for (unsigned i = 0; i < 4; i++) {
+         if (mov->src[0].swizzle[i] == i) {
+            mov->dest.write_mask &= ~(1 << i);
+         }
+      }
+   }
+
+   /* Only emit the instruction if it actually does something */
+   if (mov->dest.write_mask) {
+      nir_instr_insert_before(&vec->instr, &mov->instr);
+   } else {
+      ralloc_free(mov);
+   }
 
    return mov->dest.write_mask;
 }
@@ -84,7 +111,8 @@ has_replicated_dest(nir_alu_instr *alu)
 {
    return alu->op == nir_op_fdot_replicated2 ||
           alu->op == nir_op_fdot_replicated3 ||
-          alu->op == nir_op_fdot_replicated4;
+          alu->op == nir_op_fdot_replicated4 ||
+          alu->op == nir_op_fdph_replicated;
 }
 
 /* Attempts to coalesce the "move" from the given source of the vec to the
@@ -185,9 +213,10 @@ try_coalesce(nir_alu_instr *vec, unsigned start_idx, nir_shader *shader)
 }
 
 static bool
-lower_vec_to_movs_block(nir_block *block, void *void_impl)
+lower_vec_to_movs_block(nir_block *block, void *void_state)
 {
-   nir_function_impl *impl = void_impl;
+   struct vec_to_movs_state *state = void_state;
+   nir_function_impl *impl = state->impl;
    nir_shader *shader = impl->overload->function->shader;
 
    nir_foreach_instr_safe(block, instr) {
@@ -246,22 +275,31 @@ lower_vec_to_movs_block(nir_block *block, void *void_impl)
 
       nir_instr_remove(&vec->instr);
       ralloc_free(vec);
+      state->progress = true;
    }
 
    return true;
 }
 
-static void
+static bool
 nir_lower_vec_to_movs_impl(nir_function_impl *impl)
 {
-   nir_foreach_block(impl, lower_vec_to_movs_block, impl);
+   struct vec_to_movs_state state = { impl, false };
+
+   nir_foreach_block(impl, lower_vec_to_movs_block, &state);
+
+   return state.progress;
 }
 
-void
+bool
 nir_lower_vec_to_movs(nir_shader *shader)
 {
+   bool progress = false;
+
    nir_foreach_overload(shader, overload) {
       if (overload->impl)
-         nir_lower_vec_to_movs_impl(overload->impl);
+         progress = nir_lower_vec_to_movs_impl(overload->impl) || progress;
    }
+
+   return progress;
 }

@@ -249,10 +249,25 @@ try_constant_propagate(const struct brw_device_info *devinfo,
 }
 
 static bool
+can_change_source_types(vec4_instruction *inst)
+{
+   return inst->dst.type == inst->src[0].type &&
+      !inst->src[0].abs && !inst->src[0].negate && !inst->saturate &&
+      (inst->opcode == BRW_OPCODE_MOV ||
+       (inst->opcode == BRW_OPCODE_SEL &&
+        inst->dst.type == inst->src[1].type &&
+        inst->predicate != BRW_PREDICATE_NONE &&
+        !inst->src[1].abs && !inst->src[1].negate));
+}
+
+static bool
 try_copy_propagate(const struct brw_device_info *devinfo,
                    vec4_instruction *inst,
                    int arg, struct copy_entry *entry)
 {
+   /* Build up the value we are propagating as if it were the source of a
+    * single MOV
+    */
    /* For constant propagation, we only handle the same constant
     * across all 4 channels.  Some day, we should handle the 8-bit
     * float vector format, which would let us constant propagate
@@ -279,9 +294,9 @@ try_copy_propagate(const struct brw_device_info *devinfo,
    for (int i = 0; i < 4; i++) {
       s[i] = BRW_GET_SWZ(entry->value[i]->swizzle, i);
    }
-   value.swizzle = brw_compose_swizzle(inst->src[arg].swizzle,
-                                       BRW_SWIZZLE4(s[0], s[1], s[2], s[3]));
+   value.swizzle = BRW_SWIZZLE4(s[0], s[1], s[2], s[3]);
 
+   /* Check that we can propagate that value */
    if (value.file != UNIFORM &&
        value.file != GRF &&
        value.file != ATTR)
@@ -292,13 +307,6 @@ try_copy_propagate(const struct brw_device_info *devinfo,
       return false;
    }
 
-   if (inst->src[arg].abs) {
-      value.negate = false;
-      value.abs = true;
-   }
-   if (inst->src[arg].negate)
-      value.negate = !value.negate;
-
    bool has_source_modifiers = value.negate || value.abs;
 
    /* gen6 math and gen7+ SENDs from GRFs ignore source modifiers on
@@ -308,7 +316,9 @@ try_copy_propagate(const struct brw_device_info *devinfo,
         value.swizzle != BRW_SWIZZLE_XYZW) && !inst->can_do_source_mods(devinfo))
       return false;
 
-   if (has_source_modifiers && value.type != inst->src[arg].type)
+   if (has_source_modifiers &&
+       value.type != inst->src[arg].type &&
+       !can_change_source_types(inst))
       return false;
 
    if (has_source_modifiers &&
@@ -362,7 +372,27 @@ try_copy_propagate(const struct brw_device_info *devinfo,
       }
    }
 
-   value.type = inst->src[arg].type;
+   /* Build the final value */
+   if (inst->src[arg].abs) {
+      value.negate = false;
+      value.abs = true;
+   }
+   if (inst->src[arg].negate)
+      value.negate = !value.negate;
+
+   value.swizzle = brw_compose_swizzle(inst->src[arg].swizzle,
+                                       value.swizzle);
+   if (has_source_modifiers &&
+       value.type != inst->src[arg].type) {
+      assert(can_change_source_types(inst));
+      for (int i = 0; i < 3; i++) {
+         inst->src[i].type = value.type;
+      }
+      inst->dst.type = value.type;
+   } else {
+      value.type = inst->src[arg].type;
+   }
+
    inst->src[arg] = value;
    return true;
 }

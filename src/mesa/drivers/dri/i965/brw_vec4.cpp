@@ -941,10 +941,18 @@ vec4_visitor::opt_set_dependency_control()
 }
 
 bool
-vec4_instruction::can_reswizzle(int dst_writemask,
+vec4_instruction::can_reswizzle(const struct brw_device_info *devinfo,
+                                int dst_writemask,
                                 int swizzle,
                                 int swizzle_mask)
 {
+   /* Gen6 MATH instructions can not execute in align16 mode, so swizzles
+    * or writemasking are not allowed.
+    */
+   if (devinfo->gen == 6 && is_math() &&
+       (swizzle != BRW_SWIZZLE_XYZW || dst_writemask != WRITEMASK_XYZW))
+      return false;
+
    /* If this instruction sets anything not referenced by swizzle, then we'd
     * totally break it when we reswizzle.
     */
@@ -1021,6 +1029,28 @@ vec4_visitor::opt_register_coalesce()
 	  inst->src[0].abs || inst->src[0].negate || inst->src[0].reladdr)
 	 continue;
 
+      /* Remove no-op MOVs */
+      if (inst->dst.file == inst->src[0].file &&
+          inst->dst.reg == inst->src[0].reg &&
+          inst->dst.reg_offset == inst->src[0].reg_offset) {
+         bool is_nop_mov = true;
+
+         for (unsigned c = 0; c < 4; c++) {
+            if ((inst->dst.writemask & (1 << c)) == 0)
+               continue;
+
+            if (BRW_GET_SWZ(inst->src[0].swizzle, c) != c) {
+               is_nop_mov = false;
+               break;
+            }
+         }
+
+         if (is_nop_mov) {
+            inst->remove(block);
+            continue;
+         }
+      }
+
       bool to_mrf = (inst->dst.file == MRF);
 
       /* Can't coalesce this GRF if someone else was going to
@@ -1077,7 +1107,7 @@ vec4_visitor::opt_register_coalesce()
                break;
 
             /* If we can't handle the swizzle, bail. */
-            if (!scan_inst->can_reswizzle(inst->dst.writemask,
+            if (!scan_inst->can_reswizzle(devinfo, inst->dst.writemask,
                                           inst->src[0].swizzle,
                                           chans_needed)) {
                break;

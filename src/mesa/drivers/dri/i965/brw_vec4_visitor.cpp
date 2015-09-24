@@ -26,6 +26,8 @@
 #include "glsl/ir_uniform.h"
 #include "program/sampler.h"
 
+#define FIRST_SPILL_MRF(gen) (gen == 6 ? 21 : 13)
+
 namespace brw {
 
 vec4_instruction::vec4_instruction(enum opcode opcode, const dst_reg &dst,
@@ -256,7 +258,7 @@ vec4_visitor::SCRATCH_READ(const dst_reg &dst, const src_reg &index)
 
    inst = new(mem_ctx) vec4_instruction(SHADER_OPCODE_GEN4_SCRATCH_READ,
 					dst, index);
-   inst->base_mrf = 14;
+   inst->base_mrf = FIRST_SPILL_MRF(devinfo->gen) + 1;
    inst->mlen = 2;
 
    return inst;
@@ -270,7 +272,7 @@ vec4_visitor::SCRATCH_WRITE(const dst_reg &dst, const src_reg &src,
 
    inst = new(mem_ctx) vec4_instruction(SHADER_OPCODE_GEN4_SCRATCH_WRITE,
 					dst, src, index);
-   inst->base_mrf = 13;
+   inst->base_mrf = FIRST_SPILL_MRF(devinfo->gen);
    inst->mlen = 3;
 
    return inst;
@@ -1384,7 +1386,7 @@ vec4_visitor::emit_pull_constant_load_reg(dst_reg dst,
                                            dst,
                                            surf_index,
                                            offset_reg);
-      pull->base_mrf = 14;
+      pull->base_mrf = FIRST_SPILL_MRF(devinfo->gen) + 1;
       pull->mlen = 1;
    }
 
@@ -3284,7 +3286,7 @@ vec4_visitor::emit_vertex()
     * may need to unspill a register or load from an array.  Those
     * reads would use MRFs 14-15.
     */
-   int max_usable_mrf = 13;
+   int max_usable_mrf = FIRST_SPILL_MRF(devinfo->gen);
 
    /* The following assertion verifies that max_usable_mrf causes an
     * even-numbered amount of URB write data, which will meet gen6's
@@ -3318,9 +3320,10 @@ vec4_visitor::emit_vertex()
                        prog_data->vue_map.slot_to_varying[slot]);
 
          /* If this was max_usable_mrf, we can't fit anything more into this
-          * URB WRITE.
+          * URB WRITE. Same thing if we reached the maximum length available.
           */
-         if (mrf > max_usable_mrf) {
+         if (mrf > max_usable_mrf ||
+             align_interleaved_urb_mlen(devinfo, mrf - base_mrf + 1) > BRW_MAX_MSG_LENGTH) {
             slot++;
             break;
          }

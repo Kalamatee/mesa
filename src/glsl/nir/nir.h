@@ -1455,13 +1455,13 @@ typedef struct nir_shader_compiler_options {
 } nir_shader_compiler_options;
 
 typedef struct nir_shader {
-   /** hash table of name -> uniform nir_variable */
+   /** list of uniforms (nir_variable) */
    struct exec_list uniforms;
 
-   /** hash table of name -> input nir_variable */
+   /** list of inputs (nir_variable) */
    struct exec_list inputs;
 
-   /** hash table of name -> output nir_variable */
+   /** list of outputs (nir_variable) */
    struct exec_list outputs;
 
    /** Set of driver-specific options for the shader.
@@ -1471,10 +1471,10 @@ typedef struct nir_shader {
     */
    const struct nir_shader_compiler_options *options;
 
-   /** list of global variables in the shader */
+   /** list of global variables in the shader (nir_variable) */
    struct exec_list globals;
 
-   /** list of system value variables in the shader */
+   /** list of system value variables in the shader (nir_variable) */
    struct exec_list system_values;
 
    struct exec_list functions; /** < list of nir_function */
@@ -1804,14 +1804,14 @@ void nir_dump_dom_frontier(nir_shader *shader, FILE *fp);
 void nir_dump_cfg_impl(nir_function_impl *impl, FILE *fp);
 void nir_dump_cfg(nir_shader *shader, FILE *fp);
 
-void nir_split_var_copies(nir_shader *shader);
+bool nir_split_var_copies(nir_shader *shader);
 
 void nir_lower_var_copy_instr(nir_intrinsic_instr *copy, void *mem_ctx);
 void nir_lower_var_copies(nir_shader *shader);
 
-void nir_lower_global_vars_to_local(nir_shader *shader);
+bool nir_lower_global_vars_to_local(nir_shader *shader);
 
-void nir_lower_locals_to_regs(nir_shader *shader);
+bool nir_lower_locals_to_regs(nir_shader *shader);
 
 void nir_lower_outputs_to_temporaries(nir_shader *shader);
 
@@ -1823,10 +1823,10 @@ void nir_lower_io(nir_shader *shader,
                   int (*type_size)(const struct glsl_type *));
 void nir_lower_vars_to_ssa(nir_shader *shader);
 
-void nir_remove_dead_variables(nir_shader *shader);
+bool nir_remove_dead_variables(nir_shader *shader);
 
 void nir_move_vec_src_uses_to_dest(nir_shader *shader);
-void nir_lower_vec_to_movs(nir_shader *shader);
+bool nir_lower_vec_to_movs(nir_shader *shader);
 void nir_lower_alu_to_scalar(nir_shader *shader);
 void nir_lower_load_const_to_scalar(nir_shader *shader);
 
@@ -1835,17 +1835,57 @@ void nir_lower_phis_to_scalar(nir_shader *shader);
 void nir_lower_samplers(nir_shader *shader,
                         const struct gl_shader_program *shader_program);
 
-void nir_lower_system_values(nir_shader *shader);
-void nir_lower_tex_projector(nir_shader *shader);
+bool nir_lower_system_values(nir_shader *shader);
+
+typedef struct nir_lower_tex_options {
+   /**
+    * bitmask of (1 << GLSL_SAMPLER_DIM_x) to control for which
+    * sampler types a texture projector is lowered.
+    */
+   unsigned lower_txp;
+
+   /**
+    * If true, lower rect textures to 2D, using txs to fetch the
+    * texture dimensions and dividing the texture coords by the
+    * texture dims to normalize.
+    */
+   bool lower_rect;
+
+   /**
+    * To emulate certain texture wrap modes, this can be used
+    * to saturate the specified tex coord to [0.0, 1.0].  The
+    * bits are according to sampler #, ie. if, for example:
+    *
+    *   (conf->saturate_s & (1 << n))
+    *
+    * is true, then the s coord for sampler n is saturated.
+    *
+    * Note that clamping must happen *after* projector lowering
+    * so any projected texture sample instruction with a clamped
+    * coordinate gets automatically lowered, regardless of the
+    * 'lower_txp' setting.
+    */
+   unsigned saturate_s;
+   unsigned saturate_t;
+   unsigned saturate_r;
+} nir_lower_tex_options;
+
+void nir_lower_tex(nir_shader *shader,
+                   const nir_lower_tex_options *options);
+
 void nir_lower_idiv(nir_shader *shader);
 
 void nir_lower_clip_vs(nir_shader *shader, unsigned ucp_enables);
 void nir_lower_clip_fs(nir_shader *shader, unsigned ucp_enables);
 
+void nir_lower_two_sided_color(nir_shader *shader);
+
 void nir_lower_atomics(nir_shader *shader);
 void nir_lower_to_source_mods(nir_shader *shader);
 
-void nir_normalize_cubemap_coords(nir_shader *shader);
+bool nir_lower_gs_intrinsics(nir_shader *shader);
+
+bool nir_normalize_cubemap_coords(nir_shader *shader);
 
 void nir_live_variables_impl(nir_function_impl *impl);
 bool nir_ssa_defs_interfere(nir_ssa_def *a, nir_ssa_def *b);
@@ -1886,6 +1926,7 @@ bool nir_opt_undef(nir_shader *shader);
 
 void nir_sweep(nir_shader *shader);
 
+nir_intrinsic_op nir_intrinsic_from_system_value(gl_system_value val);
 gl_system_value nir_system_value_from_intrinsic(nir_intrinsic_op intrin);
 
 #ifdef __cplusplus
