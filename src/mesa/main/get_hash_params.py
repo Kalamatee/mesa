@@ -450,6 +450,7 @@ descriptor=[
   [ "MAX_COMPUTE_SHARED_MEMORY_SIZE", "CONST(MAX_COMPUTE_SHARED_MEMORY_SIZE), extra_ARB_compute_shader_es31" ],
   [ "MAX_COMPUTE_UNIFORM_COMPONENTS", "CONST(MAX_COMPUTE_UNIFORM_COMPONENTS), extra_ARB_compute_shader_es31" ],
   [ "MAX_COMPUTE_IMAGE_UNIFORMS", "CONST(MAX_COMPUTE_IMAGE_UNIFORMS), extra_ARB_compute_shader_es31" ],
+  [ "DISPATCH_INDIRECT_BUFFER_BINDING", "LOC_CUSTOM, TYPE_INT, 0, extra_ARB_compute_shader_es31" ],
 
 # GL_ARB_framebuffer_no_attachments / GLES 3.1
   ["MAX_FRAMEBUFFER_WIDTH", "CONTEXT_INT(Const.MaxFramebufferWidth), extra_ARB_framebuffer_no_attachments"],
@@ -468,6 +469,17 @@ descriptor=[
 
 # GL 4.4 / GLES 3.1
   [ "MAX_VERTEX_ATTRIB_STRIDE", "CONTEXT_ENUM(Const.MaxVertexAttribStride), NO_EXTRA" ],
+
+  # GL_ARB_shader_storage_buffer_object / GLES 3.1
+  [ "MAX_VERTEX_SHADER_STORAGE_BLOCKS", "CONTEXT_INT(Const.Program[MESA_SHADER_VERTEX].MaxShaderStorageBlocks), extra_ARB_shader_storage_buffer_object_es31" ],
+  [ "MAX_FRAGMENT_SHADER_STORAGE_BLOCKS", "CONTEXT_INT(Const.Program[MESA_SHADER_FRAGMENT].MaxShaderStorageBlocks), extra_ARB_shader_storage_buffer_object_es31" ],
+  [ "MAX_COMPUTE_SHADER_STORAGE_BLOCKS", "CONTEXT_INT(Const.Program[MESA_SHADER_COMPUTE].MaxShaderStorageBlocks), extra_ARB_shader_storage_buffer_object_es31" ],
+  [ "MAX_COMBINED_SHADER_STORAGE_BLOCKS", "CONTEXT_INT(Const.MaxCombinedShaderStorageBlocks), extra_ARB_shader_storage_buffer_object_es31" ],
+  [ "MAX_SHADER_STORAGE_BLOCK_SIZE", "CONTEXT_INT(Const.MaxShaderStorageBlockSize), extra_ARB_shader_storage_buffer_object_es31" ],
+  [ "MAX_SHADER_STORAGE_BUFFER_BINDINGS", "CONTEXT_INT(Const.MaxShaderStorageBufferBindings), extra_ARB_shader_storage_buffer_object_es31" ],
+  [ "MAX_COMBINED_SHADER_OUTPUT_RESOURCES", "CONTEXT_INT(Const.MaxCombinedShaderOutputResources), extra_ARB_shader_storage_buffer_object_es31" ],
+  [ "SHADER_STORAGE_BUFFER_OFFSET_ALIGNMENT", "CONTEXT_INT(Const.ShaderStorageBufferOffsetAlignment), extra_ARB_shader_storage_buffer_object_es31" ],
+  [ "SHADER_STORAGE_BUFFER_BINDING", "LOC_CUSTOM, TYPE_INT, 0, extra_ARB_shader_storage_buffer_object_es31" ],
 ]},
 
 # Enums in OpenGL Core profile and ES 3.1
@@ -820,6 +832,11 @@ descriptor=[
 
 # GL_EXT_polygon_offset_clamp
   [ "POLYGON_OFFSET_CLAMP_EXT", "CONTEXT_FLOAT(Polygon.OffsetClamp), extra_EXT_polygon_offset_clamp" ],
+
+# GL_ARB_shader_storage_buffer_object
+  [ "MAX_GEOMETRY_SHADER_STORAGE_BLOCKS", "CONTEXT_INT(Const.Program[MESA_SHADER_FRAGMENT].MaxShaderStorageBlocks), extra_ARB_shader_storage_buffer_object" ],
+  [ "MAX_TESS_CONTROL_SHADER_STORAGE_BLOCKS", "CONTEXT_INT(Const.Program[MESA_SHADER_TESS_CTRL].MaxShaderStorageBlocks), extra_ARB_shader_storage_buffer_object" ],
+  [ "MAX_TESS_EVALUATION_SHADER_STORAGE_BLOCKS", "CONTEXT_INT(Const.Program[MESA_SHADER_TESS_EVAL].MaxShaderStorageBlocks), extra_ARB_shader_storage_buffer_object" ],
 ]},
 
 # Enums restricted to OpenGL Core profile

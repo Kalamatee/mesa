@@ -116,6 +116,7 @@ i965_FILES = \
 	brw_urb.c \
 	brw_util.c \
 	brw_util.h \
+	brw_vec4_builder.h \
 	brw_vec4_copy_propagation.cpp \
 	brw_vec4.cpp \
 	brw_vec4_cse.cpp \
@@ -129,6 +130,8 @@ i965_FILES = \
 	brw_vec4_nir.cpp \
 	brw_vec4_gs_nir.cpp \
 	brw_vec4_reg_allocate.cpp \
+	brw_vec4_surface_builder.cpp \
+	brw_vec4_surface_builder.h \
 	brw_vec4_visitor.cpp \
 	brw_vec4_vp.cpp \
 	brw_vec4_vs_visitor.cpp \

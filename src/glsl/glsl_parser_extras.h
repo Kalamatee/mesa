@@ -217,7 +217,7 @@ struct _mesa_glsl_parse_state {
 
    bool has_shader_storage_buffer_objects() const
    {
-      return ARB_shader_storage_buffer_object_enable || is_version(430, 0);
+      return ARB_shader_storage_buffer_object_enable || is_version(430, 310);
    }
 
    bool has_separate_shader_objects() const
@@ -273,6 +273,13 @@ struct _mesa_glsl_parse_state {
     * those blocks.
     */
    struct ast_type_qualifier *default_uniform_qualifier;
+
+   /**
+    * Default shader storage layout qualifiers tracked during parsing.
+    * Currently affects shader storage blocks and shader storage buffer
+    * variables in those blocks.
+    */
+   struct ast_type_qualifier *default_shader_storage_qualifier;
 
    /**
     * Variables to track different cases if a fragment shader redeclares

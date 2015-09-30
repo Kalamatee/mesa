@@ -78,6 +78,9 @@ void r600_draw_rectangle(struct blitter_context *blitter,
 	 * I guess the 4th one is derived from the first 3.
 	 * The vertex specification should match u_blitter's vertex element state. */
 	u_upload_alloc(rctx->uploader, 0, sizeof(float) * 24, &offset, &buf, (void**)&vb);
+	if (!buf)
+		return;
+
 	vb[0] = x1;
 	vb[1] = y1;
 	vb[2] = depth;
@@ -718,7 +721,7 @@ static int r600_get_driver_query_info(struct pipe_screen *screen,
 		{"VRAM-usage", R600_QUERY_VRAM_USAGE, {rscreen->info.vram_size}, PIPE_DRIVER_QUERY_TYPE_BYTES},
 		{"GTT-usage", R600_QUERY_GTT_USAGE, {rscreen->info.gart_size}, PIPE_DRIVER_QUERY_TYPE_BYTES},
 		{"GPU-load", R600_QUERY_GPU_LOAD, {100}},
-		{"temperature", R600_QUERY_GPU_TEMPERATURE, {100}},
+		{"temperature", R600_QUERY_GPU_TEMPERATURE, {125}},
 		{"shader-clock", R600_QUERY_CURRENT_GPU_SCLK, {0}, PIPE_DRIVER_QUERY_TYPE_HZ},
 		{"memory-clock", R600_QUERY_CURRENT_GPU_MCLK, {0}, PIPE_DRIVER_QUERY_TYPE_HZ},
 	};

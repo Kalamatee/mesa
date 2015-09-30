@@ -883,6 +883,7 @@ fs_visitor::implied_mrf_writes(fs_inst *inst)
       return 1;
    case FS_OPCODE_FB_WRITE:
       return 2;
+   case FS_OPCODE_GET_BUFFER_SIZE:
    case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD:
    case SHADER_OPCODE_GEN4_SCRATCH_READ:
       return 1;
@@ -1439,7 +1440,8 @@ fs_visitor::calculate_urb_setup()
           */
          struct brw_vue_map prev_stage_vue_map;
          brw_compute_vue_map(devinfo, &prev_stage_vue_map,
-                             key->input_slots_valid);
+                             key->input_slots_valid,
+                             shader_prog->SeparateShader);
          int first_slot = 2 * BRW_SF_URB_ENTRY_READ_OFFSET;
          assert(prev_stage_vue_map.num_slots <= first_slot + 32);
          for (int slot = first_slot; slot < prev_stage_vue_map.num_slots;
@@ -1564,7 +1566,10 @@ fs_visitor::assign_vs_urb_setup()
 
             inst->src[i].file = HW_REG;
             inst->src[i].fixed_hw_reg =
-               retype(brw_vec8_grf(grf, 0), inst->src[i].type);
+               stride(byte_offset(retype(brw_vec8_grf(grf, 0), inst->src[i].type),
+                                  inst->src[i].subreg_offset),
+                      inst->exec_size * inst->src[i].stride,
+                      inst->exec_size, inst->src[i].stride);
          }
       }
    }
@@ -4745,7 +4750,7 @@ fs_visitor::setup_cs_payload()
 }
 
 void
-fs_visitor::assign_binding_table_offsets()
+fs_visitor::assign_fs_binding_table_offsets()
 {
    assert(stage == MESA_SHADER_FRAGMENT);
    brw_wm_prog_data *prog_data = (brw_wm_prog_data*) this->prog_data;
@@ -4757,6 +4762,20 @@ fs_visitor::assign_binding_table_offsets()
     */
    prog_data->binding_table.render_target_start = next_binding_table_offset;
    next_binding_table_offset += MAX2(key->nr_color_regions, 1);
+
+   assign_common_binding_table_offsets(next_binding_table_offset);
+}
+
+void
+fs_visitor::assign_cs_binding_table_offsets()
+{
+   assert(stage == MESA_SHADER_COMPUTE);
+   brw_cs_prog_data *prog_data = (brw_cs_prog_data*) this->prog_data;
+   uint32_t next_binding_table_offset = 0;
+
+   /* May not be used if the gl_NumWorkGroups variable is not accessed. */
+   prog_data->binding_table.work_groups_start = next_binding_table_offset;
+   next_binding_table_offset++;
 
    assign_common_binding_table_offsets(next_binding_table_offset);
 }
@@ -5015,7 +5034,7 @@ fs_visitor::run_fs(bool do_rep_send)
 
    sanity_param_count = prog->Parameters->NumParameters;
 
-   assign_binding_table_offsets();
+   assign_fs_binding_table_offsets();
 
    if (devinfo->gen >= 6)
       setup_payload_gen6();
@@ -5103,7 +5122,7 @@ fs_visitor::run_cs()
 
    sanity_param_count = prog->Parameters->NumParameters;
 
-   assign_common_binding_table_offsets(0);
+   assign_cs_binding_table_offsets();
 
    setup_cs_payload();
 

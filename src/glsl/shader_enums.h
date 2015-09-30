@@ -399,7 +399,7 @@ typedef enum
    /*@{*/
    SYSTEM_VALUE_TESS_COORD,
    SYSTEM_VALUE_VERTICES_IN,    /**< Tessellation vertices in input patch */
-   SYSTEM_VALUE_PRIMITIVE_ID,   /**< (currently not used by GS) */
+   SYSTEM_VALUE_PRIMITIVE_ID,
    SYSTEM_VALUE_TESS_LEVEL_OUTER, /**< TES input */
    SYSTEM_VALUE_TESS_LEVEL_INNER, /**< TES input */
    /*@}*/
@@ -410,6 +410,7 @@ typedef enum
    /*@{*/
    SYSTEM_VALUE_LOCAL_INVOCATION_ID,
    SYSTEM_VALUE_WORK_GROUP_ID,
+   SYSTEM_VALUE_NUM_WORK_GROUPS,
    /*@}*/
 
    /**

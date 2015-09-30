@@ -944,6 +944,7 @@ typedef enum
  */
 struct gl_sampler_object
 {
+   mtx_t Mutex;
    GLuint Name;
    GLint RefCount;
    GLchar *Label;               /**< GL_KHR_debug */
@@ -1887,6 +1888,7 @@ enum gl_frag_depth_layout
  */
 struct gl_program
 {
+   mtx_t Mutex;
    GLuint Id;
    GLint RefCount;
    GLubyte *String;  /**< Null-terminated program text */
@@ -2292,6 +2294,7 @@ struct gl_shader
    struct gl_uniform_block *UniformBlocks;
 
    struct exec_list *ir;
+   struct exec_list *packed_varyings;
    struct glsl_symbol_table *symbols;
 
    bool uses_builtin_functions;
@@ -2453,7 +2456,8 @@ enum gl_uniform_block_packing
 {
    ubo_packing_std140,
    ubo_packing_shared,
-   ubo_packing_packed
+   ubo_packing_packed,
+   ubo_packing_std430
 };
 
 
@@ -2685,7 +2689,7 @@ struct gl_shader_program
     */
    unsigned LastClipDistanceArraySize;
 
-   unsigned NumUniformBlocks;
+   unsigned NumBufferInterfaceBlocks;
    struct gl_uniform_block *UniformBlocks;
 
    /**
@@ -4288,6 +4292,7 @@ struct gl_context
    struct gl_perf_monitor_state PerfMonitor;
 
    struct gl_buffer_object *DrawIndirectBuffer; /** < GL_ARB_draw_indirect */
+   struct gl_buffer_object *DispatchIndirectBuffer; /** < GL_ARB_compute_shader */
 
    struct gl_buffer_object *CopyReadBuffer; /**< GL_ARB_copy_buffer */
    struct gl_buffer_object *CopyWriteBuffer; /**< GL_ARB_copy_buffer */

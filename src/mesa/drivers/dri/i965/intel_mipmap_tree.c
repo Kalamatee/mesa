@@ -557,35 +557,15 @@ static unsigned long
 intel_get_yf_ys_bo_size(struct intel_mipmap_tree *mt, unsigned *alignment,
                         unsigned long *pitch)
 {
-   const uint32_t bpp = mt->cpp * 8;
-   const uint32_t aspect_ratio = (bpp == 16 || bpp == 64) ? 2 : 1;
    uint32_t tile_width, tile_height;
    unsigned long stride, size, aligned_y;
 
    assert(mt->tr_mode != INTEL_MIPTREE_TRMODE_NONE);
-
-   switch (bpp) {
-   case 8:
-      tile_height = 64;
-      break;
-   case 16:
-   case 32:
-      tile_height = 32;
-      break;
-   case 64:
-   case 128:
-      tile_height = 16;
-      break;
-   default:
-      unreachable("not reached");
-   }
-
-   if (mt->tr_mode == INTEL_MIPTREE_TRMODE_YS)
-      tile_height *= 4;
+   intel_get_tile_dims(mt->tiling, mt->tr_mode, mt->cpp,
+                       &tile_width, &tile_height);
 
    aligned_y = ALIGN(mt->total_height, tile_height);
    stride = mt->total_width * mt->cpp;
-   tile_width = tile_height * mt->cpp * aspect_ratio;
    stride = ALIGN(stride, tile_width);
    size = stride * aligned_y;
 
@@ -941,12 +921,18 @@ intel_miptree_release(struct intel_mipmap_tree **mt)
    *mt = NULL;
 }
 
+
 void
-intel_miptree_get_dimensions_for_image(struct gl_texture_image *image,
-                                       int *width, int *height, int *depth)
+intel_get_image_dims(struct gl_texture_image *image,
+                     int *width, int *height, int *depth)
 {
    switch (image->TexObject->Target) {
    case GL_TEXTURE_1D_ARRAY:
+      /* For a 1D Array texture the OpenGL API will treat the image height as
+       * the number of array slices. For Intel hardware, we treat the 1D array
+       * as a 2D Array with a height of 1. So, here we want to swap image
+       * height and depth.
+       */
       *width = image->Width;
       *height = 1;
       *depth = image->Height;
@@ -990,7 +976,7 @@ intel_miptree_match_image(struct intel_mipmap_tree *mt,
    if (image->TexFormat != mt_format)
       return false;
 
-   intel_miptree_get_dimensions_for_image(image, &width, &height, &depth);
+   intel_get_image_dims(image, &width, &height, &depth);
 
    if (mt->target == GL_TEXTURE_CUBE_MAP)
       depth = 6;
@@ -1075,37 +1061,82 @@ intel_miptree_get_image_offset(const struct intel_mipmap_tree *mt,
    *y = mt->level[level].slice[slice].y_offset;
 }
 
+
+/**
+ * This function computes the tile_w (in bytes) and tile_h (in rows) of
+ * different tiling patterns. If the BO is untiled, tile_w is set to cpp
+ * and tile_h is set to 1.
+ */
+void
+intel_get_tile_dims(uint32_t tiling, uint32_t tr_mode, uint32_t cpp,
+                    uint32_t *tile_w, uint32_t *tile_h)
+{
+   if (tr_mode == INTEL_MIPTREE_TRMODE_NONE) {
+      switch (tiling) {
+      case I915_TILING_X:
+         *tile_w = 512;
+         *tile_h = 8;
+         break;
+      case I915_TILING_Y:
+         *tile_w = 128;
+         *tile_h = 32;
+         break;
+      case I915_TILING_NONE:
+         *tile_w = cpp;
+         *tile_h = 1;
+         break;
+      default:
+         unreachable("not reached");
+      }
+   } else {
+      uint32_t aspect_ratio = 1;
+      assert(_mesa_is_pow_two(cpp));
+
+      switch (cpp) {
+      case 1:
+         *tile_h = 64;
+         break;
+      case 2:
+      case 4:
+         *tile_h = 32;
+         break;
+      case 8:
+      case 16:
+         *tile_h = 16;
+         break;
+      default:
+         unreachable("not reached");
+      }
+
+      if (cpp == 2 || cpp == 8)
+         aspect_ratio = 2;
+
+      if (tr_mode == INTEL_MIPTREE_TRMODE_YS)
+         *tile_h *= 4;
+
+      *tile_w = *tile_h * aspect_ratio * cpp;
+   }
+}
+
+
 /**
  * This function computes masks that may be used to select the bits of the X
  * and Y coordinates that indicate the offset within a tile.  If the BO is
  * untiled, the masks are set to 0.
  */
 void
-intel_miptree_get_tile_masks(const struct intel_mipmap_tree *mt,
-                             uint32_t *mask_x, uint32_t *mask_y,
-                             bool map_stencil_as_y_tiled)
+intel_get_tile_masks(uint32_t tiling, uint32_t tr_mode, uint32_t cpp,
+                     bool map_stencil_as_y_tiled,
+                     uint32_t *mask_x, uint32_t *mask_y)
 {
-   int cpp = mt->cpp;
-   uint32_t tiling = mt->tiling;
-
+   uint32_t tile_w_bytes, tile_h;
    if (map_stencil_as_y_tiled)
       tiling = I915_TILING_Y;
 
-   switch (tiling) {
-   default:
-      unreachable("not reached");
-   case I915_TILING_NONE:
-      *mask_x = *mask_y = 0;
-      break;
-   case I915_TILING_X:
-      *mask_x = 512 / cpp - 1;
-      *mask_y = 7;
-      break;
-   case I915_TILING_Y:
-      *mask_x = 128 / cpp - 1;
-      *mask_y = 31;
-      break;
-   }
+   intel_get_tile_dims(tiling, tr_mode, cpp, &tile_w_bytes, &tile_h);
+
+   *mask_x = tile_w_bytes / cpp - 1;
+   *mask_y = tile_h - 1;
 }
 
 /**
@@ -1170,7 +1201,7 @@ intel_miptree_get_tile_offsets(const struct intel_mipmap_tree *mt,
    uint32_t x, y;
    uint32_t mask_x, mask_y;
 
-   intel_miptree_get_tile_masks(mt, &mask_x, &mask_y, false);
+   intel_get_tile_masks(mt->tiling, mt->tr_mode, mt->cpp, false, &mask_x, &mask_y);
    intel_miptree_get_image_offset(mt, level, slice, &x, &y);
 
    *tile_x = x & mask_x;

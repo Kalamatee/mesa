@@ -128,7 +128,8 @@ public:
    bool run_cs();
    void optimize();
    void allocate_registers();
-   void assign_binding_table_offsets();
+   void assign_fs_binding_table_offsets();
+   void assign_cs_binding_table_offsets();
    void setup_payload_gen4();
    void setup_payload_gen6();
    void setup_vs_payload();
@@ -256,6 +257,8 @@ public:
                        nir_ssa_undef_instr *instr);
    void nir_emit_intrinsic(const brw::fs_builder &bld,
                            nir_intrinsic_instr *instr);
+   void nir_emit_ssbo_atomic(const brw::fs_builder &bld,
+                             int op, nir_intrinsic_instr *instr);
    void nir_emit_texture(const brw::fs_builder &bld,
                          nir_tex_instr *instr);
    void nir_emit_jump(const brw::fs_builder &bld,
@@ -431,6 +434,9 @@ private:
 			 struct brw_reg *src);
    void generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src,
                      struct brw_reg sampler_index);
+   void generate_get_buffer_size(fs_inst *inst, struct brw_reg dst,
+                                 struct brw_reg src,
+                                 struct brw_reg surf_index);
    void generate_math_gen6(fs_inst *inst,
                            struct brw_reg dst,
                            struct brw_reg src0,

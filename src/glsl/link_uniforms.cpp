@@ -65,7 +65,9 @@ program_resource_visitor::process(const glsl_type *type, const char *name)
 
    unsigned record_array_count = 1;
    char *name_copy = ralloc_strdup(NULL, name);
-   recursion(type, &name_copy, strlen(name), false, NULL, false,
+   unsigned packing = type->interface_packing;
+
+   recursion(type, &name_copy, strlen(name), false, NULL, packing, false,
              record_array_count);
    ralloc_free(name_copy);
 }
@@ -75,8 +77,13 @@ program_resource_visitor::process(ir_variable *var)
 {
    unsigned record_array_count = 1;
    const glsl_type *t = var->type;
+   const glsl_type *t_without_array = var->type->without_array();
    const bool row_major =
       var->data.matrix_layout == GLSL_MATRIX_LAYOUT_ROW_MAJOR;
+
+   const unsigned packing = var->get_interface_type() ?
+      var->get_interface_type()->interface_packing :
+      var->type->interface_packing;
 
    /* false is always passed for the row_major parameter to the other
     * processing functions because no information is available to do
@@ -114,8 +121,8 @@ program_resource_visitor::process(ir_variable *var)
           * lowering is only applied to non-uniform interface blocks, so we
           * can safely pass false for row_major.
           */
-         recursion(var->type, &name, new_length, row_major, NULL, false,
-                   record_array_count);
+         recursion(var->type, &name, new_length, row_major, NULL, packing,
+                   false, record_array_count);
       }
       ralloc_free(name);
    } else if (var->data.from_named_ifc_block_nonarray) {
@@ -139,26 +146,21 @@ program_resource_visitor::process(ir_variable *var)
        * is only applied to non-uniform interface blocks, so we can safely
        * pass false for row_major.
        */
-      recursion(var->type, &name, strlen(name), row_major, NULL, false,
-                record_array_count);
+      recursion(var->type, &name, strlen(name), row_major, NULL, packing,
+                false, record_array_count);
       ralloc_free(name);
    } else if (t->without_array()->is_record()) {
       char *name = ralloc_strdup(NULL, var->name);
-      recursion(var->type, &name, strlen(name), row_major, NULL, false,
-                record_array_count);
+      recursion(var->type, &name, strlen(name), row_major, NULL, packing,
+                false, record_array_count);
       ralloc_free(name);
-   } else if (t->is_interface()) {
-      char *name = ralloc_strdup(NULL, var->type->name);
-      recursion(var->type, &name, strlen(name), row_major, NULL, false,
-                record_array_count);
-      ralloc_free(name);
-   } else if (t->is_array() && t->fields.array->is_interface()) {
-      char *name = ralloc_strdup(NULL, var->type->fields.array->name);
-      recursion(var->type, &name, strlen(name), row_major, NULL, false,
-                record_array_count);
+   } else if (t_without_array->is_interface()) {
+      char *name = ralloc_strdup(NULL, t_without_array->name);
+      recursion(var->type, &name, strlen(name), row_major, NULL, packing,
+                false, record_array_count);
       ralloc_free(name);
    } else {
-      this->visit_field(t, var->name, row_major, NULL, false);
+      this->visit_field(t, var->name, row_major, NULL, packing, false);
    }
 }
 
@@ -166,6 +168,7 @@ void
 program_resource_visitor::recursion(const glsl_type *t, char **name,
                                     size_t name_length, bool row_major,
                                     const glsl_type *record_type,
+                                    const unsigned packing,
                                     bool last_field,
                                     unsigned record_array_count)
 {
@@ -180,7 +183,7 @@ program_resource_visitor::recursion(const glsl_type *t, char **name,
          record_type = t;
 
       if (t->is_record())
-         this->enter_record(t, *name, row_major);
+         this->enter_record(t, *name, row_major, packing);
 
       for (unsigned i = 0; i < t->length; i++) {
 	 const char *field = t->fields.structure[i].name;
@@ -214,6 +217,7 @@ program_resource_visitor::recursion(const glsl_type *t, char **name,
          recursion(t->fields.structure[i].type, name, new_length,
                    field_row_major,
                    record_type,
+                   packing,
                    (i + 1) == t->length, record_array_count);
 
          /* Only the first leaf-field of the record gets called with the
@@ -224,16 +228,22 @@ program_resource_visitor::recursion(const glsl_type *t, char **name,
 
       if (t->is_record()) {
          (*name)[name_length] = '\0';
-         this->leave_record(t, *name, row_major);
+         this->leave_record(t, *name, row_major, packing);
       }
-   } else if (t->is_array() && (t->fields.array->is_record()
-                                || t->fields.array->is_interface())) {
+   } else if (t->without_array()->is_record() ||
+              t->without_array()->is_interface()) {
       if (record_type == NULL && t->fields.array->is_record())
          record_type = t->fields.array;
 
-      record_array_count *= t->length;
+      unsigned length = t->length;
+      /* Shader storage block unsized arrays: add subscript [0] to variable
+       * names */
+      if (t->is_unsized_array())
+         length = 1;
 
-      for (unsigned i = 0; i < t->length; i++) {
+      record_array_count *= length;
+
+      for (unsigned i = 0; i < length; i++) {
 	 size_t new_length = name_length;
 
 	 /* Append the subscript to the current variable name */
@@ -241,6 +251,7 @@ program_resource_visitor::recursion(const glsl_type *t, char **name,
 
          recursion(t->fields.array, name, new_length, row_major,
                    record_type,
+                   packing,
                    (i + 1) == t->length, record_array_count);
 
          /* Only the first leaf-field of the record gets called with the
@@ -250,7 +261,7 @@ program_resource_visitor::recursion(const glsl_type *t, char **name,
       }
    } else {
       this->set_record_array_count(record_array_count);
-      this->visit_field(t, *name, row_major, record_type, last_field);
+      this->visit_field(t, *name, row_major, record_type, packing, last_field);
    }
 }
 
@@ -258,6 +269,7 @@ void
 program_resource_visitor::visit_field(const glsl_type *type, const char *name,
                                       bool row_major,
                                       const glsl_type *,
+                                      const unsigned,
                                       bool /* last_field */)
 {
    visit_field(type, name, row_major);
@@ -271,12 +283,14 @@ program_resource_visitor::visit_field(const glsl_struct_field *field)
 }
 
 void
-program_resource_visitor::enter_record(const glsl_type *, const char *, bool)
+program_resource_visitor::enter_record(const glsl_type *, const char *, bool,
+                                       const unsigned)
 {
 }
 
 void
-program_resource_visitor::leave_record(const glsl_type *, const char *, bool)
+program_resource_visitor::leave_record(const glsl_type *, const char *, bool,
+                                       const unsigned)
 {
 }
 
@@ -304,7 +318,8 @@ public:
       : num_active_uniforms(0), num_hidden_uniforms(0), num_values(0),
         num_shader_samplers(0), num_shader_images(0),
         num_shader_uniform_components(0), num_shader_subroutines(0),
-        is_ubo_var(false), map(map), hidden_map(hidden_map)
+        is_ubo_var(false), is_shader_storage(false), map(map),
+        hidden_map(hidden_map)
    {
       /* empty */
    }
@@ -321,6 +336,7 @@ public:
    {
       this->current_var = var;
       this->is_ubo_var = var->is_in_buffer_block();
+      this->is_shader_storage = var->is_in_shader_storage_block();
       if (var->is_interface_instance())
          program_resource_visitor::process(var->get_interface_type(),
                                            var->get_interface_type()->name);
@@ -361,6 +377,7 @@ public:
    unsigned num_shader_subroutines;
 
    bool is_ubo_var;
+   bool is_shader_storage;
 
    struct string_to_uint_map *map;
 
@@ -391,13 +408,14 @@ private:
           * components in the default block.  The spec allows image
           * uniforms to use up no more than one scalar slot.
           */
-         this->num_shader_uniform_components += values;
+         if(!is_shader_storage)
+            this->num_shader_uniform_components += values;
       } else {
 	 /* Accumulate the total number of uniform slots used by this shader.
 	  * Note that samplers do not count against this limit because they
 	  * don't use any storage on current hardware.
 	  */
-	 if (!is_ubo_var)
+	 if (!is_ubo_var && !is_shader_storage)
 	    this->num_shader_uniform_components += values;
       }
 
@@ -482,7 +500,7 @@ public:
          if (var->is_interface_instance() && var->type->is_array()) {
             unsigned l = strlen(var->get_interface_type()->name);
 
-            for (unsigned i = 0; i < prog->NumUniformBlocks; i++) {
+            for (unsigned i = 0; i < prog->NumBufferInterfaceBlocks; i++) {
                if (strncmp(var->get_interface_type()->name,
                            prog->UniformBlocks[i].Name,
                            l) == 0
@@ -492,7 +510,7 @@ public:
                }
             }
          } else {
-            for (unsigned i = 0; i < prog->NumUniformBlocks; i++) {
+            for (unsigned i = 0; i < prog->NumBufferInterfaceBlocks; i++) {
                if (strcmp(var->get_interface_type()->name,
                           prog->UniformBlocks[i].Name) == 0) {
                   ubo_block_index = i;
@@ -671,25 +689,34 @@ private:
    }
 
    virtual void enter_record(const glsl_type *type, const char *,
-                             bool row_major) {
+                             bool row_major, const unsigned packing) {
       assert(type->is_record());
       if (this->ubo_block_index == -1)
          return;
-      this->ubo_byte_offset = glsl_align(
+      if (packing == GLSL_INTERFACE_PACKING_STD430)
+         this->ubo_byte_offset = glsl_align(
+            this->ubo_byte_offset, type->std430_base_alignment(row_major));
+      else
+         this->ubo_byte_offset = glsl_align(
             this->ubo_byte_offset, type->std140_base_alignment(row_major));
    }
 
    virtual void leave_record(const glsl_type *type, const char *,
-                             bool row_major) {
+                             bool row_major, const unsigned packing) {
       assert(type->is_record());
       if (this->ubo_block_index == -1)
          return;
-      this->ubo_byte_offset = glsl_align(
+      if (packing == GLSL_INTERFACE_PACKING_STD430)
+         this->ubo_byte_offset = glsl_align(
+            this->ubo_byte_offset, type->std430_base_alignment(row_major));
+      else
+         this->ubo_byte_offset = glsl_align(
             this->ubo_byte_offset, type->std140_base_alignment(row_major));
    }
 
    virtual void visit_field(const glsl_type *type, const char *name,
                             bool row_major, const glsl_type *record_type,
+                            const unsigned packing,
                             bool /* last_field */)
    {
       assert(!type->without_array()->is_record());
@@ -763,17 +790,29 @@ private:
       if (!this->uniforms[id].builtin)
          this->uniforms[id].storage = this->values;
 
+      this->uniforms[id].is_shader_storage =
+         current_var->is_in_shader_storage_block();
+
       if (this->ubo_block_index != -1) {
-	 this->uniforms[id].block_index = this->ubo_block_index;
+         this->uniforms[id].block_index = this->ubo_block_index;
 
-	 const unsigned alignment = type->std140_base_alignment(row_major);
-	 this->ubo_byte_offset = glsl_align(this->ubo_byte_offset, alignment);
-	 this->uniforms[id].offset = this->ubo_byte_offset;
-	 this->ubo_byte_offset += type->std140_size(row_major);
+         unsigned alignment = type->std140_base_alignment(row_major);
+         if (packing == GLSL_INTERFACE_PACKING_STD430)
+            alignment = type->std430_base_alignment(row_major);
+         this->ubo_byte_offset = glsl_align(this->ubo_byte_offset, alignment);
+         this->uniforms[id].offset = this->ubo_byte_offset;
+         if (packing == GLSL_INTERFACE_PACKING_STD430)
+            this->ubo_byte_offset += type->std430_size(row_major);
+         else
+            this->ubo_byte_offset += type->std140_size(row_major);
 
-	 if (type->is_array()) {
-	    this->uniforms[id].array_stride =
-	       glsl_align(type->fields.array->std140_size(row_major), 16);
+         if (type->is_array()) {
+            if (packing == GLSL_INTERFACE_PACKING_STD430)
+               this->uniforms[id].array_stride =
+                  type->fields.array->std430_array_stride(row_major);
+            else
+               this->uniforms[id].array_stride =
+                  glsl_align(type->fields.array->std140_size(row_major), 16);
 	 } else {
 	    this->uniforms[id].array_stride = 0;
 	 }
@@ -784,7 +823,11 @@ private:
             const unsigned items = row_major ? matrix->matrix_columns : matrix->vector_elements;
 
             assert(items <= 4);
-            this->uniforms[id].matrix_stride = glsl_align(items * N, 16);
+            if (packing == GLSL_INTERFACE_PACKING_STD430)
+               this->uniforms[id].matrix_stride = items < 3 ? items * N :
+                                                          glsl_align(items * N, 16);
+            else
+               this->uniforms[id].matrix_stride = glsl_align(items * N, 16);
 	    this->uniforms[id].row_major = row_major;
 	 } else {
 	    this->uniforms[id].matrix_stride = 0;
@@ -927,8 +970,7 @@ link_update_uniform_buffer_variables(struct gl_shader *shader)
 
       if (var->type->is_record()) {
          sentinel = '.';
-      } else if (var->type->is_array()
-                 && var->type->fields.array->is_record()) {
+      } else if (var->type->without_array()->is_record()) {
          sentinel = '[';
       }
 
@@ -1078,8 +1120,10 @@ link_assign_uniform_locations(struct gl_shader_program *prog,
       sh->num_combined_uniform_components = sh->num_uniform_components;
 
       for (unsigned i = 0; i < sh->NumUniformBlocks; i++) {
-	 sh->num_combined_uniform_components +=
-	    sh->UniformBlocks[i].UniformBufferSize / 4;
+         if (!sh->UniformBlocks[i].IsShaderStorage) {
+	    sh->num_combined_uniform_components +=
+	       sh->UniformBlocks[i].UniformBufferSize / 4;
+         }
       }
    }
 

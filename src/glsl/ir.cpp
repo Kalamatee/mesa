@@ -342,6 +342,11 @@ ir_expression::ir_expression(int op, ir_rvalue *op0)
 					   op0->type->vector_elements, 1);
       break;
 
+   case ir_unop_get_buffer_size:
+   case ir_unop_ssbo_unsized_array_length:
+      this->type = glsl_type::int_type;
+      break;
+
    default:
       assert(!"not reached: missing automatic type setup for ir_expression");
       this->type = op0->type;
@@ -571,6 +576,8 @@ static const char *const operator_strs[] = {
    "noise",
    "subroutine_to_int",
    "interpolate_at_centroid",
+   "get_buffer_size",
+   "ssbo_unsized_array_length",
    "+",
    "-",
    "*",
@@ -1658,6 +1665,7 @@ ir_variable::ir_variable(const struct glsl_type *type, const char *name,
    this->data.image_coherent = false;
    this->data.image_volatile = false;
    this->data.image_restrict = false;
+   this->data.from_ssbo_unsized_array = false;
 
    if (type != NULL) {
       if (type->base_type == GLSL_TYPE_SAMPLER)

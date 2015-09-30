@@ -697,6 +697,9 @@ brw_instruction_name(enum opcode op)
    case FS_OPCODE_PIXEL_Y:
       return "pixel_y";
 
+   case FS_OPCODE_GET_BUFFER_SIZE:
+      return "fs_get_buffer_size";
+
    case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD:
       return "uniform_pull_const";
    case FS_OPCODE_UNIFORM_PULL_CONSTANT_LOAD_GEN7:
@@ -744,6 +747,9 @@ brw_instruction_name(enum opcode op)
 
    case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
       return "set_simd4x2_header_gen9";
+
+   case VS_OPCODE_GET_BUFFER_SIZE:
+      return "vs_get_buffer_size";
 
    case VS_OPCODE_UNPACK_FLAGS_SIMD4X2:
       return "unpack_flags_simd4x2";

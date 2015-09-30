@@ -29,8 +29,10 @@
 #include "brw_fs.h"
 #include "brw_fs_surface_builder.h"
 #include "brw_nir.h"
+#include "brw_fs_surface_builder.h"
 
 using namespace brw;
+using namespace brw::surface_access;
 
 void
 fs_visitor::emit_nir_code()
@@ -1528,7 +1530,7 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
           */
          brw_mark_surface_used(prog_data,
                                stage_prog_data->binding_table.ubo_start +
-                               shader_prog->NumUniformBlocks - 1);
+                               shader_prog->NumBufferInterfaceBlocks - 1);
       }
 
       if (has_indirect) {
@@ -1562,6 +1564,68 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
             dest = offset(dest, bld, 1);
          }
       }
+      break;
+   }
+
+   case nir_intrinsic_load_ssbo_indirect:
+      has_indirect = true;
+      /* fallthrough */
+   case nir_intrinsic_load_ssbo: {
+      assert(devinfo->gen >= 7);
+
+      nir_const_value *const_uniform_block =
+         nir_src_as_const_value(instr->src[0]);
+
+      fs_reg surf_index;
+      if (const_uniform_block) {
+         unsigned index = stage_prog_data->binding_table.ubo_start +
+                          const_uniform_block->u[0];
+         surf_index = fs_reg(index);
+         brw_mark_surface_used(prog_data, index);
+      } else {
+         surf_index = vgrf(glsl_type::uint_type);
+         bld.ADD(surf_index, get_nir_src(instr->src[0]),
+                 fs_reg(stage_prog_data->binding_table.ubo_start));
+         surf_index = bld.emit_uniformize(surf_index);
+
+         /* Assume this may touch any UBO. It would be nice to provide
+          * a tighter bound, but the array information is already lowered away.
+          */
+         brw_mark_surface_used(prog_data,
+                               stage_prog_data->binding_table.ubo_start +
+                               shader_prog->NumBufferInterfaceBlocks - 1);
+      }
+
+      /* Get the offset to read from */
+      fs_reg offset_reg = vgrf(glsl_type::uint_type);
+      unsigned const_offset_bytes = 0;
+      if (has_indirect) {
+         bld.MOV(offset_reg, get_nir_src(instr->src[1]));
+      } else {
+         const_offset_bytes = instr->const_index[0];
+         bld.MOV(offset_reg, fs_reg(const_offset_bytes));
+      }
+
+      /* Read the vector */
+      for (int i = 0; i < instr->num_components; i++) {
+         fs_reg read_result = emit_untyped_read(bld, surf_index, offset_reg,
+                                                1 /* dims */, 1 /* size */,
+                                                BRW_PREDICATE_NONE);
+         read_result.type = dest.type;
+         bld.MOV(dest, read_result);
+         dest = offset(dest, bld, 1);
+
+         /* Vector components are stored contiguous in memory */
+         if (i < instr->num_components) {
+            if (!has_indirect) {
+               const_offset_bytes += 4;
+               bld.MOV(offset_reg, fs_reg(const_offset_bytes));
+            } else {
+               bld.ADD(offset_reg, offset_reg, brw_imm_ud(4));
+            }
+         }
+      }
+
       break;
    }
 
@@ -1699,6 +1763,75 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       break;
    }
 
+   case nir_intrinsic_store_ssbo_indirect:
+      has_indirect = true;
+      /* fallthrough */
+   case nir_intrinsic_store_ssbo: {
+      assert(devinfo->gen >= 7);
+
+      /* Block index */
+      fs_reg surf_index;
+      nir_const_value *const_uniform_block =
+         nir_src_as_const_value(instr->src[1]);
+      if (const_uniform_block) {
+         unsigned index = stage_prog_data->binding_table.ubo_start +
+                          const_uniform_block->u[0];
+         surf_index = fs_reg(index);
+         brw_mark_surface_used(prog_data, index);
+      } else {
+         surf_index = vgrf(glsl_type::uint_type);
+         bld.ADD(surf_index, get_nir_src(instr->src[1]),
+                  fs_reg(stage_prog_data->binding_table.ubo_start));
+         surf_index = bld.emit_uniformize(surf_index);
+
+         brw_mark_surface_used(prog_data,
+                               stage_prog_data->binding_table.ubo_start +
+                               shader_prog->NumBufferInterfaceBlocks - 1);
+      }
+
+      /* Offset */
+      fs_reg offset_reg = vgrf(glsl_type::uint_type);
+      unsigned const_offset_bytes = 0;
+      if (has_indirect) {
+         bld.MOV(offset_reg, get_nir_src(instr->src[2]));
+      } else {
+         const_offset_bytes = instr->const_index[0];
+         bld.MOV(offset_reg, fs_reg(const_offset_bytes));
+      }
+
+      /* Value */
+      fs_reg val_reg = get_nir_src(instr->src[0]);
+
+      /* Writemask */
+      unsigned writemask = instr->const_index[1];
+
+      /* Write each component present in the writemask */
+      unsigned skipped_channels = 0;
+      for (int i = 0; i < instr->num_components; i++) {
+         int component_mask = 1 << i;
+         if (writemask & component_mask) {
+            if (skipped_channels) {
+               if (!has_indirect) {
+                  const_offset_bytes += 4 * skipped_channels;
+                  bld.MOV(offset_reg, fs_reg(const_offset_bytes));
+               } else {
+                  bld.ADD(offset_reg, offset_reg,
+                           brw_imm_ud(4 * skipped_channels));
+               }
+               skipped_channels = 0;
+            }
+
+            emit_untyped_write(bld, surf_index, offset_reg,
+                               offset(val_reg, bld, i),
+                               1 /* dims */, 1 /* size */,
+                               BRW_PREDICATE_NONE);
+         }
+
+         skipped_channels++;
+      }
+      break;
+   }
+
    case nir_intrinsic_store_output_indirect:
       has_indirect = true;
       /* fallthrough */
@@ -1734,9 +1867,138 @@ fs_visitor::nir_emit_intrinsic(const fs_builder &bld, nir_intrinsic_instr *instr
       break;
    }
 
+   case nir_intrinsic_ssbo_atomic_add:
+      nir_emit_ssbo_atomic(bld, BRW_AOP_ADD, instr);
+      break;
+   case nir_intrinsic_ssbo_atomic_min:
+      if (dest.type == BRW_REGISTER_TYPE_D)
+         nir_emit_ssbo_atomic(bld, BRW_AOP_IMIN, instr);
+      else
+         nir_emit_ssbo_atomic(bld, BRW_AOP_UMIN, instr);
+      break;
+   case nir_intrinsic_ssbo_atomic_max:
+      if (dest.type == BRW_REGISTER_TYPE_D)
+         nir_emit_ssbo_atomic(bld, BRW_AOP_IMAX, instr);
+      else
+         nir_emit_ssbo_atomic(bld, BRW_AOP_UMAX, instr);
+      break;
+   case nir_intrinsic_ssbo_atomic_and:
+      nir_emit_ssbo_atomic(bld, BRW_AOP_AND, instr);
+      break;
+   case nir_intrinsic_ssbo_atomic_or:
+      nir_emit_ssbo_atomic(bld, BRW_AOP_OR, instr);
+      break;
+   case nir_intrinsic_ssbo_atomic_xor:
+      nir_emit_ssbo_atomic(bld, BRW_AOP_XOR, instr);
+      break;
+   case nir_intrinsic_ssbo_atomic_exchange:
+      nir_emit_ssbo_atomic(bld, BRW_AOP_MOV, instr);
+      break;
+   case nir_intrinsic_ssbo_atomic_comp_swap:
+      nir_emit_ssbo_atomic(bld, BRW_AOP_CMPWR, instr);
+      break;
+
+   case nir_intrinsic_get_buffer_size: {
+      nir_const_value *const_uniform_block = nir_src_as_const_value(instr->src[0]);
+      unsigned ubo_index = const_uniform_block ? const_uniform_block->u[0] : 0;
+      int reg_width = dispatch_width / 8;
+
+      assert(shader->base.UniformBlocks[ubo_index].IsShaderStorage);
+
+      /* Set LOD = 0 */
+      fs_reg source = fs_reg(0);
+
+      int mlen = 1 * reg_width;
+      fs_reg src_payload = fs_reg(GRF, alloc.allocate(mlen),
+                                  BRW_REGISTER_TYPE_UD);
+      bld.LOAD_PAYLOAD(src_payload, &source, 1, 0);
+
+      fs_reg surf_index = fs_reg(prog_data->binding_table.ubo_start + ubo_index);
+      fs_inst *inst = bld.emit(FS_OPCODE_GET_BUFFER_SIZE, dest,
+                               src_payload, surf_index);
+      inst->header_size = 0;
+      inst->mlen = mlen;
+      bld.emit(inst);
+      break;
+   }
+
+   case nir_intrinsic_load_num_work_groups: {
+      assert(devinfo->gen >= 7);
+      assert(stage == MESA_SHADER_COMPUTE);
+
+      struct brw_cs_prog_data *cs_prog_data =
+         (struct brw_cs_prog_data *) prog_data;
+      const unsigned surface =
+         cs_prog_data->binding_table.work_groups_start;
+
+      cs_prog_data->uses_num_work_groups = true;
+
+      fs_reg surf_index = fs_reg(surface);
+      brw_mark_surface_used(prog_data, surface);
+
+      /* Read the 3 GLuint components of gl_NumWorkGroups */
+      for (unsigned i = 0; i < 3; i++) {
+         fs_reg read_result =
+            emit_untyped_read(bld, surf_index,
+                              fs_reg(i << 2),
+                              1 /* dims */, 1 /* size */,
+                              BRW_PREDICATE_NONE);
+         read_result.type = dest.type;
+         bld.MOV(dest, read_result);
+         dest = offset(dest, bld, 1);
+      }
+      break;
+   }
+
    default:
       unreachable("unknown intrinsic");
    }
+}
+
+void
+fs_visitor::nir_emit_ssbo_atomic(const fs_builder &bld,
+                                 int op, nir_intrinsic_instr *instr)
+{
+   fs_reg dest;
+   if (nir_intrinsic_infos[instr->intrinsic].has_dest)
+      dest = get_nir_dest(instr->dest);
+
+   fs_reg surface;
+   nir_const_value *const_surface = nir_src_as_const_value(instr->src[0]);
+   if (const_surface) {
+      unsigned surf_index = stage_prog_data->binding_table.ubo_start +
+                            const_surface->u[0];
+      surface = fs_reg(surf_index);
+      brw_mark_surface_used(prog_data, surf_index);
+   } else {
+      surface = vgrf(glsl_type::uint_type);
+      bld.ADD(surface, get_nir_src(instr->src[0]),
+              fs_reg(stage_prog_data->binding_table.ubo_start));
+
+      /* Assume this may touch any UBO. This is the same we do for other
+       * UBO/SSBO accesses with non-constant surface.
+       */
+      brw_mark_surface_used(prog_data,
+                            stage_prog_data->binding_table.ubo_start +
+                            shader_prog->NumBufferInterfaceBlocks - 1);
+   }
+
+   fs_reg offset = get_nir_src(instr->src[1]);
+   fs_reg data1 = get_nir_src(instr->src[2]);
+   fs_reg data2;
+   if (op == BRW_AOP_CMPWR)
+      data2 = get_nir_src(instr->src[3]);
+
+   /* Emit the actual atomic operation operation */
+
+   fs_reg atomic_result =
+      surface_access::emit_untyped_atomic(bld, surface, offset,
+                                          data1, data2,
+                                          1 /* dims */, 1 /* rsize */,
+                                          op,
+                                          BRW_PREDICATE_NONE);
+   dest.type = atomic_result.type;
+   bld.MOV(dest, atomic_result);
 }
 
 void

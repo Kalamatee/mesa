@@ -424,6 +424,7 @@ public:
    virtual void nir_emit_jump(nir_jump_instr *instr);
    virtual void nir_emit_texture(nir_tex_instr *instr);
    virtual void nir_emit_undef(nir_ssa_undef_instr *instr);
+   virtual void nir_emit_ssbo_atomic(int op, nir_intrinsic_instr *instr);
 
    dst_reg get_nir_dest(nir_dest dest, enum brw_reg_type type);
    dst_reg get_nir_dest(nir_dest dest, nir_alu_type type);
@@ -560,6 +561,12 @@ private:
                                          struct brw_reg offset);
    void generate_set_simd4x2_header_gen9(vec4_instruction *inst,
                                          struct brw_reg dst);
+
+   void generate_get_buffer_size(vec4_instruction *inst,
+                                 struct brw_reg dst,
+                                 struct brw_reg src,
+                                 struct brw_reg index);
+
    void generate_unpack_flags(struct brw_reg dst);
 
    const struct brw_compiler *compiler;

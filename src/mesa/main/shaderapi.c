@@ -37,6 +37,7 @@
  */
 
 
+#include <stdbool.h>
 #include "main/glheader.h"
 #include "main/context.h"
 #include "main/dispatch.h"
@@ -48,17 +49,16 @@
 #include "main/shaderobj.h"
 #include "main/transformfeedback.h"
 #include "main/uniforms.h"
+#include "glsl/glsl_parser_extras.h"
+#include "glsl/ir.h"
+#include "glsl/ir_uniform.h"
+#include "glsl/program.h"
 #include "program/program.h"
 #include "program/prog_print.h"
 #include "program/prog_parameter.h"
 #include "util/ralloc.h"
 #include "util/hash_table.h"
 #include "util/mesa-sha1.h"
-#include <stdbool.h>
-#include "../glsl/glsl_parser_extras.h"
-#include "../glsl/ir.h"
-#include "../glsl/ir_uniform.h"
-#include "../glsl/program.h"
 
 
 /**
@@ -713,7 +713,7 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       if (!has_ubo)
          break;
 
-      for (i = 0; i < shProg->NumUniformBlocks; i++) {
+      for (i = 0; i < shProg->NumBufferInterfaceBlocks; i++) {
 	 /* Add one for the terminating NUL character.
 	  */
 	 const GLint len = strlen(shProg->UniformBlocks[i].Name) + 1;
@@ -729,7 +729,11 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       if (!has_ubo)
          break;
 
-      *params = shProg->NumUniformBlocks;
+      *params = 0;
+      for (unsigned i = 0; i < shProg->NumBufferInterfaceBlocks; i++) {
+         if (!shProg->UniformBlocks[i].IsShaderStorage)
+            (*params)++;
+      }
       return;
    case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
       /* This enum isn't part of the OES extension for OpenGL ES 2.0.  It is

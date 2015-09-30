@@ -1074,11 +1074,12 @@ vec4_visitor::visit(ir_variable *ir)
       break;
 
    case ir_var_uniform:
+   case ir_var_shader_storage:
       reg = new(this->mem_ctx) dst_reg(UNIFORM, this->uniforms);
 
       /* Thanks to the lower_ubo_reference pass, we will see only
-       * ir_binop_ubo_load expressions and not ir_dereference_variable for UBO
-       * variables, so no need for them to be in variable_ht.
+       * ir_binop_{ubo,ssbo}_load expressions and not ir_dereference_variable
+       * for UBO/SSBO variables, so no need for them to be in variable_ht.
        *
        * Some uniforms, such as samplers and atomic counters, have no actual
        * storage, so we should ignore them.
@@ -1584,6 +1585,10 @@ vec4_visitor::visit(ir_expression *ir)
       emit(MOV(result_dst, op[0]));
       break;
 
+   case ir_unop_ssbo_unsized_array_length:
+      unreachable("not reached: should be handled by lower_ubo_reference");
+      break;
+
    case ir_binop_add:
       emit(ADD(result_dst, op[0], op[1]));
       break;
@@ -1790,6 +1795,10 @@ vec4_visitor::visit(ir_expression *ir)
       emit(RNDE(result_dst, op[0]));
       break;
 
+   case ir_unop_get_buffer_size:
+      unreachable("not reached: not implemented");
+      break;
+
    case ir_binop_min:
       emit_minmax(BRW_CONDITIONAL_L, result_dst, op[0], op[1]);
       break;
@@ -1863,7 +1872,7 @@ vec4_visitor::visit(ir_expression *ir)
           */
          brw_mark_surface_used(&prog_data->base,
                                prog_data->base.binding_table.ubo_start +
-                               shader_prog->NumUniformBlocks - 1);
+                               shader_prog->NumBufferInterfaceBlocks - 1);
       }
 
       if (const_offset_ir) {

@@ -1487,10 +1487,13 @@ nir_intrinsic_from_system_value(gl_system_value val)
       return nir_intrinsic_load_local_invocation_id;
    case SYSTEM_VALUE_WORK_GROUP_ID:
       return nir_intrinsic_load_work_group_id;
+   case SYSTEM_VALUE_NUM_WORK_GROUPS:
+      return nir_intrinsic_load_num_work_groups;
+   case SYSTEM_VALUE_PRIMITIVE_ID:
+      return nir_intrinsic_load_primitive_id;
    /* FINISHME: Add tessellation intrinsics.
    case SYSTEM_VALUE_TESS_COORD:
    case SYSTEM_VALUE_VERTICES_IN:
-   case SYSTEM_VALUE_PRIMITIVE_ID:
    case SYSTEM_VALUE_TESS_LEVEL_OUTER:
    case SYSTEM_VALUE_TESS_LEVEL_INNER:
     */
@@ -1523,8 +1526,12 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_SAMPLE_MASK_IN;
    case nir_intrinsic_load_local_invocation_id:
       return SYSTEM_VALUE_LOCAL_INVOCATION_ID;
+   case nir_intrinsic_load_num_work_groups:
+      return SYSTEM_VALUE_NUM_WORK_GROUPS;
    case nir_intrinsic_load_work_group_id:
       return SYSTEM_VALUE_WORK_GROUP_ID;
+   case nir_intrinsic_load_primitive_id:
+      return SYSTEM_VALUE_PRIMITIVE_ID;
    /* FINISHME: Add tessellation intrinsics.
       return SYSTEM_VALUE_TESS_COORD;
       return SYSTEM_VALUE_VERTICES_IN;

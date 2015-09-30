@@ -505,7 +505,7 @@ vec4_generator::generate_gs_thread_end(vec4_instruction *inst)
                  inst->base_mrf, /* starting mrf reg nr */
                  src,
                  BRW_URB_WRITE_EOT | inst->urb_write_flags,
-                 devinfo->gen >= 8 ? 2 : 1,/* message len */
+                 inst->mlen,
                  0,              /* response len */
                  0,              /* urb destination offset */
                  BRW_URB_SWIZZLE_INTERLEAVE);
@@ -541,8 +541,13 @@ vec4_generator::generate_gs_set_write_offset(struct brw_reg dst,
           src1.file == BRW_IMMEDIATE_VALUE &&
           src1.type == BRW_REGISTER_TYPE_UD &&
           src1.dw1.ud <= USHRT_MAX);
-   brw_MUL(p, suboffset(stride(dst, 2, 2, 1), 3), stride(src0, 8, 2, 4),
-           retype(src1, BRW_REGISTER_TYPE_UW));
+   if (src0.file == IMM) {
+      brw_MOV(p, suboffset(stride(dst, 2, 2, 1), 3),
+              brw_imm_ud(src0.dw1.ud * src1.dw1.ud));
+   } else {
+      brw_MUL(p, suboffset(stride(dst, 2, 2, 1), 3), stride(src0, 8, 2, 4),
+              retype(src1, BRW_REGISTER_TYPE_UW));
+   }
    brw_set_default_access_mode(p, BRW_ALIGN_16);
    brw_pop_insn_state(p);
 }
@@ -1033,6 +1038,32 @@ vec4_generator::generate_pull_constant_load(vec4_instruction *inst,
 }
 
 void
+vec4_generator::generate_get_buffer_size(vec4_instruction *inst,
+                                         struct brw_reg dst,
+                                         struct brw_reg src,
+                                         struct brw_reg surf_index)
+{
+   assert(devinfo->gen >= 7);
+   assert(surf_index.type == BRW_REGISTER_TYPE_UD &&
+          surf_index.file == BRW_IMMEDIATE_VALUE);
+
+   brw_SAMPLE(p,
+              dst,
+              inst->base_mrf,
+              src,
+              surf_index.dw1.ud,
+              0,
+              GEN5_SAMPLER_MESSAGE_SAMPLE_RESINFO,
+              1, /* response length */
+              inst->mlen,
+              inst->header_size > 0,
+              BRW_SAMPLER_SIMD_MODE_SIMD4X2,
+              BRW_SAMPLER_RETURN_FORMAT_SINT32);
+
+   brw_mark_surface_used(&prog_data->base, surf_index.dw1.ud);
+}
+
+void
 vec4_generator::generate_pull_constant_load_gen7(vec4_instruction *inst,
                                                  struct brw_reg dst,
                                                  struct brw_reg surf_index,
@@ -1407,6 +1438,11 @@ vec4_generator::generate_code(const cfg_t *cfg)
 
       case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
          generate_set_simd4x2_header_gen9(inst, dst);
+         break;
+
+
+      case VS_OPCODE_GET_BUFFER_SIZE:
+         generate_get_buffer_size(inst, dst, src[0], src[1]);
          break;
 
       case GS_OPCODE_URB_WRITE:

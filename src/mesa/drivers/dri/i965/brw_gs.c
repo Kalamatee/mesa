@@ -73,6 +73,11 @@ brw_codegen_gs_prog(struct brw_context *brw,
    c.prog_data.base.base.nr_params = param_count;
    c.prog_data.base.base.nr_image_params = gs->NumImages;
 
+   if (brw->gen >= 8) {
+      c.prog_data.static_vertex_count = !gp->program.Base.nir ? -1 :
+         nir_gs_count_vertices(gp->program.Base.nir);
+   }
+
    if (brw->gen >= 7) {
       if (gp->program.OutputType == GL_POINTS) {
          /* When the output type is points, the geometry shader may output data
@@ -120,7 +125,8 @@ brw_codegen_gs_prog(struct brw_context *brw,
    GLbitfield64 outputs_written = gp->program.Base.OutputsWritten;
 
    brw_compute_vue_map(brw->intelScreen->devinfo,
-                       &c.prog_data.base.vue_map, outputs_written);
+                       &c.prog_data.base.vue_map, outputs_written,
+                       prog ? prog->SeparateShader : false);
 
    /* Compute the output vertex size.
     *
@@ -242,8 +248,22 @@ brw_codegen_gs_prog(struct brw_context *brw,
    c.prog_data.output_topology =
       get_hw_prim_for_gl_prim(gp->program.OutputType);
 
+   /* The GLSL linker will have already matched up GS inputs and the outputs
+    * of prior stages.  The driver does extend VS outputs in some cases, but
+    * only for legacy OpenGL or Gen4-5 hardware, neither of which offer
+    * geometry shader support.  So we can safely ignore that.
+    *
+    * For SSO pipelines, we use a fixed VUE map layout based on variable
+    * locations, so we can rely on rendezvous-by-location making this work.
+    *
+    * However, we need to ignore VARYING_SLOT_PRIMITIVE_ID, as it's not
+    * written by previous stages and shows up via payload magic.
+    */
+   GLbitfield64 inputs_read =
+      gp->program.Base.InputsRead & ~VARYING_BIT_PRIMITIVE_ID;
    brw_compute_vue_map(brw->intelScreen->devinfo,
-                       &c.input_vue_map, c.key.input_varyings);
+                       &c.input_vue_map, inputs_read,
+                       prog->SeparateShader);
 
    /* GS inputs are read from the VUE 256 bits (2 vec4's) at a time, so we
     * need to program a URB read length of ceiling(num_slots / 2).
@@ -282,8 +302,7 @@ brw_gs_state_dirty(struct brw_context *brw)
    return brw_state_dirty(brw,
                           _NEW_TEXTURE,
                           BRW_NEW_GEOMETRY_PROGRAM |
-                          BRW_NEW_TRANSFORM_FEEDBACK |
-                          BRW_NEW_VUE_MAP_VS);
+                          BRW_NEW_TRANSFORM_FEEDBACK);
 }
 
 static void
@@ -303,9 +322,6 @@ brw_gs_populate_key(struct brw_context *brw,
    /* _NEW_TEXTURE */
    brw_populate_sampler_prog_key_data(ctx, prog, stage_state->sampler_count,
                                       &key->tex);
-
-   /* BRW_NEW_VUE_MAP_VS */
-   key->input_varyings = brw->vue_map_vs.slots_valid;
 }
 
 void
@@ -324,11 +340,6 @@ brw_upload_gs_prog(struct brw_context *brw)
 
    if (gp == NULL) {
       /* No geometry shader.  Vertex data just passes straight through. */
-      if (brw->ctx.NewDriverState & BRW_NEW_VUE_MAP_VS) {
-         brw->vue_map_geom_out = brw->vue_map_vs;
-         brw->ctx.NewDriverState |= BRW_NEW_VUE_MAP_GEOM_OUT;
-      }
-
       if (brw->gen == 6 &&
           (brw->ctx.NewDriverState & BRW_NEW_TRANSFORM_FEEDBACK)) {
          gen6_brw_upload_ff_gs_prog(brw);
@@ -355,12 +366,6 @@ brw_upload_gs_prog(struct brw_context *brw)
       (void)success;
    }
    brw->gs.base.prog_data = &brw->gs.prog_data->base.base;
-
-   if (brw->gs.prog_data->base.vue_map.slots_valid !=
-       brw->vue_map_geom_out.slots_valid) {
-      brw->vue_map_geom_out = brw->gs.prog_data->base.vue_map;
-      brw->ctx.NewDriverState |= BRW_NEW_VUE_MAP_GEOM_OUT;
-   }
 }
 
 bool
@@ -381,11 +386,6 @@ brw_gs_precompile(struct gl_context *ctx,
 
    brw_setup_tex_for_precompile(brw, &key.tex, prog);
    key.program_string_id = bgp->id;
-
-   /* Assume that the set of varyings coming in from the vertex shader exactly
-    * matches what the geometry shader requires.
-    */
-   key.input_varyings = gp->Base.InputsRead;
 
    success = brw_codegen_gs_prog(brw, shader_prog, bgp, &key);
 
