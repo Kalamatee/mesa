@@ -25,6 +25,7 @@
 #include "program/program.h"
 #include "brw_state.h"
 #include "brw_defines.h"
+#include "brw_wm.h"
 #include "intel_batchbuffer.h"
 
 void
@@ -65,9 +66,39 @@ gen8_upload_ps_extra(struct brw_context *brw,
    if (brw->gen >= 9 && prog_data->pulls_bary)
       dw1 |= GEN9_PSX_SHADER_PULLS_BARY;
 
-   if (_mesa_active_fragment_shader_has_atomic_ops(&brw->ctx) ||
-       prog_data->base.nr_image_params)
+   /* The stricter cross-primitive coherency guarantees that the hardware
+    * gives us with the "Accesses UAV" bit set for at least one shader stage
+    * and the "UAV coherency required" bit set on the 3DPRIMITIVE command are
+    * redundant within the current image, atomic counter and SSBO GL APIs,
+    * which all have very loose ordering and coherency requirements and
+    * generally rely on the application to insert explicit barriers when a
+    * shader invocation is expected to see the memory writes performed by the
+    * invocations of some previous primitive.  Regardless of the value of "UAV
+    * coherency required", the "Accesses UAV" bits will implicitly cause an in
+    * most cases useless DC flush when the lowermost stage with the bit set
+    * finishes execution.
+    *
+    * It would be nice to disable it, but in some cases we can't because on
+    * Gen8+ it also has an influence on rasterization via the PS UAV-only
+    * signal (which could be set independently from the coherency mechanism in
+    * the 3DSTATE_WM command on Gen7), and because in some cases it will
+    * determine whether the hardware skips execution of the fragment shader or
+    * not via the ThreadDispatchEnable signal.  However if we know that
+    * GEN8_PS_BLEND_HAS_WRITEABLE_RT is going to be set and
+    * GEN8_PSX_PIXEL_SHADER_NO_RT_WRITE is not set it shouldn't make any
+    * difference so we may just disable it here.
+    *
+    * BRW_NEW_FS_PROG_DATA | BRW_NEW_FRAGMENT_PROGRAM | _NEW_BUFFERS | _NEW_COLOR
+    */
+   if ((_mesa_active_fragment_shader_has_atomic_ops(&brw->ctx) ||
+        prog_data->base.nr_image_params) &&
+       !brw_color_buffer_write_enabled(brw))
       dw1 |= GEN8_PSX_SHADER_HAS_UAV;
+
+   if (prog_data->computed_stencil) {
+      assert(brw->gen >= 9);
+      dw1 |= GEN9_PSX_SHADER_COMPUTES_STENCIL;
+   }
 
    BEGIN_BATCH(2);
    OUT_BATCH(_3DSTATE_PS_EXTRA << 16 | (2 - 2));
@@ -91,7 +122,7 @@ upload_ps_extra(struct brw_context *brw)
 
 const struct brw_tracked_state gen8_ps_extra = {
    .dirty = {
-      .mesa  = 0,
+      .mesa  = _NEW_BUFFERS | _NEW_COLOR,
       .brw   = BRW_NEW_CONTEXT |
                BRW_NEW_FRAGMENT_PROGRAM |
                BRW_NEW_FS_PROG_DATA |
@@ -163,7 +194,7 @@ gen8_upload_ps_state(struct brw_context *brw,
 
    const unsigned sampler_count =
       DIV_ROUND_UP(CLAMP(stage_state->sampler_count, 0, 16), 4);
-   dw3 |= SET_FIELD(sampler_count, GEN7_PS_SAMPLER_COUNT); 
+   dw3 |= SET_FIELD(sampler_count, GEN7_PS_SAMPLER_COUNT);
 
    /* BRW_NEW_FS_PROG_DATA */
    dw3 |=

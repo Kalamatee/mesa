@@ -52,9 +52,7 @@ gen8_upload_gs_state(struct brw_context *brw)
                 ((ALIGN(stage_state->sampler_count, 4)/4) <<
                  GEN6_GS_SAMPLER_COUNT_SHIFT) |
                 ((prog_data->base.binding_table.size_bytes / 4) <<
-                 GEN6_GS_BINDING_TABLE_ENTRY_COUNT_SHIFT) |
-                (prog_data->base.nr_image_params ?
-                 HSW_GS_UAV_ACCESS_ENABLE : 0));
+                 GEN6_GS_BINDING_TABLE_ENTRY_COUNT_SHIFT));
 
       if (brw->gs.prog_data->base.base.total_scratch) {
          OUT_RELOC64(stage_state->scratch_bo,
@@ -70,6 +68,8 @@ gen8_upload_gs_state(struct brw_context *brw)
                  GEN7_GS_OUTPUT_VERTEX_SIZE_SHIFT) |
                 (brw->gs.prog_data->output_topology <<
                  GEN7_GS_OUTPUT_TOPOLOGY_SHIFT) |
+                (prog_data->include_vue_handles ?
+                 GEN7_GS_INCLUDE_VERTEX_HANDLES : 0) |
                 (prog_data->urb_read_length <<
                  GEN6_GS_URB_READ_LENGTH_SHIFT) |
                 (0 << GEN6_GS_URB_ENTRY_READ_OFFSET_SHIFT) |

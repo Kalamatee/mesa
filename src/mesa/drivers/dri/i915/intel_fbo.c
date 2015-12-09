@@ -64,19 +64,6 @@ intel_get_rb_region(struct gl_framebuffer *fb, GLuint attIndex)
       return NULL;
 }
 
-/**
- * Create a new framebuffer object.
- */
-static struct gl_framebuffer *
-intel_new_framebuffer(struct gl_context * ctx, GLuint name)
-{
-   /* Only drawable state in intel_framebuffer at this time, just use Mesa's
-    * class
-    */
-   return _mesa_new_framebuffer(ctx, name);
-}
-
-
 /** Called by gl_renderbuffer::Delete() */
 static void
 intel_delete_renderbuffer(struct gl_context *ctx, struct gl_renderbuffer *rb)
@@ -658,6 +645,11 @@ intel_blit_framebuffer_with_blitter(struct gl_context *ctx,
 {
    struct intel_context *intel = intel_context(ctx);
 
+   /* Sync up the state of window system buffers.  We need to do this before
+    * we go looking for the buffers.
+    */
+   intel_prepare_render(intel);
+
    if (mask & GL_COLOR_BUFFER_BIT) {
       GLint i;
       struct gl_renderbuffer *src_rb = readFb->_ColorReadBuffer;
@@ -765,7 +757,6 @@ intel_blit_framebuffer(struct gl_context *ctx,
 void
 intel_fbo_init(struct intel_context *intel)
 {
-   intel->ctx.Driver.NewFramebuffer = intel_new_framebuffer;
    intel->ctx.Driver.NewRenderbuffer = intel_new_renderbuffer;
    intel->ctx.Driver.MapRenderbuffer = intel_map_renderbuffer;
    intel->ctx.Driver.UnmapRenderbuffer = intel_unmap_renderbuffer;

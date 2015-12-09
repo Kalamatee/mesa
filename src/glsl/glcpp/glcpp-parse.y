@@ -2384,9 +2384,12 @@ _glcpp_parser_handle_version_declaration(glcpp_parser_t *parser, intmax_t versio
                  add_builtin_define(parser, "GL_OES_standard_derivatives", 1);
               if (extensions->ARB_texture_multisample)
                  add_builtin_define(parser, "GL_OES_texture_storage_multisample_2d_array", 1);
+              if (extensions->ARB_blend_func_extended)
+                 add_builtin_define(parser, "GL_EXT_blend_func_extended", 1);
 	   }
 	} else {
 	   add_builtin_define(parser, "GL_ARB_draw_buffers", 1);
+           add_builtin_define(parser, "GL_ARB_enhanced_layouts", 1);
            add_builtin_define(parser, "GL_ARB_separate_shader_objects", 1);
 	   add_builtin_define(parser, "GL_ARB_texture_rectangle", 1);
            add_builtin_define(parser, "GL_AMD_shader_trinary_minmax", 1);
@@ -2425,6 +2428,9 @@ _glcpp_parser_handle_version_declaration(glcpp_parser_t *parser, intmax_t versio
 
 	      if (extensions->ARB_shader_bit_encoding)
 	         add_builtin_define(parser, "GL_ARB_shader_bit_encoding", 1);
+
+	      if (extensions->ARB_shader_clock)
+	         add_builtin_define(parser, "GL_ARB_shader_clock", 1);
 
 	      if (extensions->ARB_uniform_buffer_object)
 	         add_builtin_define(parser, "GL_ARB_uniform_buffer_object", 1);
@@ -2506,6 +2512,9 @@ _glcpp_parser_handle_version_declaration(glcpp_parser_t *parser, intmax_t versio
 	if (extensions != NULL) {
 	   if (extensions->EXT_shader_integer_mix)
 	      add_builtin_define(parser, "GL_EXT_shader_integer_mix", 1);
+
+	   if (extensions->EXT_shader_samples_identical)
+	      add_builtin_define(parser, "GL_EXT_shader_samples_identical", 1);
 	}
 
 	if (version >= 150)

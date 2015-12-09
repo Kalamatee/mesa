@@ -78,13 +78,16 @@ nir_lower_outputs_to_temporaries(nir_shader *shader)
 {
    struct lower_outputs_state state;
 
+   if (shader->stage == MESA_SHADER_TESS_CTRL)
+      return;
+
    state.shader = shader;
    exec_list_move_nodes_to(&shader->outputs, &state.old_outputs);
 
    /* Walk over all of the outputs turn each output into a temporary and
     * make a new variable for the actual output.
     */
-   foreach_list_typed(nir_variable, var, node, &state.old_outputs) {
+   nir_foreach_variable(var, &state.old_outputs) {
       nir_variable *output = ralloc(shader, nir_variable);
       memcpy(output, var, sizeof *output);
 

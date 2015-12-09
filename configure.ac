@@ -81,7 +81,7 @@ PRESENTPROTO_REQUIRED=1.0
 LIBUDEV_REQUIRED=151
 GLPROTO_REQUIRED=1.4.14
 LIBOMXIL_BELLAGIO_REQUIRED=0.0
-LIBVA_REQUIRED=0.35.0
+LIBVA_REQUIRED=0.38.0
 VDPAU_REQUIRED=1.1
 WAYLAND_REQUIRED=1.2.0
 XCB_REQUIRED=1.9.3
@@ -106,6 +106,8 @@ AC_SYS_LARGEFILE
 
 LT_PREREQ([2.2])
 LT_INIT([disable-static])
+
+AC_CHECK_PROG(RM, rm, [rm -f])
 
 AX_PROG_BISON([],
               AS_IF([test ! -f "$srcdir/src/glsl/glcpp/glcpp-parse.c"],
@@ -193,6 +195,13 @@ if test "x$GCC" = xyes -a "x$acv_mesa_CLANG" = xno; then
     if test "x$cross_compiling" = xyes; then
         GEN_ASM_OFFSETS=yes
     fi
+fi
+
+dnl We don't support building Mesa with Sun C compiler
+dnl https://bugs.freedesktop.org/show_bug.cgi?id=93189
+AC_CHECK_DECL([__SUNPRO_C], [SUNCC=yes], [SUNCC=no])
+if test "x$SUNCC" = xyes; then
+    AC_MSG_ERROR([Building with Sun C compiler is not supported, use GCC instead.])
 fi
 
 dnl Check for compiler builtins
@@ -765,6 +774,11 @@ linux*)
     dri3_default=no
     ;;
 esac
+
+if test "x$enable_dri" = xno; then
+    dri3_default=no
+fi
+
 AC_ARG_ENABLE([dri3],
     [AS_HELP_STRING([--enable-dri3],
         [enable DRI3 @<:@default=auto@:>@])],
@@ -864,7 +878,7 @@ GALLIUM_DRIVERS_DEFAULT="r300,r600,svga,swrast"
 AC_ARG_WITH([gallium-drivers],
     [AS_HELP_STRING([--with-gallium-drivers@<:@=DIRS...@:>@],
         [comma delimited Gallium drivers list, e.g.
-        "i915,ilo,nouveau,r300,r600,radeonsi,freedreno,svga,swrast,vc4"
+        "i915,ilo,nouveau,r300,r600,radeonsi,freedreno,svga,swrast,vc4,virgl"
         @<:@default=r300,r600,svga,swrast@:>@])],
     [with_gallium_drivers="$withval"],
     [with_gallium_drivers="$GALLIUM_DRIVERS_DEFAULT"])
@@ -954,8 +968,13 @@ gnu*|cygwin*)
     dri_platform='drm' ;;
 esac
 
+if test "x$enable_dri" = xyes -a "x$dri_platform" = xdrm -a "x$have_libdrm" = xyes; then
+    have_drisw_kms='yes'
+fi
+
 AM_CONDITIONAL(HAVE_DRICOMMON, test "x$enable_dri" = xyes )
 AM_CONDITIONAL(HAVE_DRISW, test "x$enable_dri" = xyes )
+AM_CONDITIONAL(HAVE_DRISW_KMS, test "x$have_drisw_kms" = xyes )
 AM_CONDITIONAL(HAVE_DRI2, test "x$enable_dri" = xyes -a "x$dri_platform" = xdrm -a "x$have_libdrm" = xyes )
 AM_CONDITIONAL(HAVE_DRI3, test "x$enable_dri3" = xyes -a "x$dri_platform" = xdrm -a "x$have_libdrm" = xyes )
 AM_CONDITIONAL(HAVE_APPLEDRI, test "x$enable_dri" = xyes -a "x$dri_platform" = xapple )
@@ -988,10 +1007,6 @@ dnl
 
 if test -n "$with_gallium_drivers" -a "x$enable_glx$enable_xlib_glx" = xyesyes; then
     NEED_WINSYS_XLIB="yes"
-fi
-
-if test "x$enable_dri" = xyes; then
-    enable_gallium_loader="$enable_shared_pipe_drivers"
 fi
 
 if test "x$enable_gallium_osmesa" = xyes; then
@@ -1224,7 +1239,8 @@ xyesno)
 
             if test x"$enable_dri3" = xyes; then
                PKG_CHECK_EXISTS([xcb >= $XCB_REQUIRED], [], AC_MSG_ERROR([DRI3 requires xcb >= $XCB_REQUIRED]))
-               dri_modules="$dri_modules xcb-dri3 xcb-present xcb-sync xshmfence >= $XSHMFENCE_REQUIRED"
+               dri3_modules="xcb-dri3 xcb-present xcb-sync xshmfence >= $XSHMFENCE_REQUIRED"
+               PKG_CHECK_MODULES([XCB_DRI3], [$dri3_modules])
             fi
         fi
         if test x"$dri_platform" = xapple ; then
@@ -1565,6 +1581,12 @@ if test "x$enable_egl" = xyes; then
             if test "x$enable_shared_glapi" = xno; then
                 AC_MSG_ERROR([egl_dri2 requires --enable-shared-glapi])
             fi
+            if test "x$enable_dri3" = xyes; then
+                HAVE_EGL_DRIVER_DRI3=1
+                if test "x$enable_shared_glapi" = xno; then
+                    AC_MSG_ERROR([egl_dri3 requires --enable-shared-glapi])
+                fi
+            fi
         else
             # Avoid building an "empty" libEGL. Drop/update this
             # when other backends (haiku?) come along.
@@ -1575,6 +1597,8 @@ if test "x$enable_egl" = xyes; then
 fi
 AM_CONDITIONAL(HAVE_EGL, test "x$enable_egl" = xyes)
 AC_SUBST([EGL_LIB_DEPS])
+
+gallium_st="mesa"
 
 dnl
 dnl XA configuration
@@ -1588,7 +1612,7 @@ if test "x$enable_xa" = xyes; then
           enabling XA.
           Example: ./configure --enable-xa --with-gallium-drivers=svga...])
     fi
-    enable_gallium_loader=$enable_shared_pipe_drivers
+    gallium_st="$gallium_st xa"
 fi
 AM_CONDITIONAL(HAVE_ST_XA, test "x$enable_xa" = xyes)
 
@@ -1633,25 +1657,25 @@ AM_CONDITIONAL(NEED_GALLIUM_VL_WINSYS, test "x$need_gallium_vl_winsys" = xyes)
 
 if test "x$enable_xvmc" = xyes; then
     PKG_CHECK_MODULES([XVMC], [xvmc >= $XVMC_REQUIRED])
-    enable_gallium_loader=$enable_shared_pipe_drivers
+    gallium_st="$gallium_st xvmc"
 fi
 AM_CONDITIONAL(HAVE_ST_XVMC, test "x$enable_xvmc" = xyes)
 
 if test "x$enable_vdpau" = xyes; then
     PKG_CHECK_MODULES([VDPAU], [vdpau >= $VDPAU_REQUIRED])
-    enable_gallium_loader=$enable_shared_pipe_drivers
+    gallium_st="$gallium_st vdpau"
 fi
 AM_CONDITIONAL(HAVE_ST_VDPAU, test "x$enable_vdpau" = xyes)
 
 if test "x$enable_omx" = xyes; then
     PKG_CHECK_MODULES([OMX], [libomxil-bellagio >= $LIBOMXIL_BELLAGIO_REQUIRED])
-    enable_gallium_loader=$enable_shared_pipe_drivers
+    gallium_st="$gallium_st omx"
 fi
 AM_CONDITIONAL(HAVE_ST_OMX, test "x$enable_omx" = xyes)
 
 if test "x$enable_va" = xyes; then
     PKG_CHECK_MODULES([VA], [libva >= $LIBVA_REQUIRED])
-    enable_gallium_loader=$enable_shared_pipe_drivers
+    gallium_st="$gallium_st va"
 fi
 AM_CONDITIONAL(HAVE_ST_VA, test "x$enable_va" = xyes)
 
@@ -1673,7 +1697,7 @@ if test "x$enable_nine" = xyes; then
         AC_MSG_WARN([using nine together with wine requires DRI3 enabled system])
     fi
 
-    enable_gallium_loader=$enable_shared_pipe_drivers
+    gallium_st="$gallium_st nine"
 fi
 AM_CONDITIONAL(HAVE_ST_NINE, test "x$enable_nine" = xyes)
 
@@ -1711,8 +1735,7 @@ if test "x$enable_opencl" = xyes; then
         AC_SUBST([LIBCLC_LIBEXECDIR])
     fi
 
-    # XXX: Use $enable_shared_pipe_drivers once converted to use static/shared pipe-drivers
-    enable_gallium_loader=yes
+    gallium_st="$gallium_st clover"
 
     if test "x$enable_opencl_icd" = xyes; then
         OPENCL_LIBNAME="MesaOpenCL"
@@ -1992,10 +2015,6 @@ AC_SUBST([XVMC_LIB_INSTALL_DIR])
 dnl
 dnl Gallium Tests
 dnl
-if test "x$enable_gallium_tests" = xyes; then
-    # XXX: Use $enable_shared_pipe_drivers once converted to use static/shared pipe-drivers
-    enable_gallium_loader=yes
-fi
 AM_CONDITIONAL(HAVE_GALLIUM_TESTS, test "x$enable_gallium_tests" = xyes)
 
 dnl Directory for VDPAU libs
@@ -2050,14 +2069,8 @@ gallium_require_llvm() {
 }
 
 gallium_require_drm_loader() {
-    if test "x$enable_gallium_loader" = xyes; then
-        if test "x$need_pci_id$have_pci_id" = xyesno; then
-            AC_MSG_ERROR([Gallium drm loader requires libudev >= $LIBUDEV_REQUIRED or sysfs])
-        fi
-        enable_gallium_drm_loader=yes
-    fi
-    if test "x$enable_va" = xyes && test "x$7" != x; then
-         GALLIUM_TARGET_DIRS="$GALLIUM_TARGET_DIRS $7"
+    if test "x$need_pci_id$have_pci_id" = xyesno; then
+        AC_MSG_ERROR([Gallium drm loader requires libudev >= $LIBUDEV_REQUIRED or sysfs])
     fi
 }
 
@@ -2172,7 +2185,15 @@ if test -n "$with_gallium_drivers"; then
             gallium_require_drm_loader
 
             PKG_CHECK_MODULES([SIMPENROSE], [simpenrose],
-                              [USE_VC4_SIMULATOR=yes], [USE_VC4_SIMULATOR=no])
+                              [USE_VC4_SIMULATOR=yes;
+                               DEFINES="$DEFINES -DUSE_VC4_SIMULATOR"],
+                              [USE_VC4_SIMULATOR=no])
+            ;;
+        xvirgl)
+            HAVE_GALLIUM_VIRGL=yes
+            gallium_require_drm "virgl"
+            gallium_require_drm_loader
+            require_egl_drm "virgl"
             ;;
         *)
             AC_MSG_ERROR([Unknown Gallium driver: $driver])
@@ -2245,25 +2266,18 @@ AM_CONDITIONAL(HAVE_GALLIUM_FREEDRENO, test "x$HAVE_GALLIUM_FREEDRENO" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_SOFTPIPE, test "x$HAVE_GALLIUM_SOFTPIPE" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_LLVMPIPE, test "x$HAVE_GALLIUM_LLVMPIPE" = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_VC4, test "x$HAVE_GALLIUM_VC4" = xyes)
+AM_CONDITIONAL(HAVE_GALLIUM_VIRGL, test "x$HAVE_GALLIUM_VIRGL" = xyes)
 
 AM_CONDITIONAL(HAVE_GALLIUM_STATIC_TARGETS, test "x$enable_shared_pipe_drivers" = xno)
 
-# NOTE: anything using xcb or other client side libs ends up in separate
-#       _CLIENT variables.  The pipe loader is built in two variants,
-#       one that is standalone and does not link any x client libs (for
-#       use by XA tracker in particular, but could be used in any case
-#       where communication with xserver is not desired).
-if test "x$enable_gallium_loader" = xyes; then
-    if test "x$enable_dri" = xyes; then
-        GALLIUM_PIPE_LOADER_DEFINES="$GALLIUM_PIPE_LOADER_DEFINES -DHAVE_PIPE_LOADER_DRI"
-    fi
-
-    if test "x$enable_gallium_drm_loader" = xyes; then
-        GALLIUM_PIPE_LOADER_DEFINES="$GALLIUM_PIPE_LOADER_DEFINES -DHAVE_PIPE_LOADER_DRM"
-    fi
-
-    AC_SUBST([GALLIUM_PIPE_LOADER_DEFINES])
+if test "x$enable_dri" = xyes; then
+    GALLIUM_PIPE_LOADER_DEFINES="$GALLIUM_PIPE_LOADER_DEFINES -DHAVE_PIPE_LOADER_DRI"
 fi
+
+if test "x$have_drisw_kms" = xyes; then
+    GALLIUM_PIPE_LOADER_DEFINES="$GALLIUM_PIPE_LOADER_DEFINES -DHAVE_PIPE_LOADER_KMS"
+fi
+AC_SUBST([GALLIUM_PIPE_LOADER_DEFINES])
 
 AM_CONDITIONAL(HAVE_I915_DRI, test x$HAVE_I915_DRI = xyes)
 AM_CONDITIONAL(HAVE_I965_DRI, test x$HAVE_I965_DRI = xyes)
@@ -2278,8 +2292,6 @@ AM_CONDITIONAL(NEED_RADEON_DRM_WINSYS, test "x$HAVE_GALLIUM_R300" = xyes -o \
 AM_CONDITIONAL(NEED_WINSYS_XLIB, test "x$NEED_WINSYS_XLIB" = xyes)
 AM_CONDITIONAL(NEED_RADEON_LLVM, test x$NEED_RADEON_LLVM = xyes)
 AM_CONDITIONAL(USE_R600_LLVM_COMPILER, test x$USE_R600_LLVM_COMPILER = xyes)
-AM_CONDITIONAL(HAVE_LOADER_GALLIUM, test x$enable_gallium_loader = xyes)
-AM_CONDITIONAL(HAVE_DRM_LOADER_GALLIUM, test x$enable_gallium_drm_loader = xyes)
 AM_CONDITIONAL(HAVE_GALLIUM_COMPUTE, test x$enable_opencl = xyes)
 AM_CONDITIONAL(HAVE_MESA_LLVM, test x$MESA_LLVM = x1)
 AM_CONDITIONAL(USE_VC4_SIMULATOR, test x$USE_VC4_SIMULATOR = xyes)
@@ -2365,6 +2377,7 @@ AC_CONFIG_FILES([Makefile
 		src/gallium/drivers/svga/Makefile
 		src/gallium/drivers/trace/Makefile
 		src/gallium/drivers/vc4/Makefile
+		src/gallium/drivers/virgl/Makefile
 		src/gallium/state_trackers/clover/Makefile
 		src/gallium/state_trackers/dri/Makefile
 		src/gallium/state_trackers/glx/xlib/Makefile
@@ -2405,6 +2418,8 @@ AC_CONFIG_FILES([Makefile
 		src/gallium/winsys/sw/wrapper/Makefile
 		src/gallium/winsys/sw/xlib/Makefile
 		src/gallium/winsys/vc4/drm/Makefile
+		src/gallium/winsys/virgl/drm/Makefile
+		src/gallium/winsys/virgl/vtest/Makefile
 		src/gbm/Makefile
 		src/gbm/main/gbm.pc
 		src/glsl/Makefile
@@ -2498,6 +2513,9 @@ if test "$enable_egl" = yes; then
     if test "x$HAVE_EGL_DRIVER_DRI2" != "x"; then
         egl_drivers="$egl_drivers builtin:egl_dri2"
     fi
+    if test "x$HAVE_EGL_DRIVER_DRI3" != "x"; then
+        egl_drivers="$egl_drivers builtin:egl_dri3"
+    fi
 
     echo "        EGL drivers:    $egl_drivers"
 fi
@@ -2513,7 +2531,8 @@ fi
 
 echo ""
 if test -n "$with_gallium_drivers"; then
-    echo "        Gallium:         yes"
+    echo "        Gallium drivers: $gallium_drivers"
+    echo "        Gallium st:      $gallium_st"
 else
     echo "        Gallium:         no"
 fi

@@ -24,6 +24,8 @@ PUSH_AVAIL(struct nouveau_pushbuf *push)
 static inline bool
 PUSH_SPACE(struct nouveau_pushbuf *push, uint32_t size)
 {
+   /* Provide a buffer so that fences always have room to be emitted */
+   size += 8;
    if (PUSH_AVAIL(push) < size)
       return nouveau_pushbuf_space(push, size, 0, 0) == 0;
    return true;
@@ -63,18 +65,18 @@ PUSH_KICK(struct nouveau_pushbuf *push)
 static inline uint32_t
 nouveau_screen_transfer_flags(unsigned pipe)
 {
-	uint32_t flags = 0;
+   uint32_t flags = 0;
 
-	if (!(pipe & PIPE_TRANSFER_UNSYNCHRONIZED)) {
-		if (pipe & PIPE_TRANSFER_READ)
-			flags |= NOUVEAU_BO_RD;
-		if (pipe & PIPE_TRANSFER_WRITE)
-			flags |= NOUVEAU_BO_WR;
-		if (pipe & PIPE_TRANSFER_DONTBLOCK)
-			flags |= NOUVEAU_BO_NOBLOCK;
-	}
+   if (!(pipe & PIPE_TRANSFER_UNSYNCHRONIZED)) {
+      if (pipe & PIPE_TRANSFER_READ)
+         flags |= NOUVEAU_BO_RD;
+      if (pipe & PIPE_TRANSFER_WRITE)
+         flags |= NOUVEAU_BO_WR;
+      if (pipe & PIPE_TRANSFER_DONTBLOCK)
+         flags |= NOUVEAU_BO_NOBLOCK;
+   }
 
-	return flags;
+   return flags;
 }
 
 extern struct pipe_screen *

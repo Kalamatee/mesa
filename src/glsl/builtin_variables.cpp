@@ -327,6 +327,7 @@ per_vertex_accumulator::add_field(int slot, const glsl_type *type,
    this->fields[this->num_fields].centroid = 0;
    this->fields[this->num_fields].sample = 0;
    this->fields[this->num_fields].patch = 0;
+   this->fields[this->num_fields].precision = GLSL_PRECISION_NONE;
    this->num_fields++;
 }
 
@@ -376,6 +377,11 @@ private:
       return add_variable(name, type, ir_var_shader_out, slot);
    }
 
+   ir_variable *add_index_output(int slot, int index, const glsl_type *type, const char *name)
+   {
+      return add_index_variable(name, type, ir_var_shader_out, slot, index);
+   }
+
    ir_variable *add_system_value(int slot, const glsl_type *type,
                                  const char *name)
    {
@@ -384,6 +390,8 @@ private:
 
    ir_variable *add_variable(const char *name, const glsl_type *type,
                              enum ir_variable_mode mode, int slot);
+   ir_variable *add_index_variable(const char *name, const glsl_type *type,
+                             enum ir_variable_mode mode, int slot, int index);
    ir_variable *add_uniform(const glsl_type *type, const char *name);
    ir_variable *add_const(const char *name, int value);
    ir_variable *add_const_ivec3(const char *name, int x, int y, int z);
@@ -429,6 +437,46 @@ builtin_variable_generator::builtin_variable_generator(
 {
 }
 
+ir_variable *
+builtin_variable_generator::add_index_variable(const char *name,
+                                         const glsl_type *type,
+                                         enum ir_variable_mode mode, int slot, int index)
+{
+   ir_variable *var = new(symtab) ir_variable(type, name, mode);
+   var->data.how_declared = ir_var_declared_implicitly;
+
+   switch (var->data.mode) {
+   case ir_var_auto:
+   case ir_var_shader_in:
+   case ir_var_uniform:
+   case ir_var_system_value:
+      var->data.read_only = true;
+      break;
+   case ir_var_shader_out:
+   case ir_var_shader_storage:
+      break;
+   default:
+      /* The only variables that are added using this function should be
+       * uniforms, shader storage, shader inputs, and shader outputs, constants
+       * (which use ir_var_auto), and system values.
+       */
+      assert(0);
+      break;
+   }
+
+   var->data.location = slot;
+   var->data.explicit_location = (slot >= 0);
+   var->data.explicit_index = 1;
+   var->data.index = index;
+
+   /* Once the variable is created an initialized, add it to the symbol table
+    * and add the declaration to the IR stream.
+    */
+   instructions->push_tail(var);
+
+   symtab->add_variable(var);
+   return var;
+}
 
 ir_variable *
 builtin_variable_generator::add_variable(const char *name,
@@ -580,6 +628,14 @@ builtin_variable_generator::generate_constants()
          add_const("gl_MaxVaryingVectors",
                    state->ctx->Const.MaxVarying);
       }
+
+      /* EXT_blend_func_extended brings a built in constant
+       * for determining number of dual source draw buffers
+       */
+      if (state->EXT_blend_func_extended_enable) {
+         add_const("gl_MaxDualSourceDrawBuffersEXT",
+                   state->Const.MaxDualSourceDrawBuffers);
+      }
    } else {
       add_const("gl_MaxVertexUniformComponents",
                 state->Const.MaxVertexUniformComponents);
@@ -710,7 +766,7 @@ builtin_variable_generator::generate_constants()
       }
    }
 
-   if (state->is_version(430, 0) || state->ARB_compute_shader_enable) {
+   if (state->is_version(430, 310) || state->ARB_compute_shader_enable) {
       add_const("gl_MaxComputeAtomicCounterBuffers", MAX_COMPUTE_ATOMIC_COUNTER_BUFFERS);
       add_const("gl_MaxComputeAtomicCounters", MAX_COMPUTE_ATOMIC_COUNTERS);
       add_const("gl_MaxComputeImageUniforms", MAX_COMPUTE_IMAGE_UNIFORMS);
@@ -887,16 +943,22 @@ builtin_variable_generator::generate_uniforms()
 void
 builtin_variable_generator::generate_vs_special_vars()
 {
+   ir_variable *var;
+
    if (state->is_version(130, 300))
       add_system_value(SYSTEM_VALUE_VERTEX_ID, int_t, "gl_VertexID");
    if (state->ARB_draw_instanced_enable)
       add_system_value(SYSTEM_VALUE_INSTANCE_ID, int_t, "gl_InstanceIDARB");
    if (state->ARB_draw_instanced_enable || state->is_version(140, 300))
       add_system_value(SYSTEM_VALUE_INSTANCE_ID, int_t, "gl_InstanceID");
-   if (state->AMD_vertex_shader_layer_enable)
-      add_output(VARYING_SLOT_LAYER, int_t, "gl_Layer");
-   if (state->AMD_vertex_shader_viewport_index_enable)
-      add_output(VARYING_SLOT_VIEWPORT, int_t, "gl_ViewportIndex");
+   if (state->AMD_vertex_shader_layer_enable) {
+      var = add_output(VARYING_SLOT_LAYER, int_t, "gl_Layer");
+      var->data.interpolation = INTERP_QUALIFIER_FLAT;
+   }
+   if (state->AMD_vertex_shader_viewport_index_enable) {
+      var = add_output(VARYING_SLOT_VIEWPORT, int_t, "gl_ViewportIndex");
+      var->data.interpolation = INTERP_QUALIFIER_FLAT;
+   }
    if (compatibility) {
       add_input(VERT_ATTRIB_POS, vec4_t, "gl_Vertex");
       add_input(VERT_ATTRIB_NORMAL, vec3_t, "gl_Normal");
@@ -954,9 +1016,14 @@ builtin_variable_generator::generate_tes_special_vars()
 void
 builtin_variable_generator::generate_gs_special_vars()
 {
-   add_output(VARYING_SLOT_LAYER, int_t, "gl_Layer");
-   if (state->is_version(410, 0) || state->ARB_viewport_array_enable)
-      add_output(VARYING_SLOT_VIEWPORT, int_t, "gl_ViewportIndex");
+   ir_variable *var;
+
+   var = add_output(VARYING_SLOT_LAYER, int_t, "gl_Layer");
+   var->data.interpolation = INTERP_QUALIFIER_FLAT;
+   if (state->is_version(410, 0) || state->ARB_viewport_array_enable) {
+      var = add_output(VARYING_SLOT_VIEWPORT, int_t, "gl_ViewportIndex");
+      var->data.interpolation = INTERP_QUALIFIER_FLAT;
+   }
    if (state->is_version(400, 0) || state->ARB_gpu_shader5_enable)
       add_system_value(SYSTEM_VALUE_INVOCATION_ID, int_t, "gl_InvocationID");
 
@@ -970,7 +1037,6 @@ builtin_variable_generator::generate_gs_special_vars()
     * the specific case of gl_PrimitiveIDIn.  So we don't need to treat
     * gl_PrimitiveIDIn as an {ARB,EXT}_geometry_shader4-only variable.
     */
-   ir_variable *var;
    var = add_input(VARYING_SLOT_PRIMITIVE_ID, int_t, "gl_PrimitiveIDIn");
    var->data.interpolation = INTERP_QUALIFIER_FLAT;
    var = add_output(VARYING_SLOT_PRIMITIVE_ID, int_t, "gl_PrimitiveID");
@@ -984,14 +1050,15 @@ builtin_variable_generator::generate_gs_special_vars()
 void
 builtin_variable_generator::generate_fs_special_vars()
 {
+   ir_variable *var;
+
    add_input(VARYING_SLOT_POS, vec4_t, "gl_FragCoord");
    add_input(VARYING_SLOT_FACE, bool_t, "gl_FrontFacing");
    if (state->is_version(120, 100))
       add_input(VARYING_SLOT_PNTC, vec2_t, "gl_PointCoord");
 
    if (state->is_version(150, 0)) {
-      ir_variable *var =
-         add_input(VARYING_SLOT_PRIMITIVE_ID, int_t, "gl_PrimitiveID");
+      var = add_input(VARYING_SLOT_PRIMITIVE_ID, int_t, "gl_PrimitiveID");
       var->data.interpolation = INTERP_QUALIFIER_FLAT;
    }
 
@@ -1003,6 +1070,19 @@ builtin_variable_generator::generate_fs_special_vars()
       add_output(FRAG_RESULT_COLOR, vec4_t, "gl_FragColor");
       add_output(FRAG_RESULT_DATA0,
                  array(vec4_t, state->Const.MaxDrawBuffers), "gl_FragData");
+   }
+
+   if (state->es_shader && state->language_version == 100 && state->EXT_blend_func_extended_enable) {
+      /* We make an assumption here that there will only ever be one dual-source draw buffer
+       * In case this assumption is ever proven to be false, make sure to assert here
+       * since we don't handle this case.
+       * In practice, this issue will never arise since no hardware will support it.
+       */
+      assert(state->Const.MaxDualSourceDrawBuffers <= 1);
+      add_index_output(FRAG_RESULT_DATA0, 1, vec4_t, "gl_SecondaryFragColorEXT");
+      add_index_output(FRAG_RESULT_DATA0, 1,
+                       array(vec4_t, state->Const.MaxDualSourceDrawBuffers),
+                       "gl_SecondaryFragDataEXT");
    }
 
    /* gl_FragDepth has always been in desktop GLSL, but did not appear in GLSL
@@ -1043,9 +1123,14 @@ builtin_variable_generator::generate_fs_special_vars()
    }
 
    if (state->is_version(430, 0) || state->ARB_fragment_layer_viewport_enable) {
-      add_input(VARYING_SLOT_LAYER, int_t, "gl_Layer");
-      add_input(VARYING_SLOT_VIEWPORT, int_t, "gl_ViewportIndex");
+      var = add_input(VARYING_SLOT_LAYER, int_t, "gl_Layer");
+      var->data.interpolation = INTERP_QUALIFIER_FLAT;
+      var = add_input(VARYING_SLOT_VIEWPORT, int_t, "gl_ViewportIndex");
+      var->data.interpolation = INTERP_QUALIFIER_FLAT;
    }
+
+   if (state->is_version(450, 310)/* || state->ARB_ES3_1_compatibility_enable*/)
+      add_system_value(SYSTEM_VALUE_HELPER_INVOCATION, bool_t, "gl_HelperInvocation");
 }
 
 
@@ -1170,6 +1255,7 @@ builtin_variable_generator::generate_varyings()
          var->data.centroid = fields[i].centroid;
          var->data.sample = fields[i].sample;
          var->data.patch = fields[i].patch;
+         var->data.precision = fields[i].precision;
          var->init_interface_type(per_vertex_out_type);
       }
    }

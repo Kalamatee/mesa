@@ -606,6 +606,9 @@ nvc0_switch_pipe_context(struct nvc0_context *ctx_to)
       ctx_to->constbuf_dirty[s] = (1 << NVC0_MAX_PIPE_CONSTBUFS) - 1;
    }
 
+   /* Reset tfb as the shader that owns it may have been deleted. */
+   ctx_to->state.tfb = NULL;
+
    if (!ctx_to->vertex)
       ctx_to->dirty &= ~(NVC0_NEW_VERTEX | NVC0_NEW_ARRAYS);
    if (!ctx_to->idxbuf.buffer)
@@ -645,7 +648,7 @@ static struct state_validate {
     { nvc0_tevlprog_validate,      NVC0_NEW_TEVLPROG },
     { nvc0_validate_tess_state,    NVC0_NEW_TESSFACTOR },
     { nvc0_gmtyprog_validate,      NVC0_NEW_GMTYPROG },
-    { nvc0_fragprog_validate,      NVC0_NEW_FRAGPROG },
+    { nvc0_fragprog_validate,      NVC0_NEW_FRAGPROG | NVC0_NEW_RASTERIZER },
     { nvc0_validate_derived_1,     NVC0_NEW_FRAGPROG | NVC0_NEW_ZSA |
                                    NVC0_NEW_RASTERIZER },
     { nvc0_validate_derived_2,     NVC0_NEW_ZSA | NVC0_NEW_FRAMEBUFFER },
@@ -664,7 +667,6 @@ static struct state_validate {
     { nvc0_tfb_validate,           NVC0_NEW_TFB_TARGETS | NVC0_NEW_GMTYPROG },
     { nvc0_validate_min_samples,   NVC0_NEW_MIN_SAMPLES },
 };
-#define validate_list_len (sizeof(validate_list) / sizeof(validate_list[0]))
 
 bool
 nvc0_state_validate(struct nvc0_context *nvc0, uint32_t mask, unsigned words)
@@ -679,7 +681,7 @@ nvc0_state_validate(struct nvc0_context *nvc0, uint32_t mask, unsigned words)
    state_mask = nvc0->dirty & mask;
 
    if (state_mask) {
-      for (i = 0; i < validate_list_len; ++i) {
+      for (i = 0; i < ARRAY_SIZE(validate_list); ++i) {
          struct state_validate *validate = &validate_list[i];
 
          if (state_mask & validate->states)

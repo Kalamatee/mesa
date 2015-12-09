@@ -24,15 +24,12 @@
 #include <assert.h>
 
 #include "intel_batchbuffer.h"
-#include "intel_fbo.h"
 #include "intel_mipmap_tree.h"
 
 #include "brw_context.h"
-#include "brw_defines.h"
 #include "brw_state.h"
 
 #include "brw_blorp.h"
-#include "gen7_blorp.h"
 
 
 /* 3DSTATE_URB_VS
@@ -158,9 +155,9 @@ gen7_blorp_emit_surface_state(struct brw_context *brw,
              surface->brw_surfaceformat << BRW_SURFACE_FORMAT_SHIFT |
              gen7_surface_tiling_mode(tiling);
 
-   if (surface->mt->align_h == 4)
+   if (surface->mt->valign == 4)
       surf[0] |= GEN7_SURFACE_VALIGN_4;
-   if (surface->mt->align_w == 8)
+   if (surface->mt->halign == 8)
       surf[0] |= GEN7_SURFACE_HALIGN_8;
 
    if (surface->array_layout == ALL_SLICES_AT_EACH_LOD)

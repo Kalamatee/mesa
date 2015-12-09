@@ -225,8 +225,10 @@ static const struct brw_tracked_state *gen7_render_atoms[] =
    &brw_gs_samplers,
    &gen6_multisample_state,
 
-   &gen7_disable_stages,
    &gen7_vs_state,
+   &gen7_hs_state,
+   &gen7_te_state,
+   &gen7_ds_state,
    &gen7_gs_state,
    &gen7_sol_state,
    &gen7_clip_state,
@@ -259,6 +261,8 @@ static const struct brw_tracked_state *gen7_compute_atoms[] =
    &brw_state_base_address,
    &brw_cs_image_surfaces,
    &gen7_cs_push_constants,
+   &brw_cs_pull_constants,
+   &brw_cs_ubo_surfaces,
    &brw_cs_abo_surfaces,
    &brw_texture_surfaces,
    &brw_cs_work_groups_surface,
@@ -313,6 +317,9 @@ static const struct brw_tracked_state *gen8_render_atoms[] =
 
    &gen8_disable_stages,
    &gen8_vs_state,
+   &gen8_hs_state,
+   &gen7_te_state,
+   &gen8_ds_state,
    &gen8_gs_state,
    &gen8_sol_state,
    &gen6_clip_state,
@@ -352,6 +359,8 @@ static const struct brw_tracked_state *gen8_compute_atoms[] =
    &gen8_state_base_address,
    &brw_cs_image_surfaces,
    &gen7_cs_push_constants,
+   &brw_cs_pull_constants,
+   &brw_cs_ubo_surfaces,
    &brw_cs_abo_surfaces,
    &brw_texture_surfaces,
    &brw_cs_work_groups_surface,
@@ -573,21 +582,24 @@ static struct dirty_bit_map brw_bits[] = {
    DEFINE_BIT(BRW_NEW_VS_PROG_DATA),
    DEFINE_BIT(BRW_NEW_FF_GS_PROG_DATA),
    DEFINE_BIT(BRW_NEW_GS_PROG_DATA),
+   DEFINE_BIT(BRW_NEW_TCS_PROG_DATA),
+   DEFINE_BIT(BRW_NEW_TES_PROG_DATA),
    DEFINE_BIT(BRW_NEW_CLIP_PROG_DATA),
    DEFINE_BIT(BRW_NEW_CS_PROG_DATA),
    DEFINE_BIT(BRW_NEW_URB_FENCE),
    DEFINE_BIT(BRW_NEW_FRAGMENT_PROGRAM),
    DEFINE_BIT(BRW_NEW_GEOMETRY_PROGRAM),
+   DEFINE_BIT(BRW_NEW_TESS_EVAL_PROGRAM),
+   DEFINE_BIT(BRW_NEW_TESS_CTRL_PROGRAM),
    DEFINE_BIT(BRW_NEW_VERTEX_PROGRAM),
    DEFINE_BIT(BRW_NEW_CURBE_OFFSETS),
    DEFINE_BIT(BRW_NEW_REDUCED_PRIMITIVE),
+   DEFINE_BIT(BRW_NEW_PATCH_PRIMITIVE),
    DEFINE_BIT(BRW_NEW_PRIMITIVE),
    DEFINE_BIT(BRW_NEW_CONTEXT),
    DEFINE_BIT(BRW_NEW_PSP),
    DEFINE_BIT(BRW_NEW_SURFACES),
-   DEFINE_BIT(BRW_NEW_VS_BINDING_TABLE),
-   DEFINE_BIT(BRW_NEW_GS_BINDING_TABLE),
-   DEFINE_BIT(BRW_NEW_PS_BINDING_TABLE),
+   DEFINE_BIT(BRW_NEW_BINDING_TABLE_POINTERS),
    DEFINE_BIT(BRW_NEW_INDICES),
    DEFINE_BIT(BRW_NEW_VERTICES),
    DEFINE_BIT(BRW_NEW_BATCH),
@@ -713,6 +725,16 @@ brw_upload_pipeline_state(struct brw_context *brw,
       if (brw->fragment_program != ctx->FragmentProgram._Current) {
          brw->fragment_program = ctx->FragmentProgram._Current;
          brw->ctx.NewDriverState |= BRW_NEW_FRAGMENT_PROGRAM;
+      }
+
+      if (brw->tess_eval_program != ctx->TessEvalProgram._Current) {
+         brw->tess_eval_program = ctx->TessEvalProgram._Current;
+         brw->ctx.NewDriverState |= BRW_NEW_TESS_EVAL_PROGRAM;
+      }
+
+      if (brw->tess_ctrl_program != ctx->TessCtrlProgram._Current) {
+         brw->tess_ctrl_program = ctx->TessCtrlProgram._Current;
+         brw->ctx.NewDriverState |= BRW_NEW_TESS_CTRL_PROGRAM;
       }
 
       if (brw->geometry_program != ctx->GeometryProgram._Current) {

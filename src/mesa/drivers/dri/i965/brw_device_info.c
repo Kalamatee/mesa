@@ -123,6 +123,7 @@ static const struct brw_device_info brw_device_info_ivb_gt1 = {
       .min_vs_entries = 32,
       .max_vs_entries = 512,
       .max_hs_entries = 32,
+      .min_ds_entries = 10,
       .max_ds_entries = 288,
       .max_gs_entries = 192,
    },
@@ -142,6 +143,7 @@ static const struct brw_device_info brw_device_info_ivb_gt2 = {
       .min_vs_entries = 32,
       .max_vs_entries = 704,
       .max_hs_entries = 64,
+      .min_ds_entries = 10,
       .max_ds_entries = 448,
       .max_gs_entries = 320,
    },
@@ -162,6 +164,7 @@ static const struct brw_device_info brw_device_info_byt = {
       .min_vs_entries = 32,
       .max_vs_entries = 512,
       .max_hs_entries = 32,
+      .min_ds_entries = 10,
       .max_ds_entries = 288,
       .max_gs_entries = 192,
    },
@@ -186,6 +189,7 @@ static const struct brw_device_info brw_device_info_hsw_gt1 = {
       .min_vs_entries = 32,
       .max_vs_entries = 640,
       .max_hs_entries = 64,
+      .min_ds_entries = 10,
       .max_ds_entries = 384,
       .max_gs_entries = 256,
    },
@@ -204,6 +208,7 @@ static const struct brw_device_info brw_device_info_hsw_gt2 = {
       .min_vs_entries = 64,
       .max_vs_entries = 1664,
       .max_hs_entries = 128,
+      .min_ds_entries = 10,
       .max_ds_entries = 960,
       .max_gs_entries = 640,
    },
@@ -222,6 +227,7 @@ static const struct brw_device_info brw_device_info_hsw_gt3 = {
       .min_vs_entries = 64,
       .max_vs_entries = 1664,
       .max_hs_entries = 128,
+      .min_ds_entries = 10,
       .max_ds_entries = 960,
       .max_gs_entries = 640,
    },
@@ -249,6 +255,7 @@ static const struct brw_device_info brw_device_info_bdw_gt1 = {
       .min_vs_entries = 64,
       .max_vs_entries = 2560,
       .max_hs_entries = 504,
+      .min_ds_entries = 34,
       .max_ds_entries = 1536,
       .max_gs_entries = 960,
    }
@@ -262,6 +269,7 @@ static const struct brw_device_info brw_device_info_bdw_gt2 = {
       .min_vs_entries = 64,
       .max_vs_entries = 2560,
       .max_hs_entries = 504,
+      .min_ds_entries = 34,
       .max_ds_entries = 1536,
       .max_gs_entries = 960,
    }
@@ -275,6 +283,7 @@ static const struct brw_device_info brw_device_info_bdw_gt3 = {
       .min_vs_entries = 64,
       .max_vs_entries = 2560,
       .max_hs_entries = 504,
+      .min_ds_entries = 34,
       .max_ds_entries = 1536,
       .max_gs_entries = 960,
    }
@@ -294,6 +303,7 @@ static const struct brw_device_info brw_device_info_chv = {
       .min_vs_entries = 34,
       .max_vs_entries = 640,
       .max_hs_entries = 80,
+      .min_ds_entries = 34,
       .max_ds_entries = 384,
       .max_gs_entries = 256,
    }
@@ -311,13 +321,14 @@ static const struct brw_device_info brw_device_info_chv = {
    .max_gs_threads = 336,                           \
    .max_hs_threads = 336,                           \
    .max_ds_threads = 336,                           \
-   .max_wm_threads = 64 * 6,                        \
+   .max_wm_threads = 64 * 9,                        \
    .max_cs_threads = 56,                            \
    .urb = {                                         \
       .size = 384,                                  \
       .min_vs_entries = 64,                         \
       .max_vs_entries = 1856,                       \
       .max_hs_entries = 672,                        \
+      .min_ds_entries = 34,                         \
       .max_ds_entries = 1120,                       \
       .max_gs_entries = 640,                        \
    }
@@ -333,6 +344,19 @@ static const struct brw_device_info brw_device_info_skl_gt2 = {
 
 static const struct brw_device_info brw_device_info_skl_gt3 = {
    GEN9_FEATURES, .gt = 3,
+};
+
+static const struct brw_device_info brw_device_info_skl_gt4 = {
+   GEN9_FEATURES, .gt = 4,
+   /* From the "L3 Allocation and Programming" documentation:
+    *
+    * "URB is limited to 1008KB due to programming restrictions.  This is not a
+    * restriction of the L3 implementation, but of the FF and other clients.
+    * Therefore, in a GT4 implementation it is possible for the programmed
+    * allocation of the L3 data array to provide 3*384KB=1152KB for URB, but
+    * only 1008KB of this will be used."
+    */
+   .urb.size = 1008 / 3,
 };
 
 static const struct brw_device_info brw_device_info_bxt = {
@@ -359,7 +383,7 @@ static const struct brw_device_info brw_device_info_bxt = {
 };
 
 const struct brw_device_info *
-brw_get_device_info(int devid, int revision)
+brw_get_device_info(int devid)
 {
    const struct brw_device_info *devinfo;
    switch (devid) {

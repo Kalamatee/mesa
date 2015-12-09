@@ -83,10 +83,10 @@ nouveau_vp3_video_buffer_create(struct pipe_context *pipe,
    struct pipe_sampler_view sv_templ;
    struct pipe_surface surf_templ;
 
-   assert(templat->interlaced);
    if (getenv("XVMC_VL") || templat->buffer_format != PIPE_FORMAT_NV12)
       return vl_video_buffer_create(pipe, templat);
 
+   assert(templat->interlaced);
    assert(templat->chroma_format == PIPE_VIDEO_CHROMA_FORMAT_420);
 
    buffer = CALLOC_STRUCT(nouveau_vp3_video_buffer);
@@ -437,6 +437,7 @@ nouveau_vp3_screen_get_video_param(struct pipe_screen *pscreen,
       /* VP3 does not support MPEG4, VP4+ do. */
       return entrypoint == PIPE_VIDEO_ENTRYPOINT_BITSTREAM &&
          profile >= PIPE_VIDEO_PROFILE_MPEG1 &&
+         profile < PIPE_VIDEO_PROFILE_HEVC_MAIN &&
          (!vp3 || codec != PIPE_VIDEO_FORMAT_MPEG4) &&
          firmware_present(pscreen, profile);
    case PIPE_VIDEO_CAP_NPOT_TEXTURES:

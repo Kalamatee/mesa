@@ -631,6 +631,10 @@ enum pipe_cap
    PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR,
    PIPE_CAP_DEPTH_BOUNDS_TEST,
    PIPE_CAP_TGSI_TXQS,
+   PIPE_CAP_FORCE_PERSAMPLE_INTERP,
+   PIPE_CAP_SHAREABLE_SHADERS,
+   PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS,
+   PIPE_CAP_CLEAR_TEXTURE,
 };
 
 #define PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_NV50 (1 << 0)
@@ -695,7 +699,8 @@ enum pipe_shader_cap
    PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED, /* all rounding modes */
    PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED,
    PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED,
-   PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE
+   PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE,
+   PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT,
 };
 
 /**
@@ -771,6 +776,16 @@ struct pipe_query_data_pipeline_statistics
 };
 
 /**
+ * For batch queries.
+ */
+union pipe_numeric_type_union
+{
+   uint64_t u64;
+   uint32_t u32;
+   float f;
+};
+
+/**
  * Query result (returned by pipe_context::get_query_result).
  */
 union pipe_query_result
@@ -786,6 +801,8 @@ union pipe_query_result
    /* PIPE_QUERY_PRIMITIVES_GENERATED */
    /* PIPE_QUERY_PRIMITIVES_EMITTED */
    /* PIPE_DRIVER_QUERY_TYPE_UINT64 */
+   /* PIPE_DRIVER_QUERY_TYPE_BYTES */
+   /* PIPE_DRIVER_QUERY_TYPE_MICROSECONDS */
    /* PIPE_DRIVER_QUERY_TYPE_HZ */
    uint64_t u64;
 
@@ -804,6 +821,9 @@ union pipe_query_result
 
    /* PIPE_QUERY_PIPELINE_STATISTICS */
    struct pipe_query_data_pipeline_statistics pipeline_statistics;
+
+   /* batch queries (variable length) */
+   union pipe_numeric_type_union batch[1];
 };
 
 union pipe_color_union
@@ -824,12 +844,6 @@ enum pipe_driver_query_type
    PIPE_DRIVER_QUERY_TYPE_HZ           = 6,
 };
 
-enum pipe_driver_query_group_type
-{
-   PIPE_DRIVER_QUERY_GROUP_TYPE_CPU = 0,
-   PIPE_DRIVER_QUERY_GROUP_TYPE_GPU = 1,
-};
-
 /* Whether an average value per frame or a cumulative value should be
  * displayed.
  */
@@ -839,12 +853,16 @@ enum pipe_driver_query_result_type
    PIPE_DRIVER_QUERY_RESULT_TYPE_CUMULATIVE = 1,
 };
 
-union pipe_numeric_type_union
-{
-   uint64_t u64;
-   uint32_t u32;
-   float f;
-};
+/**
+ * Some hardware requires some hardware-specific queries to be submitted
+ * as batched queries. The corresponding query objects are created using
+ * create_batch_query, and at most one such query may be active at
+ * any time.
+ */
+#define PIPE_DRIVER_QUERY_FLAG_BATCH     (1 << 0)
+
+/* Do not list this query in the HUD. */
+#define PIPE_DRIVER_QUERY_FLAG_DONT_LIST (1 << 1)
 
 struct pipe_driver_query_info
 {
@@ -854,15 +872,27 @@ struct pipe_driver_query_info
    enum pipe_driver_query_type type;
    enum pipe_driver_query_result_type result_type;
    unsigned group_id;
+   unsigned flags;
 };
 
 struct pipe_driver_query_group_info
 {
    const char *name;
-   enum pipe_driver_query_group_type type;
    unsigned max_active_queries;
    unsigned num_queries;
 };
+
+enum pipe_debug_type
+{
+   PIPE_DEBUG_TYPE_OUT_OF_MEMORY = 1,
+   PIPE_DEBUG_TYPE_ERROR,
+   PIPE_DEBUG_TYPE_SHADER_INFO,
+   PIPE_DEBUG_TYPE_PERF_INFO,
+   PIPE_DEBUG_TYPE_INFO,
+   PIPE_DEBUG_TYPE_FALLBACK,
+   PIPE_DEBUG_TYPE_CONFORMANCE,
+};
+
 
 #ifdef __cplusplus
 }

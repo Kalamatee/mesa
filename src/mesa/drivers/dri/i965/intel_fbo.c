@@ -52,19 +52,6 @@
 
 #define FILE_DEBUG_FLAG DEBUG_FBO
 
-/**
- * Create a new framebuffer object.
- */
-static struct gl_framebuffer *
-intel_new_framebuffer(struct gl_context * ctx, GLuint name)
-{
-   /* Only drawable state in intel_framebuffer at this time, just use Mesa's
-    * class
-    */
-   return _mesa_new_framebuffer(ctx, name);
-}
-
-
 /** Called by gl_renderbuffer::Delete() */
 static void
 intel_delete_renderbuffer(struct gl_context *ctx, struct gl_renderbuffer *rb)
@@ -356,19 +343,15 @@ intel_image_target_renderbuffer_storage(struct gl_context *ctx,
    if (image->planar_format && image->planar_format->nplanes > 1) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
             "glEGLImageTargetRenderbufferStorage(planar buffers are not "
-               "supported as render targets.");
+               "supported as render targets.)");
       return;
    }
 
    /* __DRIimage is opaque to the core so it has to be checked here */
-   switch (image->format) {
-   case MESA_FORMAT_R8G8B8A8_UNORM:
+   if (!brw->format_supported_as_render_target[image->format]) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
-            "glEGLImageTargetRenderbufferStorage(unsupported image format");
+            "glEGLImageTargetRenderbufferStorage(unsupported image format)");
       return;
-      break;
-   default:
-      break;
    }
 
    irb = intel_renderbuffer(rb);
@@ -1093,7 +1076,6 @@ void
 intel_fbo_init(struct brw_context *brw)
 {
    struct dd_function_table *dd = &brw->ctx.Driver;
-   dd->NewFramebuffer = intel_new_framebuffer;
    dd->NewRenderbuffer = intel_new_renderbuffer;
    dd->MapRenderbuffer = intel_map_renderbuffer;
    dd->UnmapRenderbuffer = intel_unmap_renderbuffer;

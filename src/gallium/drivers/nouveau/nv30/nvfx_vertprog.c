@@ -1,3 +1,4 @@
+#include <strings.h>
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "pipe/p_state.h"
@@ -1112,7 +1113,7 @@ _nvfx_vertprog_translate(uint16_t oclass, struct nv30_vertprog *vp)
 
 out:
    tgsi_parse_free(&parse);
-   if(vpc) {
+   if (vpc) {
       util_dynarray_fini(&vpc->label_relocs);
       util_dynarray_fini(&vpc->loop_stack);
       FREE(vpc->r_temp);

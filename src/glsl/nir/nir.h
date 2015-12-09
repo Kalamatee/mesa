@@ -35,7 +35,7 @@
 #include "util/set.h"
 #include "util/bitset.h"
 #include "nir_types.h"
-#include "glsl/shader_enums.h"
+#include "shader_enums.h"
 #include <stdio.h>
 
 #include "nir_opcodes.h"
@@ -82,6 +82,7 @@ typedef struct {
 } nir_state_slot;
 
 typedef enum {
+   nir_var_all = -1,
    nir_var_shader_in,
    nir_var_shader_out,
    nir_var_global,
@@ -110,6 +111,11 @@ typedef struct nir_constant {
     * scalars, vectors, or matrices.
     */
    union nir_constant_data value;
+
+   /* we could get this from the var->type but makes clone *much* easier to
+    * not have to care about the type.
+    */
+   unsigned num_elements;
 
    /* Array elements / Structure Fields */
    struct nir_constant **elements;
@@ -147,19 +153,6 @@ typedef struct {
     */
    char *name;
 
-   /**
-    * For variables which satisfy the is_interface_instance() predicate, this
-    * points to an array of integers such that if the ith member of the
-    * interface block is an array, max_ifc_array_access[i] is the maximum
-    * array element of that member that has been accessed.  If the ith member
-    * of the interface block is not an array, max_ifc_array_access[i] is
-    * unused.
-    *
-    * For variables whose type is not an interface block, this pointer is
-    * NULL.
-    */
-   unsigned *max_ifc_array_access;
-
    struct nir_variable_data {
 
       /**
@@ -171,6 +164,7 @@ typedef struct {
       unsigned read_only:1;
       unsigned centroid:1;
       unsigned sample:1;
+      unsigned patch:1;
       unsigned invariant:1;
 
       /**
@@ -308,7 +302,6 @@ typedef struct {
        * Location an atomic counter is stored at.
        */
       struct {
-         unsigned buffer_index;
          unsigned offset;
       } atomic;
 
@@ -365,6 +358,9 @@ typedef struct {
    const struct glsl_type *interface_type;
 } nir_variable;
 
+#define nir_foreach_variable(var, var_list) \
+   foreach_list_typed(nir_variable, var, node, var_list)
+
 typedef struct {
    struct exec_node node;
 
@@ -391,10 +387,10 @@ typedef struct {
     */
    bool is_packed;
 
-   /** set of nir_instr's where this register is used (read from) */
+   /** set of nir_src's where this register is used (read from) */
    struct list_head uses;
 
-   /** set of nir_instr's where this register is defined (written to) */
+   /** set of nir_dest's where this register is defined (written to) */
    struct list_head defs;
 
    /** set of nir_if's where this register is used as a condition */
@@ -638,7 +634,7 @@ typedef enum {
    nir_type_invalid = 0, /* Not a valid type */
    nir_type_float,
    nir_type_int,
-   nir_type_unsigned,
+   nir_type_uint,
    nir_type_bool
 } nir_alu_type;
 
@@ -722,7 +718,7 @@ nir_alu_instr_channel_used(nir_alu_instr *instr, unsigned src, unsigned channel)
  * used for a source
  */
 static inline unsigned
-nir_ssa_alu_instr_src_components(nir_alu_instr *instr, unsigned src)
+nir_ssa_alu_instr_src_components(const nir_alu_instr *instr, unsigned src)
 {
    assert(instr->dest.dest.is_ssa);
 
@@ -781,6 +777,15 @@ typedef struct {
 NIR_DEFINE_CAST(nir_deref_as_var, nir_deref, nir_deref_var, deref)
 NIR_DEFINE_CAST(nir_deref_as_array, nir_deref, nir_deref_array, deref)
 NIR_DEFINE_CAST(nir_deref_as_struct, nir_deref, nir_deref_struct, deref)
+
+/* Returns the last deref in the chain. */
+static inline nir_deref *
+nir_deref_tail(nir_deref *deref)
+{
+   while (deref->child)
+      deref = deref->child;
+   return deref;
+}
 
 typedef struct {
    nir_instr instr;
@@ -951,6 +956,9 @@ typedef enum {
    nir_texop_tg4,                /**< Texture gather */
    nir_texop_query_levels,       /**< Texture levels query */
    nir_texop_texture_samples,    /**< Texture samples query */
+   nir_texop_samples_identical,  /**< Query whether all samples are definitely
+                                  * identical.
+                                  */
 } nir_texop;
 
 typedef struct {
@@ -1024,6 +1032,7 @@ nir_tex_instr_dest_size(nir_tex_instr *instr)
 
    case nir_texop_texture_samples:
    case nir_texop_query_levels:
+   case nir_texop_samples_identical:
       return 1;
 
    default:
@@ -1031,6 +1040,31 @@ nir_tex_instr_dest_size(nir_tex_instr *instr)
          return 1;
 
       return 4;
+   }
+}
+
+/* Returns true if this texture operation queries something about the texture
+ * rather than actually sampling it.
+ */
+static inline bool
+nir_tex_instr_is_query(nir_tex_instr *instr)
+{
+   switch (instr->op) {
+   case nir_texop_txs:
+   case nir_texop_lod:
+   case nir_texop_texture_samples:
+   case nir_texop_query_levels:
+      return true;
+   case nir_texop_tex:
+   case nir_texop_txb:
+   case nir_texop_txl:
+   case nir_texop_txd:
+   case nir_texop_txf:
+   case nir_texop_txf_ms:
+   case nir_texop_tg4:
+      return false;
+   default:
+      unreachable("Invalid texture opcode");
    }
 }
 
@@ -1242,8 +1276,8 @@ nir_block_last_instr(nir_block *block)
    foreach_list_typed_reverse(nir_instr, instr, node, &(block)->instr_list)
 #define nir_foreach_instr_safe(block, instr) \
    foreach_list_typed_safe(nir_instr, instr, node, &(block)->instr_list)
-#define nir_foreach_instr_safe_reverse(block, instr) \
-   foreach_list_typed_safe_reverse(nir_instr, instr, node, &(block)->instr_list)
+#define nir_foreach_instr_reverse_safe(block, instr) \
+   foreach_list_typed_reverse_safe(nir_instr, instr, node, &(block)->instr_list)
 
 typedef struct nir_if {
    nir_cf_node cf_node;
@@ -1307,7 +1341,8 @@ typedef enum {
    nir_metadata_none = 0x0,
    nir_metadata_block_index = 0x1,
    nir_metadata_dominance = 0x2,
-   nir_metadata_live_variables = 0x4,
+   nir_metadata_live_ssa_defs = 0x4,
+   nir_metadata_not_properly_reset = 0x8,
 } nir_metadata;
 
 typedef struct {
@@ -1454,6 +1489,92 @@ typedef struct nir_shader_compiler_options {
    bool native_integers;
 } nir_shader_compiler_options;
 
+typedef struct nir_shader_info {
+   const char *name;
+
+   /* Descriptive name provided by the client; may be NULL */
+   const char *label;
+
+   /* Number of textures used by this shader */
+   unsigned num_textures;
+   /* Number of uniform buffers used by this shader */
+   unsigned num_ubos;
+   /* Number of atomic buffers used by this shader */
+   unsigned num_abos;
+   /* Number of shader storage buffers used by this shader */
+   unsigned num_ssbos;
+   /* Number of images used by this shader */
+   unsigned num_images;
+
+   /* Which inputs are actually read */
+   uint64_t inputs_read;
+   /* Which outputs are actually written */
+   uint64_t outputs_written;
+   /* Which system values are actually read */
+   uint64_t system_values_read;
+
+   /* Which patch inputs are actually read */
+   uint32_t patch_inputs_read;
+   /* Which patch outputs are actually written */
+   uint32_t patch_outputs_written;
+
+   /* Whether or not this shader ever uses textureGather() */
+   bool uses_texture_gather;
+
+   /* Whether or not this shader uses the gl_ClipDistance output */
+   bool uses_clip_distance_out;
+
+   /* Whether or not separate shader objects were used */
+   bool separate_shader;
+
+   /** Was this shader linked with any transform feedback varyings? */
+   bool has_transform_feedback_varyings;
+
+   union {
+      struct {
+         /** The number of vertices recieves per input primitive */
+         unsigned vertices_in;
+
+         /** The output primitive type (GL enum value) */
+         unsigned output_primitive;
+
+         /** The maximum number of vertices the geometry shader might write. */
+         unsigned vertices_out;
+
+         /** 1 .. MAX_GEOMETRY_SHADER_INVOCATIONS */
+         unsigned invocations;
+
+         /** Whether or not this shader uses EndPrimitive */
+         bool uses_end_primitive;
+
+         /** Whether or not this shader uses non-zero streams */
+         bool uses_streams;
+      } gs;
+
+      struct {
+         bool uses_discard;
+
+         /**
+          * Whether early fragment tests are enabled as defined by
+          * ARB_shader_image_load_store.
+          */
+         bool early_fragment_tests;
+
+         /** gl_FragDepth layout for ARB_conservative_depth. */
+         enum gl_frag_depth_layout depth_layout;
+      } fs;
+
+      struct {
+         unsigned local_size[3];
+      } cs;
+
+      struct {
+         /** The number of vertices in the TCS output patch. */
+         unsigned vertices_out;
+      } tcs;
+   };
+} nir_shader_info;
+
 typedef struct nir_shader {
    /** list of uniforms (nir_variable) */
    struct exec_list uniforms;
@@ -1470,6 +1591,9 @@ typedef struct nir_shader {
     * copy by the driver.
     */
    const struct nir_shader_compiler_options *options;
+
+   /** Various bits of compile-time information about a given shader */
+   struct nir_shader_info info;
 
    /** list of global variables in the shader (nir_variable) */
    struct exec_list globals;
@@ -1493,14 +1617,6 @@ typedef struct nir_shader {
 
    /** The shader stage, such as MESA_SHADER_VERTEX. */
    gl_shader_stage stage;
-
-   struct {
-      /** The maximum number of vertices the geometry shader might write. */
-      unsigned vertices_out;
-
-      /** 1 .. MAX_GEOMETRY_SHADER_INVOCATIONS */
-      unsigned invocations;
-   } gs;
 } nir_shader;
 
 #define nir_foreach_overload(shader, overload)                        \
@@ -1519,6 +1635,26 @@ nir_register *nir_local_reg_create(nir_function_impl *impl);
 
 void nir_reg_remove(nir_register *reg);
 
+/** Adds a variable to the appropreate list in nir_shader */
+void nir_shader_add_variable(nir_shader *shader, nir_variable *var);
+
+static inline void
+nir_function_impl_add_variable(nir_function_impl *impl, nir_variable *var)
+{
+   assert(var->data.mode == nir_var_local);
+   exec_list_push_tail(&impl->locals, &var->node);
+}
+
+/** creates a variable, sets a few defaults, and adds it to the list */
+nir_variable *nir_variable_create(nir_shader *shader,
+                                  nir_variable_mode mode,
+                                  const struct glsl_type *type,
+                                  const char *name);
+/** creates a local variable and adds it to the list */
+nir_variable *nir_local_variable_create(nir_function_impl *impl,
+                                        const struct glsl_type *type,
+                                        const char *name);
+
 /** creates a function and adds it to the shader's list of functions */
 nir_function *nir_function_create(nir_shader *shader, const char *name);
 
@@ -1527,9 +1663,9 @@ nir_function_overload *nir_function_overload_create(nir_function *func);
 
 nir_function_impl *nir_function_impl_create(nir_function_overload *func);
 
-nir_block *nir_block_create(void *mem_ctx);
-nir_if *nir_if_create(void *mem_ctx);
-nir_loop *nir_loop_create(void *mem_ctx);
+nir_block *nir_block_create(nir_shader *shader);
+nir_if *nir_if_create(nir_shader *shader);
+nir_loop *nir_loop_create(nir_shader *shader);
 
 nir_function_impl *nir_cf_node_get_function(nir_cf_node *node);
 
@@ -1744,6 +1880,7 @@ bool nir_foreach_dest(nir_instr *instr, nir_foreach_dest_cb cb, void *state);
 bool nir_foreach_src(nir_instr *instr, nir_foreach_src_cb cb, void *state);
 
 nir_const_value *nir_src_as_const_value(nir_src src);
+bool nir_src_is_dynamically_uniform(nir_src src);
 bool nir_srcs_equal(nir_src src1, nir_src src2);
 void nir_instr_rewrite_src(nir_instr *instr, nir_src *src, nir_src new_src);
 void nir_instr_move_src(nir_instr *dest_instr, nir_src *dest, nir_src *src);
@@ -1756,6 +1893,8 @@ void nir_ssa_dest_init(nir_instr *instr, nir_dest *dest,
 void nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
                       unsigned num_components, const char *name);
 void nir_ssa_def_rewrite_uses(nir_ssa_def *def, nir_src new_src);
+void nir_ssa_def_rewrite_uses_after(nir_ssa_def *def, nir_src new_src,
+                                    nir_instr *after_me);
 
 /* visits basic blocks in source-code order */
 typedef bool (*nir_foreach_block_cb)(nir_block *block, void *state);
@@ -1783,10 +1922,16 @@ void nir_index_blocks(nir_function_impl *impl);
 void nir_print_shader(nir_shader *shader, FILE *fp);
 void nir_print_instr(const nir_instr *instr, FILE *fp);
 
+nir_shader * nir_shader_clone(void *mem_ctx, const nir_shader *s);
+
 #ifdef DEBUG
 void nir_validate_shader(nir_shader *shader);
+void nir_metadata_set_validation_flag(nir_shader *shader);
+void nir_metadata_check_validation_flag(nir_shader *shader);
 #else
 static inline void nir_validate_shader(nir_shader *shader) { (void) shader; }
+static inline void nir_metadata_set_validation_flag(nir_shader *shader) { (void) shader; }
+static inline void nir_metadata_check_validation_flag(nir_shader *shader) { (void) shader; }
 #endif /* DEBUG */
 
 void nir_calc_dominance_impl(nir_function_impl *impl);
@@ -1804,7 +1949,7 @@ void nir_dump_dom_frontier(nir_shader *shader, FILE *fp);
 void nir_dump_cfg_impl(nir_function_impl *impl, FILE *fp);
 void nir_dump_cfg(nir_shader *shader, FILE *fp);
 
-int nir_gs_count_vertices(nir_shader *shader);
+int nir_gs_count_vertices(const nir_shader *shader);
 
 bool nir_split_var_copies(nir_shader *shader);
 
@@ -1822,7 +1967,11 @@ void nir_assign_var_locations(struct exec_list *var_list,
                               int (*type_size)(const struct glsl_type *));
 
 void nir_lower_io(nir_shader *shader,
+                  nir_variable_mode mode,
                   int (*type_size)(const struct glsl_type *));
+nir_src *nir_get_io_indirect_src(nir_intrinsic_instr *instr);
+nir_src *nir_get_io_vertex_index_src(nir_intrinsic_instr *instr);
+
 void nir_lower_vars_to_ssa(nir_shader *shader);
 
 bool nir_remove_dead_variables(nir_shader *shader);
@@ -1870,9 +2019,22 @@ typedef struct nir_lower_tex_options {
    unsigned saturate_s;
    unsigned saturate_t;
    unsigned saturate_r;
+
+   /* Bitmask of samplers that need swizzling.
+    *
+    * If (swizzle_result & (1 << sampler_index)), then the swizzle in
+    * swizzles[sampler_index] is applied to the result of the texturing
+    * operation.
+    */
+   unsigned swizzle_result;
+
+   /* A swizzle for each sampler.  Values 0-3 represent x, y, z, or w swizzles
+    * while 4 and 5 represent 0 and 1 respectively.
+    */
+   uint8_t swizzles[32][4];
 } nir_lower_tex_options;
 
-void nir_lower_tex(nir_shader *shader,
+bool nir_lower_tex(nir_shader *shader,
                    const nir_lower_tex_options *options);
 
 void nir_lower_idiv(nir_shader *shader);
@@ -1882,14 +2044,15 @@ void nir_lower_clip_fs(nir_shader *shader, unsigned ucp_enables);
 
 void nir_lower_two_sided_color(nir_shader *shader);
 
-void nir_lower_atomics(nir_shader *shader);
+void nir_lower_atomics(nir_shader *shader,
+                       const struct gl_shader_program *shader_program);
 void nir_lower_to_source_mods(nir_shader *shader);
 
 bool nir_lower_gs_intrinsics(nir_shader *shader);
 
 bool nir_normalize_cubemap_coords(nir_shader *shader);
 
-void nir_live_variables_impl(nir_function_impl *impl);
+void nir_live_ssa_defs_impl(nir_function_impl *impl);
 bool nir_ssa_defs_interfere(nir_ssa_def *a, nir_ssa_def *b);
 
 void nir_convert_to_ssa_impl(nir_function_impl *impl);
@@ -1907,12 +2070,10 @@ bool nir_opt_constant_folding(nir_shader *shader);
 
 bool nir_opt_global_to_local(nir_shader *shader);
 
-bool nir_copy_prop_impl(nir_function_impl *impl);
 bool nir_copy_prop(nir_shader *shader);
 
 bool nir_opt_cse(nir_shader *shader);
 
-bool nir_opt_dce_impl(nir_function_impl *impl);
 bool nir_opt_dce(nir_shader *shader);
 
 bool nir_opt_dead_cf(nir_shader *shader);
@@ -1920,7 +2081,6 @@ bool nir_opt_dead_cf(nir_shader *shader);
 void nir_opt_gcm(nir_shader *shader);
 
 bool nir_opt_peephole_select(nir_shader *shader);
-bool nir_opt_peephole_ffma(nir_shader *shader);
 
 bool nir_opt_remove_phis(nir_shader *shader);
 

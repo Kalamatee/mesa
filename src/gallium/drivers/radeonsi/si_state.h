@@ -50,6 +50,7 @@ struct si_state_rasterizer {
 	bool			flatshade;
 	bool			two_side;
 	bool			multisample_enable;
+	bool			force_persample_interp;
 	bool			line_stipple_enable;
 	unsigned		sprite_coord_enable;
 	unsigned		pa_sc_line_stipple;
@@ -59,6 +60,8 @@ struct si_state_rasterizer {
 	bool			line_smooth;
 	bool			poly_smooth;
 	bool			uses_poly_offset;
+	bool			clamp_fragment_color;
+	bool			rasterizer_discard;
 };
 
 struct si_dsa_stencil_ref_part {
@@ -107,6 +110,7 @@ union si_state_atoms {
 	struct {
 		/* The order matters. */
 		struct r600_atom *cache_flush;
+		struct r600_atom *render_cond;
 		struct r600_atom *streamout_begin;
 		struct r600_atom *streamout_enable; /* must be after streamout_begin */
 		struct r600_atom *framebuffer;
@@ -123,6 +127,7 @@ union si_state_atoms {
 		struct r600_atom *viewports;
 		struct r600_atom *stencil_ref;
 		struct r600_atom *spi_map;
+		struct r600_atom *spi_ps_input;
 	} s;
 	struct r600_atom *array[0];
 };

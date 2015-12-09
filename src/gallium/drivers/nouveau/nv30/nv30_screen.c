@@ -170,6 +170,10 @@ nv30_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
    case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
+   case PIPE_CAP_SHAREABLE_SHADERS:
+   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+   case PIPE_CAP_CLEAR_TEXTURE:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -262,6 +266,8 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
       case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
          return 0;
+      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+         return 32;
       default:
          debug_printf("unknown vertex shader param %d\n", param);
          return 0;
@@ -303,6 +309,8 @@ nv30_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
       case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
          return 0;
+      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+         return 32;
       default:
          debug_printf("unknown fragment shader param %d\n", param);
          return 0;
@@ -346,7 +354,9 @@ nv30_screen_fence_emit(struct pipe_screen *pscreen, uint32_t *sequence)
 
    *sequence = ++screen->base.fence.sequence;
 
-   BEGIN_NV04(push, NV30_3D(FENCE_OFFSET), 2);
+   assert(PUSH_AVAIL(push) + push->rsvd_kick >= 3);
+   PUSH_DATA (push, NV30_3D_FENCE_OFFSET |
+              (2 /* size */ << 18) | (7 /* subchan */ << 13));
    PUSH_DATA (push, 0);
    PUSH_DATA (push, *sequence);
 }
@@ -374,7 +384,7 @@ nv30_screen_destroy(struct pipe_screen *pscreen)
        * _current_ one, and remove both.
        */
       nouveau_fence_ref(screen->base.fence.current, &current);
-      nouveau_fence_wait(current);
+      nouveau_fence_wait(current, NULL);
       nouveau_fence_ref(NULL, &current);
       nouveau_fence_ref(NULL, &screen->base.fence.current);
    }

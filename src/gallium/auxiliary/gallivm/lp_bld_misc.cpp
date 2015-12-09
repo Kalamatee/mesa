@@ -81,6 +81,8 @@
 #  pragma pop_macro("DEBUG")
 #endif
 
+#include "c11/threads.h"
+#include "os/os_thread.h"
 #include "pipe/p_config.h"
 #include "util/u_debug.h"
 #include "util/u_cpu_detect.h"
@@ -103,6 +105,33 @@ static LLVMEnsureMultithreaded lLVMEnsureMultithreaded;
 
 }
 
+static once_flag init_native_targets_once_flag;
+
+static void init_native_targets()
+{
+   // If we have a native target, initialize it to ensure it is linked in and
+   // usable by the JIT.
+   llvm::InitializeNativeTarget();
+
+   llvm::InitializeNativeTargetAsmPrinter();
+
+   llvm::InitializeNativeTargetDisassembler();
+}
+
+/**
+ * The llvm target registry is not thread-safe, so drivers and state-trackers
+ * that want to initialize targets should use the gallivm_init_llvm_targets()
+ * function to safely initialize targets.
+ *
+ * LLVM targets should be initialized before the driver or state-tracker tries
+ * to access the registry.
+ */
+extern "C" void
+gallivm_init_llvm_targets(void)
+{
+   call_once(&init_native_targets_once_flag, init_native_targets);
+}
+
 extern "C" void
 lp_set_target_options(void)
 {
@@ -115,13 +144,7 @@ lp_set_target_options(void)
    llvm::DisablePrettyStackTrace = true;
 #endif
 
-   // If we have a native target, initialize it to ensure it is linked in and
-   // usable by the JIT.
-   llvm::InitializeNativeTarget();
-
-   llvm::InitializeNativeTargetAsmPrinter();
-
-   llvm::InitializeNativeTargetDisassembler();
+   gallivm_init_llvm_targets();
 }
 
 
@@ -474,20 +497,57 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
 #endif
    }
 
-   llvm::SmallVector<std::string, 1> MAttrs;
-   if (util_cpu_caps.has_avx) {
-      /*
-       * AVX feature is not automatically detected from CPUID by the X86 target
-       * yet, because the old (yet default) JIT engine is not capable of
-       * emitting the opcodes. On newer llvm versions it is and at least some
-       * versions (tested with 3.3) will emit avx opcodes without this anyway.
-       */
-      MAttrs.push_back("+avx");
-      if (util_cpu_caps.has_f16c) {
-         MAttrs.push_back("+f16c");
-      }
-      builder.setMAttrs(MAttrs);
+   llvm::SmallVector<std::string, 16> MAttrs;
+
+#if defined(PIPE_ARCH_X86) || defined(PIPE_ARCH_X86_64)
+   /*
+    * We need to unset attributes because sometimes LLVM mistakenly assumes
+    * certain features are present given the processor name.
+    *
+    * https://bugs.freedesktop.org/show_bug.cgi?id=92214
+    * http://llvm.org/PR25021
+    * http://llvm.org/PR19429
+    * http://llvm.org/PR16721
+    */
+   MAttrs.push_back(util_cpu_caps.has_sse    ? "+sse"    : "-sse"   );
+   MAttrs.push_back(util_cpu_caps.has_sse2   ? "+sse2"   : "-sse2"  );
+   MAttrs.push_back(util_cpu_caps.has_sse3   ? "+sse3"   : "-sse3"  );
+   MAttrs.push_back(util_cpu_caps.has_ssse3  ? "+ssse3"  : "-ssse3" );
+#if HAVE_LLVM >= 0x0304
+   MAttrs.push_back(util_cpu_caps.has_sse4_1 ? "+sse4.1" : "-sse4.1");
+#else
+   MAttrs.push_back(util_cpu_caps.has_sse4_1 ? "+sse41"  : "-sse41" );
+#endif
+#if HAVE_LLVM >= 0x0304
+   MAttrs.push_back(util_cpu_caps.has_sse4_2 ? "+sse4.2" : "-sse4.2");
+#else
+   MAttrs.push_back(util_cpu_caps.has_sse4_2 ? "+sse42"  : "-sse42" );
+#endif
+   /*
+    * AVX feature is not automatically detected from CPUID by the X86 target
+    * yet, because the old (yet default) JIT engine is not capable of
+    * emitting the opcodes. On newer llvm versions it is and at least some
+    * versions (tested with 3.3) will emit avx opcodes without this anyway.
+    */
+   MAttrs.push_back(util_cpu_caps.has_avx  ? "+avx"  : "-avx");
+   MAttrs.push_back(util_cpu_caps.has_f16c ? "+f16c" : "-f16c");
+   MAttrs.push_back(util_cpu_caps.has_avx2 ? "+avx2" : "-avx2");
+#endif
+
+#if defined(PIPE_ARCH_PPC)
+   MAttrs.push_back(util_cpu_caps.has_altivec ? "+altivec" : "-altivec");
+#if HAVE_LLVM >= 0x0304
+   /*
+    * Make sure VSX instructions are disabled
+    * See LLVM bug https://llvm.org/bugs/show_bug.cgi?id=25503#c7
+    */
+   if (util_cpu_caps.has_altivec) {
+      MAttrs.push_back("-vsx");
    }
+#endif
+#endif
+
+   builder.setMAttrs(MAttrs);
 
 #if HAVE_LLVM >= 0x0305
    StringRef MCPU = llvm::sys::getHostCPUName();

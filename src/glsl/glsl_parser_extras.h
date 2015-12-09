@@ -115,6 +115,20 @@ struct _mesa_glsl_parse_state {
                       unsigned required_glsl_es_version,
                       YYLTYPE *locp, const char *fmt, ...) PRINTFLIKE(5, 6);
 
+   bool check_arrays_of_arrays_allowed(YYLTYPE *locp)
+   {
+      if (!(ARB_arrays_of_arrays_enable || is_version(430, 310))) {
+         const char *const requirement = this->es_shader
+            ? "GLSL ES 3.10"
+            : "GL_ARB_arrays_of_arrays or GLSL 4.30";
+         _mesa_glsl_error(locp, this,
+                          "%s required for defining arrays of arrays.",
+                          requirement);
+         return false;
+      }
+      return true;
+   }
+
    bool check_precision_qualifiers_allowed(YYLTYPE *locp)
    {
       return check_version(130, 100, locp,
@@ -195,6 +209,11 @@ struct _mesa_glsl_parse_state {
       return ARB_shader_atomic_counters_enable || is_version(420, 310);
    }
 
+   bool has_enhanced_layouts() const
+   {
+      return ARB_enhanced_layouts_enable || is_version(440, 0);
+   }
+
    bool has_explicit_attrib_stream() const
    {
       return ARB_gpu_shader5_enable || is_version(400, 0);
@@ -234,6 +253,11 @@ struct _mesa_glsl_parse_state {
    bool has_420pack() const
    {
       return ARB_shading_language_420pack_enable || is_version(420, 0);
+   }
+
+   bool has_420pack_or_es31() const
+   {
+      return ARB_shading_language_420pack_enable || is_version(420, 310);
    }
 
    bool has_compute_shader() const
@@ -361,6 +385,9 @@ struct _mesa_glsl_parse_state {
       /* ARB_draw_buffers */
       unsigned MaxDrawBuffers;
 
+      /* ARB_blend_func_extended */
+      unsigned MaxDualSourceDrawBuffers;
+
       /* 3.00 ES */
       int MinProgramTexelOffset;
       int MaxProgramTexelOffset;
@@ -485,6 +512,8 @@ struct _mesa_glsl_parse_state {
    bool ARB_draw_buffers_warn;
    bool ARB_draw_instanced_enable;
    bool ARB_draw_instanced_warn;
+   bool ARB_enhanced_layouts_enable;
+   bool ARB_enhanced_layouts_warn;
    bool ARB_explicit_attrib_location_enable;
    bool ARB_explicit_attrib_location_warn;
    bool ARB_explicit_uniform_location_enable;
@@ -505,6 +534,8 @@ struct _mesa_glsl_parse_state {
    bool ARB_shader_atomic_counters_warn;
    bool ARB_shader_bit_encoding_enable;
    bool ARB_shader_bit_encoding_warn;
+   bool ARB_shader_clock_enable;
+   bool ARB_shader_clock_warn;
    bool ARB_shader_image_load_store_enable;
    bool ARB_shader_image_load_store_warn;
    bool ARB_shader_image_size_enable;
@@ -572,12 +603,16 @@ struct _mesa_glsl_parse_state {
    bool AMD_vertex_shader_layer_warn;
    bool AMD_vertex_shader_viewport_index_enable;
    bool AMD_vertex_shader_viewport_index_warn;
+   bool EXT_blend_func_extended_enable;
+   bool EXT_blend_func_extended_warn;
    bool EXT_draw_buffers_enable;
    bool EXT_draw_buffers_warn;
    bool EXT_separate_shader_objects_enable;
    bool EXT_separate_shader_objects_warn;
    bool EXT_shader_integer_mix_enable;
    bool EXT_shader_integer_mix_warn;
+   bool EXT_shader_samples_identical_enable;
+   bool EXT_shader_samples_identical_warn;
    bool EXT_texture_array_enable;
    bool EXT_texture_array_warn;
    /*@}*/

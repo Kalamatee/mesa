@@ -40,36 +40,32 @@
 #define FILE_DEBUG_FLAG DEBUG_MIPTREE
 
 static unsigned int
-tr_mode_horizontal_texture_alignment(const struct brw_context *brw,
-                                     const struct intel_mipmap_tree *mt)
+tr_mode_horizontal_texture_alignment(const struct intel_mipmap_tree *mt)
 {
-   const unsigned *align_yf, *align_ys;
-   const unsigned bpp = _mesa_get_format_bytes(mt->format) * 8;
-   unsigned ret_align, divisor;
+   unsigned ret_align, divisor, multiplier_ys;
 
-   /* Horizontal alignment tables for TRMODE_{YF,YS}. Value in below
-    * tables specifies the horizontal alignment requirement in elements
-    * for the surface. An element is defined as a pixel in uncompressed
-    * surface formats, and as a compression block in compressed surface
-    * formats. For MSFMT_DEPTH_STENCIL type multisampled surfaces, an
+   /* Values in below tables specifiy the horizontal alignment requirement
+    * in elements for TRMODE_YF surface. An element is defined as a pixel in
+    * uncompressed surface formats, and as a compression block in compressed
+    * surface formats. For MSFMT_DEPTH_STENCIL type multisampled surfaces, an
     * element is a sample.
     */
    const unsigned align_1d_yf[] = {4096, 2048, 1024, 512, 256};
-   const unsigned align_1d_ys[] = {65536, 32768, 16384, 8192, 4096};
    const unsigned align_2d_yf[] = {64, 64, 32, 32, 16};
-   const unsigned align_2d_ys[] = {256, 256, 128, 128, 64};
    const unsigned align_3d_yf[] = {16, 8, 8, 8, 4};
-   const unsigned align_3d_ys[] = {64, 32, 32, 32, 16};
-   int i = 0;
 
-   /* Alignment computations below assume bpp >= 8 and a power of 2. */
-   assert (bpp >= 8 && bpp <= 128 && _mesa_is_pow_two(bpp));
+   assert(mt->tr_mode != INTEL_MIPTREE_TRMODE_NONE);
+
+   /* Alignment computations below assume a power of 2 cpp. */
+   assert (mt->cpp >= 1 && mt->cpp <= 16 && _mesa_is_pow_two(mt->cpp));
+   /* Compute array index. */
+   const int i = ffs(mt->cpp) - 1;
 
    switch(mt->target) {
    case GL_TEXTURE_1D:
    case GL_TEXTURE_1D_ARRAY:
-      align_yf = align_1d_yf;
-      align_ys = align_1d_ys;
+      ret_align = align_1d_yf[i];
+      multiplier_ys = 16;
       break;
    case GL_TEXTURE_2D:
    case GL_TEXTURE_RECTANGLE:
@@ -78,22 +74,19 @@ tr_mode_horizontal_texture_alignment(const struct brw_context *brw,
    case GL_TEXTURE_CUBE_MAP_ARRAY:
    case GL_TEXTURE_2D_MULTISAMPLE:
    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-      align_yf = align_2d_yf;
-      align_ys = align_2d_ys;
+      ret_align = align_2d_yf[i];
+      multiplier_ys = 4;
       break;
    case GL_TEXTURE_3D:
-      align_yf = align_3d_yf;
-      align_ys = align_3d_ys;
+      ret_align = align_3d_yf[i];
+      multiplier_ys = 4;
       break;
    default:
       unreachable("not reached");
    }
 
-   /* Compute array index. */
-   i = ffs(bpp/8) - 1;
-
-   ret_align = mt->tr_mode == INTEL_MIPTREE_TRMODE_YF ?
-               align_yf[i] : align_ys[i];
+   if (mt->tr_mode == INTEL_MIPTREE_TRMODE_YS)
+      ret_align *= multiplier_ys;
 
    assert(_mesa_is_pow_two(mt->num_samples));
 
@@ -148,26 +141,20 @@ intel_horizontal_texture_alignment_unit(struct brw_context *brw,
 }
 
 static unsigned int
-tr_mode_vertical_texture_alignment(const struct brw_context *brw,
-                                   const struct intel_mipmap_tree *mt)
+tr_mode_vertical_texture_alignment(const struct intel_mipmap_tree *mt)
 {
-   const unsigned *align_yf, *align_ys;
-   const unsigned bpp = _mesa_get_format_bytes(mt->format) * 8;
-   unsigned ret_align, divisor;
+   unsigned ret_align, divisor, multiplier_ys;
 
-   /* Vertical alignment tables for TRMODE_YF and TRMODE_YS. */
+   /* Vertical alignment tables for TRMODE_YF */
    const unsigned align_2d_yf[] = {64, 32, 32, 16, 16};
-   const unsigned align_2d_ys[] = {256, 128, 128, 64, 64};
    const unsigned align_3d_yf[] = {16, 16, 16, 8, 8};
-   const unsigned align_3d_ys[] = {32, 32, 32, 16, 16};
-   int i = 0;
 
-   assert(brw->gen >= 9 &&
-          mt->target != GL_TEXTURE_1D &&
-          mt->target != GL_TEXTURE_1D_ARRAY);
+   assert(mt->tr_mode != INTEL_MIPTREE_TRMODE_NONE);
 
-   /* Alignment computations below assume bpp >= 8 and a power of 2. */
-   assert (bpp >= 8 && bpp <= 128 && _mesa_is_pow_two(bpp)) ;
+   /* Alignment computations below assume a power of 2 cpp. */
+   assert (mt->cpp >= 1 && mt->cpp <= 16 && _mesa_is_pow_two(mt->cpp)) ;
+   /* Compute array index. */
+   const int i = ffs(mt->cpp) - 1;
 
    switch(mt->target) {
    case GL_TEXTURE_2D:
@@ -177,22 +164,21 @@ tr_mode_vertical_texture_alignment(const struct brw_context *brw,
    case GL_TEXTURE_CUBE_MAP_ARRAY:
    case GL_TEXTURE_2D_MULTISAMPLE:
    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
-      align_yf = align_2d_yf;
-      align_ys = align_2d_ys;
+      ret_align = align_2d_yf[i];
+      multiplier_ys = 4;
       break;
    case GL_TEXTURE_3D:
-      align_yf = align_3d_yf;
-      align_ys = align_3d_ys;
+      ret_align = align_3d_yf[i];
+      multiplier_ys = 2;
       break;
+   case GL_TEXTURE_1D:
+   case GL_TEXTURE_1D_ARRAY:
    default:
-      unreachable("not reached");
+      unreachable("Unexpected miptree target");
    }
 
-   /* Compute array index. */
-   i = ffs(bpp / 8) - 1;
-
-   ret_align = mt->tr_mode == INTEL_MIPTREE_TRMODE_YF ?
-               align_yf[i] : align_ys[i];
+   if (mt->tr_mode == INTEL_MIPTREE_TRMODE_YS)
+      ret_align *= multiplier_ys;
 
    assert(_mesa_is_pow_two(mt->num_samples));
 
@@ -282,7 +268,7 @@ gen9_miptree_layout_1d(struct intel_mipmap_tree *mt)
    /* When this layout is used the horizontal alignment is fixed at 64 and the
     * hardware ignores the value given in the surface state
     */
-   const unsigned int align_w = 64;
+   const unsigned int halign = 64;
 
    mt->total_height = mt->physical_height0;
    mt->total_width = 0;
@@ -292,7 +278,7 @@ gen9_miptree_layout_1d(struct intel_mipmap_tree *mt)
 
       intel_miptree_set_level_info(mt, level, x, 0, depth);
 
-      img_width = ALIGN(width, align_w);
+      img_width = ALIGN(width, halign);
 
       mt->total_width = MAX2(mt->total_width, x + img_width);
 
@@ -328,10 +314,10 @@ brw_miptree_layout_2d(struct intel_mipmap_tree *mt)
        unsigned mip1_width;
 
        if (mt->compressed) {
-          mip1_width = ALIGN_NPOT(minify(mt->physical_width0, 1), mt->align_w) +
+          mip1_width = ALIGN_NPOT(minify(mt->physical_width0, 1), mt->halign) +
              ALIGN_NPOT(minify(mt->physical_width0, 2), bw);
        } else {
-          mip1_width = ALIGN_NPOT(minify(mt->physical_width0, 1), mt->align_w) +
+          mip1_width = ALIGN_NPOT(minify(mt->physical_width0, 1), mt->halign) +
              minify(mt->physical_width0, 2);
        }
 
@@ -348,7 +334,7 @@ brw_miptree_layout_2d(struct intel_mipmap_tree *mt)
 
       intel_miptree_set_level_info(mt, level, x, y, depth);
 
-      img_height = ALIGN_NPOT(height, mt->align_h);
+      img_height = ALIGN_NPOT(height, mt->valign);
       if (mt->compressed)
 	 img_height /= bh;
 
@@ -365,7 +351,7 @@ brw_miptree_layout_2d(struct intel_mipmap_tree *mt)
       /* Layout_below: step right after second mipmap.
        */
       if (level == mt->first_level + 1) {
-	 x += ALIGN_NPOT(width, mt->align_w) / bw;
+	 x += ALIGN_NPOT(width, mt->halign) / bw;
       } else {
 	 y += img_height;
       }
@@ -385,7 +371,7 @@ brw_miptree_get_horizontal_slice_pitch(const struct brw_context *brw,
 {
    if ((brw->gen < 9 && mt->target == GL_TEXTURE_3D) ||
        (brw->gen == 4 && mt->target == GL_TEXTURE_CUBE_MAP)) {
-      return ALIGN_NPOT(minify(mt->physical_width0, level), mt->align_w);
+      return ALIGN_NPOT(minify(mt->physical_width0, level), mt->halign);
    } else {
       return 0;
    }
@@ -426,13 +412,13 @@ brw_miptree_get_vertical_slice_pitch(const struct brw_context *brw,
    } else if (mt->target == GL_TEXTURE_3D ||
               (brw->gen == 4 && mt->target == GL_TEXTURE_CUBE_MAP) ||
               mt->array_layout == ALL_SLICES_AT_EACH_LOD) {
-      return ALIGN_NPOT(minify(mt->physical_height0, level), mt->align_h);
+      return ALIGN_NPOT(minify(mt->physical_height0, level), mt->valign);
 
    } else {
-      const unsigned h0 = ALIGN_NPOT(mt->physical_height0, mt->align_h);
-      const unsigned h1 = ALIGN_NPOT(minify(mt->physical_height0, 1), mt->align_h);
+      const unsigned h0 = ALIGN_NPOT(mt->physical_height0, mt->valign);
+      const unsigned h1 = ALIGN_NPOT(minify(mt->physical_height0, 1), mt->valign);
 
-      return h0 + h1 + (brw->gen >= 7 ? 12 : 11) * mt->align_h;
+      return h0 + h1 + (brw->gen >= 7 ? 12 : 11) * mt->valign;
    }
 }
 
@@ -502,9 +488,9 @@ brw_miptree_layout_texture_array(struct brw_context *brw,
 
    for (unsigned level = mt->first_level; level <= mt->last_level; level++) {
       unsigned img_height;
-      img_height = ALIGN_NPOT(height, mt->align_h);
+      img_height = ALIGN_NPOT(height, mt->valign);
       if (mt->compressed)
-         img_height /= mt->align_h;
+         img_height /= mt->valign;
 
       for (unsigned q = 0; q < mt->level[level].depth; q++) {
          if (mt->array_layout == ALL_SLICES_AT_EACH_LOD) {
@@ -537,8 +523,8 @@ brw_miptree_layout_texture_3d(struct brw_context *brw,
       unsigned WL = MAX2(mt->physical_width0 >> level, 1);
       unsigned HL = MAX2(mt->physical_height0 >> level, 1);
       unsigned DL = MAX2(mt->physical_depth0 >> level, 1);
-      unsigned wL = ALIGN_NPOT(WL, mt->align_w);
-      unsigned hL = ALIGN_NPOT(HL, mt->align_h);
+      unsigned wL = ALIGN_NPOT(WL, mt->halign);
+      unsigned hL = ALIGN_NPOT(HL, mt->valign);
 
       if (mt->target == GL_TEXTURE_CUBE_MAP)
          DL = 6;
@@ -656,7 +642,7 @@ brw_miptree_choose_tiling(struct brw_context *brw,
     * to know that ahead of time.  And besides, since we use a vertical
     * alignment of 4 as often as we can, this shouldn't happen very often.
     */
-   if (brw->gen == 7 && mt->align_h == 2 &&
+   if (brw->gen == 7 && mt->valign == 2 &&
        brw->format_supported_as_render_target[mt->format]) {
       return I915_TILING_X;
    }
@@ -748,21 +734,21 @@ intel_miptree_set_alignment(struct brw_context *brw,
          /* Stencil uses W tiling, so we force W tiling alignment for the
           * ALL_SLICES_AT_EACH_LOD miptree layout.
           */
-         mt->align_w = 64;
-         mt->align_h = 64;
+         mt->halign = 64;
+         mt->valign = 64;
          assert((layout_flags & MIPTREE_LAYOUT_FORCE_HALIGN16) == 0);
       } else {
          /* Depth uses Y tiling, so we force need Y tiling alignment for the
           * ALL_SLICES_AT_EACH_LOD miptree layout.
           */
-         mt->align_w = 128 / mt->cpp;
-         mt->align_h = 32;
+         mt->halign = 128 / mt->cpp;
+         mt->valign = 32;
       }
    } else if (mt->compressed) {
        /* The hardware alignment requirements for compressed textures
         * happen to match the block boundaries.
         */
-      _mesa_get_format_block_size(mt->format, &mt->align_w, &mt->align_h);
+      _mesa_get_format_block_size(mt->format, &mt->halign, &mt->valign);
 
       /* On Gen9+ we can pick our own alignment for compressed textures but it
        * has to be a multiple of the block size. The minimum alignment we can
@@ -770,21 +756,21 @@ intel_miptree_set_alignment(struct brw_context *brw,
        * size
        */
       if (brw->gen >= 9) {
-         mt->align_w *= 4;
-         mt->align_h *= 4;
+         mt->halign *= 4;
+         mt->valign *= 4;
       }
    } else if (mt->format == MESA_FORMAT_S_UINT8) {
-      mt->align_w = 8;
-      mt->align_h = brw->gen >= 7 ? 8 : 4;
+      mt->halign = 8;
+      mt->valign = brw->gen >= 7 ? 8 : 4;
    } else if (brw->gen >= 9 && mt->tr_mode != INTEL_MIPTREE_TRMODE_NONE) {
       /* XY_FAST_COPY_BLT doesn't support horizontal alignment < 32 or
        * vertical alignment < 64. */
-      mt->align_w = MAX2(tr_mode_horizontal_texture_alignment(brw, mt), 32);
-      mt->align_h = MAX2(tr_mode_vertical_texture_alignment(brw, mt), 64);
+      mt->halign = MAX2(tr_mode_horizontal_texture_alignment(mt), 32);
+      mt->valign = MAX2(tr_mode_vertical_texture_alignment(mt), 64);
    } else {
-      mt->align_w =
+      mt->halign =
          intel_horizontal_texture_alignment_unit(brw, mt, layout_flags);
-      mt->align_h = intel_vertical_texture_alignment_unit(brw, mt);
+      mt->valign = intel_vertical_texture_alignment_unit(brw, mt);
    }
 }
 
@@ -809,8 +795,8 @@ brw_miptree_layout(struct brw_context *brw,
    if (brw->gen >= 9) {
       unsigned int i, j;
       _mesa_get_format_block_size(mt->format, &i, &j);
-      mt->align_w /= i;
-      mt->align_h /= j;
+      mt->halign /= i;
+      mt->valign /= j;
    }
 
    if ((layout_flags & MIPTREE_LAYOUT_FOR_BO) == 0)

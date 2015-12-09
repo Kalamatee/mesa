@@ -23,11 +23,26 @@
 #include "codegen/nv50_ir.h"
 #include "codegen/nv50_ir_target.h"
 
+#include <algorithm>
 #include <stack>
 #include <limits>
+#if __cplusplus >= 201103L
+#include <unordered_map>
+#else
 #include <tr1/unordered_map>
+#endif
 
 namespace nv50_ir {
+
+#if __cplusplus >= 201103L
+using std::hash;
+using std::unordered_map;
+#elif !defined(ANDROID)
+using std::tr1::hash;
+using std::tr1::unordered_map;
+#else
+#error Android release before Lollipop is not supported!
+#endif
 
 #define MAX_REGISTER_FILE_SIZE 256
 
@@ -88,6 +103,8 @@ public:
 
    void print() const;
 
+   const bool restrictedGPR16Range;
+
 private:
    BitSet bits[LAST_REGISTER_FILE + 1];
 
@@ -95,8 +112,6 @@ private:
 
    int last[LAST_REGISTER_FILE + 1];
    int fill[LAST_REGISTER_FILE + 1];
-
-   const bool restrictedGPR16Range;
 };
 
 void
@@ -349,12 +364,12 @@ RegAlloc::PhiMovesPass::needNewElseBlock(BasicBlock *b, BasicBlock *p)
 
 struct PhiMapHash {
    size_t operator()(const std::pair<Instruction *, BasicBlock *>& val) const {
-      return std::tr1::hash<Instruction*>()(val.first) * 31 +
-         std::tr1::hash<BasicBlock*>()(val.second);
+      return hash<Instruction*>()(val.first) * 31 +
+         hash<BasicBlock*>()(val.second);
    }
 };
 
-typedef std::tr1::unordered_map<
+typedef unordered_map<
    std::pair<Instruction *, BasicBlock *>, Value *, PhiMapHash> PhiMap;
 
 // Critical edges need to be split up so that work can be inserted along
@@ -825,6 +840,32 @@ GCRA::printNodeInfo() const
    }
 }
 
+static bool
+isShortRegOp(Instruction *insn)
+{
+   // Immediates are always in src1. Every other situation can be resolved by
+   // using a long encoding.
+   return insn->srcExists(1) && insn->src(1).getFile() == FILE_IMMEDIATE;
+}
+
+// Check if this LValue is ever used in an instruction that can't be encoded
+// with long registers (i.e. > r63)
+static bool
+isShortRegVal(LValue *lval)
+{
+   if (lval->defs.size() == 0)
+      return false;
+   for (Value::DefCIterator def = lval->defs.begin();
+        def != lval->defs.end(); ++def)
+      if (isShortRegOp((*def)->getInsn()))
+         return true;
+   for (Value::UseCIterator use = lval->uses.begin();
+        use != lval->uses.end(); ++use)
+      if (isShortRegOp((*use)->getInsn()))
+         return true;
+   return false;
+}
+
 void
 GCRA::RIG_Node::init(const RegisterSet& regs, LValue *lval)
 {
@@ -840,7 +881,12 @@ GCRA::RIG_Node::init(const RegisterSet& regs, LValue *lval)
 
    weight = std::numeric_limits<float>::infinity();
    degree = 0;
-   degreeLimit = regs.getFileSize(f, lval->reg.size);
+   int size = regs.getFileSize(f, lval->reg.size);
+   // On nv50, we lose a bit of gpr encoding when there's an embedded
+   // immediate.
+   if (regs.restrictedGPR16Range && f == FILE_GPR && isShortRegVal(lval))
+      size /= 2;
+   degreeLimit = size;
    degreeLimit -= relDegree[1][colors] - 1;
 
    livei.insert(lval->livei);
@@ -1419,6 +1465,20 @@ GCRA::allocateRegisters(ArrayList& insns)
       if (lval) {
          nodes[i].init(regs, lval);
          RIG.insert(&nodes[i]);
+
+         if (lval->inFile(FILE_GPR) && lval->defs.size() > 0 &&
+             prog->getTarget()->getChipset() < 0xc0) {
+            Instruction *insn = lval->getInsn();
+            if (insn->op == OP_MAD || insn->op == OP_SAD)
+               // Short encoding only possible if they're all GPRs, no need to
+               // affect them otherwise.
+               if (insn->flagsDef < 0 &&
+                   isFloatType(insn->dType) &&
+                   insn->src(0).getFile() == FILE_GPR &&
+                   insn->src(1).getFile() == FILE_GPR &&
+                   insn->src(2).getFile() == FILE_GPR)
+                  nodes[i].addRegPreference(getNode(insn->getSrc(2)->asLValue()));
+         }
       }
    }
 
@@ -1559,14 +1619,34 @@ SpillCodeInserter::spill(Instruction *defi, Value *slot, LValue *lval)
 
    Instruction *st;
    if (slot->reg.file == FILE_MEMORY_LOCAL) {
-      st = new_Instruction(func, OP_STORE, ty);
-      st->setSrc(0, slot);
-      st->setSrc(1, lval);
       lval->noSpill = 1;
+      if (ty != TYPE_B96) {
+         st = new_Instruction(func, OP_STORE, ty);
+         st->setSrc(0, slot);
+         st->setSrc(1, lval);
+      } else {
+         st = new_Instruction(func, OP_SPLIT, ty);
+         st->setSrc(0, lval);
+         for (int d = 0; d < lval->reg.size / 4; ++d)
+            st->setDef(d, new_LValue(func, FILE_GPR));
+
+         for (int d = lval->reg.size / 4 - 1; d >= 0; --d) {
+            Value *tmp = cloneShallow(func, slot);
+            tmp->reg.size = 4;
+            tmp->reg.data.offset += 4 * d;
+
+            Instruction *s = new_Instruction(func, OP_STORE, TYPE_U32);
+            s->setSrc(0, tmp);
+            s->setSrc(1, st->getDef(d));
+            defi->bb->insertAfter(defi, s);
+         }
+      }
    } else {
       st = new_Instruction(func, OP_CVT, ty);
       st->setDef(0, slot);
       st->setSrc(0, lval);
+      if (lval->reg.file == FILE_FLAGS)
+         st->flagsSrc = 0;
    }
    defi->bb->insertAfter(defi, st);
 }
@@ -1582,17 +1662,46 @@ SpillCodeInserter::unspill(Instruction *usei, LValue *lval, Value *slot)
    Instruction *ld;
    if (slot->reg.file == FILE_MEMORY_LOCAL) {
       lval->noSpill = 1;
-      ld = new_Instruction(func, OP_LOAD, ty);
+      if (ty != TYPE_B96) {
+         ld = new_Instruction(func, OP_LOAD, ty);
+      } else {
+         ld = new_Instruction(func, OP_MERGE, ty);
+         for (int d = 0; d < lval->reg.size / 4; ++d) {
+            Value *tmp = cloneShallow(func, slot);
+            LValue *val;
+            tmp->reg.size = 4;
+            tmp->reg.data.offset += 4 * d;
+
+            Instruction *l = new_Instruction(func, OP_LOAD, TYPE_U32);
+            l->setDef(0, (val = new_LValue(func, FILE_GPR)));
+            l->setSrc(0, tmp);
+            usei->bb->insertBefore(usei, l);
+            ld->setSrc(d, val);
+            val->noSpill = 1;
+         }
+         ld->setDef(0, lval);
+         usei->bb->insertBefore(usei, ld);
+         return lval;
+      }
    } else {
       ld = new_Instruction(func, OP_CVT, ty);
    }
    ld->setDef(0, lval);
    ld->setSrc(0, slot);
+   if (lval->reg.file == FILE_FLAGS)
+      ld->flagsDef = 0;
 
    usei->bb->insertBefore(usei, ld);
    return lval;
 }
 
+static bool
+value_cmp(ValueRef *a, ValueRef *b) {
+   Instruction *ai = a->getInsn(), *bi = b->getInsn();
+   if (ai->bb != bi->bb)
+      return ai->bb->getId() < bi->bb->getId();
+   return ai->serial < bi->serial;
+}
 
 // For each value that is to be spilled, go through all its definitions.
 // A value can have multiple definitions if it has been coalesced before.
@@ -1626,18 +1735,25 @@ SpillCodeInserter::run(const std::list<ValuePair>& lst)
          LValue *dval = (*d)->get()->asLValue();
          Instruction *defi = (*d)->getInsn();
 
+         // Sort all the uses by BB/instruction so that we don't unspill
+         // multiple times in a row, and also remove a source of
+         // non-determinism.
+         std::vector<ValueRef *> refs(dval->uses.begin(), dval->uses.end());
+         std::sort(refs.begin(), refs.end(), value_cmp);
+
          // Unspill at each use *before* inserting spill instructions,
          // we don't want to have the spill instructions in the use list here.
-         while (!dval->uses.empty()) {
-            ValueRef *u = *dval->uses.begin();
+         for (std::vector<ValueRef*>::const_iterator it = refs.begin();
+              it != refs.end(); ++it) {
+            ValueRef *u = *it;
             Instruction *usei = u->getInsn();
             assert(usei);
             if (usei->isPseudo()) {
                tmp = (slot->reg.file == FILE_MEMORY_LOCAL) ? NULL : slot;
                last = NULL;
-            } else
-            if (!last || usei != last->next) { // TODO: sort uses
-               tmp = unspill(usei, dval, slot);
+            } else {
+               if (!last || (usei != last->next && usei != last))
+                  tmp = unspill(usei, dval, slot);
                last = usei;
             }
             u->set(tmp);
@@ -2032,7 +2148,8 @@ RegAlloc::InsertConstraintsPass::texConstraintNVC0(TexInstruction *tex)
 {
    int n, s;
 
-   textureMask(tex);
+   if (isTextureOp(tex->op))
+      textureMask(tex);
 
    if (tex->op == OP_TXQ) {
       s = tex->srcCount(0xff);

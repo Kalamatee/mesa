@@ -237,7 +237,7 @@ void *evergreen_create_compute_state(
 #endif
 #endif
 
-	shader->ctx = (struct r600_context*)ctx;
+	shader->ctx = ctx;
 	shader->local_size = cso->req_local_mem;
 	shader->private_size = cso->req_private_mem;
 	shader->input_size = cso->req_input_mem;
@@ -346,7 +346,7 @@ static void evergreen_emit_direct_dispatch(
 		const uint *block_layout, const uint *grid_layout)
 {
 	int i;
-	struct radeon_winsys_cs *cs = rctx->b.rings.gfx.cs;
+	struct radeon_winsys_cs *cs = rctx->b.gfx.cs;
 	struct r600_pipe_compute *shader = rctx->cs_shader_state.shader;
 	unsigned num_waves;
 	unsigned num_pipes = rctx->screen->b.info.r600_max_pipes;
@@ -402,7 +402,7 @@ static void evergreen_emit_direct_dispatch(
 		assert(lds_size <= 8160);
 	}
 
-	radeon_compute_set_context_reg(cs, CM_R_0288E8_SQ_LDS_ALLOC,
+	radeon_compute_set_context_reg(cs, R_0288E8_SQ_LDS_ALLOC,
 					lds_size | (num_waves << 14));
 
 	/* Dispatch packet */
@@ -417,12 +417,12 @@ static void evergreen_emit_direct_dispatch(
 static void compute_emit_cs(struct r600_context *ctx, const uint *block_layout,
 		const uint *grid_layout)
 {
-	struct radeon_winsys_cs *cs = ctx->b.rings.gfx.cs;
+	struct radeon_winsys_cs *cs = ctx->b.gfx.cs;
 	unsigned i;
 
 	/* make sure that the gfx ring is only one active */
-	if (ctx->b.rings.dma.cs && ctx->b.rings.dma.cs->cdw) {
-		ctx->b.rings.dma.flush(ctx, RADEON_FLUSH_ASYNC, NULL);
+	if (ctx->b.dma.cs && ctx->b.dma.cs->cdw) {
+		ctx->b.dma.flush(ctx, RADEON_FLUSH_ASYNC, NULL);
 	}
 
 	/* Initialize all the compute-related registers.
@@ -432,6 +432,10 @@ static void compute_emit_cs(struct r600_context *ctx, const uint *block_layout,
 	 */
 	r600_emit_command_buffer(cs, &ctx->start_compute_cs_cmd);
 
+	/* emit config state */
+	if (ctx->b.chip_class == EVERGREEN)
+		r600_emit_atom(ctx, &ctx->config_state.atom);
+
 	ctx->b.flags |= R600_CONTEXT_WAIT_3D_IDLE | R600_CONTEXT_FLUSH_AND_INV;
 	r600_flush_emit(ctx);
 
@@ -439,10 +443,10 @@ static void compute_emit_cs(struct r600_context *ctx, const uint *block_layout,
 	/* XXX support more than 8 colorbuffers (the offsets are not a multiple of 0x3C for CB8-11) */
 	for (i = 0; i < 8 && i < ctx->framebuffer.state.nr_cbufs; i++) {
 		struct r600_surface *cb = (struct r600_surface*)ctx->framebuffer.state.cbufs[i];
-		unsigned reloc = radeon_add_to_buffer_list(&ctx->b, &ctx->b.rings.gfx,
+		unsigned reloc = radeon_add_to_buffer_list(&ctx->b, &ctx->b.gfx,
 						       (struct r600_resource*)cb->base.texture,
 						       RADEON_USAGE_READWRITE,
-						       RADEON_PRIO_SHADER_RESOURCE_RW);
+						       RADEON_PRIO_SHADER_RW_BUFFER);
 
 		radeon_compute_set_context_reg_seq(cs, R_028C60_CB_COLOR0_BASE + i * 0x3C, 7);
 		radeon_emit(cs, cb->cb_color_base);	/* R_028C60_CB_COLOR0_BASE */
@@ -538,7 +542,7 @@ void evergreen_emit_cs_shader(
 	struct r600_cs_shader_state *state =
 					(struct r600_cs_shader_state*)atom;
 	struct r600_pipe_compute *shader = state->shader;
-	struct radeon_winsys_cs *cs = rctx->b.rings.gfx.cs;
+	struct radeon_winsys_cs *cs = rctx->b.gfx.cs;
 	uint64_t va;
 	struct r600_resource *code_bo;
 	unsigned ngpr, nstack;
@@ -564,9 +568,9 @@ void evergreen_emit_cs_shader(
 	radeon_emit(cs, 0);	/* R_0288D8_SQ_PGM_RESOURCES_LS_2 */
 
 	radeon_emit(cs, PKT3C(PKT3_NOP, 0, 0));
-	radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.rings.gfx,
+	radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
 					      code_bo, RADEON_USAGE_READ,
-					      RADEON_PRIO_SHADER_DATA));
+					      RADEON_PRIO_USER_SHADER));
 }
 
 static void evergreen_launch_grid(
@@ -791,7 +795,7 @@ void evergreen_init_atom_start_compute_cs(struct r600_context *ctx)
 
 	/* Config Registers */
 	if (ctx->b.chip_class < CAYMAN)
-		evergreen_init_common_regs(cb, ctx->b.chip_class, ctx->b.family,
+		evergreen_init_common_regs(ctx, cb, ctx->b.chip_class, ctx->b.family,
 					   ctx->screen->b.info.drm_minor);
 	else
 		cayman_init_common_regs(cb, ctx->b.chip_class, ctx->b.family,
@@ -997,7 +1001,7 @@ void *r600_compute_global_transfer_map(
 	}
 	else {
 		if (item->real_buffer == NULL) {
-			item->real_buffer = (struct r600_resource*)
+			item->real_buffer =
 					r600_compute_buffer_alloc_vram(pool->screen, item->size_in_dw * 4);
 		}
 	}

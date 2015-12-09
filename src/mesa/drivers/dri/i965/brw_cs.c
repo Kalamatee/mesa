@@ -30,26 +30,61 @@
 #include "intel_mipmap_tree.h"
 #include "brw_state.h"
 #include "intel_batchbuffer.h"
+#include "brw_nir.h"
+#include "brw_program.h"
+#include "glsl/ir_uniform.h"
 
-bool
-brw_cs_prog_data_compare(const void *in_a, const void *in_b)
+void
+brw_cs_fill_local_id_payload(const struct brw_cs_prog_data *prog_data,
+                             void *buffer, uint32_t threads, uint32_t stride)
 {
-   const struct brw_cs_prog_data *a =
-      (const struct brw_cs_prog_data *)in_a;
-   const struct brw_cs_prog_data *b =
-      (const struct brw_cs_prog_data *)in_b;
+   if (prog_data->local_invocation_id_regs == 0)
+      return;
 
-   /* Compare the base structure. */
-   if (!brw_stage_prog_data_compare(&a->base, &b->base))
-      return false;
+   /* 'stride' should be an integer number of registers, that is, a multiple
+    * of 32 bytes.
+    */
+   assert(stride % 32 == 0);
 
-   /* Compare the rest of the structure. */
-   const unsigned offset = sizeof(struct brw_stage_prog_data);
-   if (memcmp(((char *) a) + offset, ((char *) b) + offset,
-              sizeof(struct brw_cs_prog_data) - offset))
-      return false;
+   unsigned x = 0, y = 0, z = 0;
+   for (unsigned t = 0; t < threads; t++) {
+      uint32_t *param = (uint32_t *) buffer + stride * t / 4;
 
-   return true;
+      for (unsigned i = 0; i < prog_data->simd_size; i++) {
+         param[0 * prog_data->simd_size + i] = x;
+         param[1 * prog_data->simd_size + i] = y;
+         param[2 * prog_data->simd_size + i] = z;
+
+         x++;
+         if (x == prog_data->local_size[0]) {
+            x = 0;
+            y++;
+            if (y == prog_data->local_size[1]) {
+               y = 0;
+               z++;
+               if (z == prog_data->local_size[2])
+                  z = 0;
+            }
+         }
+      }
+   }
+}
+
+static void
+assign_cs_binding_table_offsets(const struct brw_device_info *devinfo,
+                                const struct gl_shader_program *shader_prog,
+                                const struct gl_program *prog,
+                                struct brw_cs_prog_data *prog_data)
+{
+   uint32_t next_binding_table_offset = 0;
+
+   /* May not be used if the gl_NumWorkGroups variable is not accessed. */
+   prog_data->binding_table.work_groups_start = next_binding_table_offset;
+   next_binding_table_offset++;
+
+   brw_assign_common_binding_table_offsets(MESA_SHADER_COMPUTE, devinfo,
+                                           shader_prog, prog, &prog_data->base,
+                                           next_binding_table_offset);
 }
 
 static bool
@@ -72,12 +107,14 @@ brw_codegen_cs_prog(struct brw_context *brw,
 
    memset(&prog_data, 0, sizeof(prog_data));
 
+   assign_cs_binding_table_offsets(brw->intelScreen->devinfo, prog,
+                                   &cp->program.Base, &prog_data);
+
    /* Allocate the references to the uniforms that will end up in the
     * prog_data associated with the compiled program, and which will be freed
     * by the state cache.
     */
-   int param_count = cs->base.num_uniform_components +
-                     cs->base.NumImages * BRW_IMAGE_PARAM_SIZE;
+   int param_count = cp->program.Base.nir->num_uniforms;
 
    /* The backend also sometimes adds params for texture size. */
    param_count += 2 * ctx->Const.Program[MESA_SHADER_COMPUTE].MaxTextureImageUnits;
@@ -90,15 +127,31 @@ brw_codegen_cs_prog(struct brw_context *brw,
    prog_data.base.nr_params = param_count;
    prog_data.base.nr_image_params = cs->base.NumImages;
 
+   brw_nir_setup_glsl_uniforms(cp->program.Base.nir, prog, &cp->program.Base,
+                               &prog_data.base, true);
+
    if (unlikely(brw->perf_debug)) {
       start_busy = (brw->batch.last_bo &&
                     drm_intel_bo_busy(brw->batch.last_bo));
       start_time = get_time();
    }
 
-   program = brw_cs_emit(brw, mem_ctx, key, &prog_data,
-                         &cp->program, prog, &program_size);
+   if (unlikely(INTEL_DEBUG & DEBUG_CS))
+      brw_dump_ir("compute", prog, &cs->base, &cp->program.Base);
+
+   int st_index = -1;
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME)
+      st_index = brw_get_shader_time_index(brw, prog, &cp->program.Base, ST_CS);
+
+   char *error_str;
+   program = brw_compile_cs(brw->intelScreen->compiler, brw, mem_ctx,
+                            key, &prog_data, cp->program.Base.nir,
+                            st_index, &program_size, &error_str);
    if (program == NULL) {
+      prog->LinkStatus = false;
+      ralloc_strcat(&prog->InfoLog, error_str);
+      _mesa_problem(NULL, "Failed to compile compute shader: %s\n", error_str);
+
       ralloc_free(mem_ctx);
       return false;
    }

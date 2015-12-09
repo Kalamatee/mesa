@@ -138,6 +138,8 @@ ilo_get_shader_param(struct pipe_screen *screen, unsigned shader,
       return PIPE_SHADER_IR_TGSI;
    case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
       return 1;
+   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+      return 32;
 
    default:
       return 0;
@@ -470,6 +472,10 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
    case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
+   case PIPE_CAP_SHAREABLE_SHADERS:
+   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+   case PIPE_CAP_CLEAR_TEXTURE:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:

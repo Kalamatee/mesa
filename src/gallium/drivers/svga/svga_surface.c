@@ -317,6 +317,8 @@ svga_create_surface_view(struct pipe_context *pipe,
       s->real_level = surf_tmpl->u.tex.level;
    }
 
+   svga->hud.num_surface_views++;
+
    return &s->base;
 }
 
@@ -355,7 +357,7 @@ create_backed_surface_view(struct svga_context *svga, struct svga_surface *s)
 {
    struct svga_surface *bs = s->backed;
 
-   if (bs == NULL) {
+   if (!bs) {
       struct svga_texture *tex = svga_texture(s->base.texture);
       struct pipe_surface *backed_view;
 
@@ -509,6 +511,8 @@ svga_surface_destroy(struct pipe_context *pipe,
 
    pipe_resource_reference(&surf->texture, NULL);
    FREE(surf);
+
+   svga->hud.num_surface_views--;
 }
 
 

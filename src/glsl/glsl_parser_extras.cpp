@@ -102,6 +102,8 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
 
    this->Const.MaxDrawBuffers = ctx->Const.MaxDrawBuffers;
 
+   this->Const.MaxDualSourceDrawBuffers = ctx->Const.MaxDualSourceDrawBuffers;
+
    /* 1.50 constants */
    this->Const.MaxVertexOutputComponents = ctx->Const.Program[MESA_SHADER_VERTEX].MaxOutputComponents;
    this->Const.MaxGeometryInputComponents = ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxInputComponents;
@@ -475,7 +477,7 @@ _mesa_glsl_msg(const YYLTYPE *locp, _mesa_glsl_parse_state *state,
    struct gl_context *ctx = state->ctx;
 
    /* Report the error via GL_ARB_debug_output. */
-   _mesa_shader_debug(ctx, type, &msg_id, msg, strlen(msg));
+   _mesa_shader_debug(ctx, type, &msg_id, msg);
 
    ralloc_strcat(&state->info_log, "\n");
 }
@@ -594,6 +596,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(ARB_derivative_control,           true,  false,     ARB_derivative_control),
    EXT(ARB_draw_buffers,                 true,  false,     dummy_true),
    EXT(ARB_draw_instanced,               true,  false,     ARB_draw_instanced),
+   EXT(ARB_enhanced_layouts,             true,  false,     ARB_enhanced_layouts),
    EXT(ARB_explicit_attrib_location,     true,  false,     ARB_explicit_attrib_location),
    EXT(ARB_explicit_uniform_location,    true,  false,     ARB_explicit_uniform_location),
    EXT(ARB_fragment_coord_conventions,   true,  false,     ARB_fragment_coord_conventions),
@@ -604,6 +607,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(ARB_separate_shader_objects,      true,  false,     dummy_true),
    EXT(ARB_shader_atomic_counters,       true,  false,     ARB_shader_atomic_counters),
    EXT(ARB_shader_bit_encoding,          true,  false,     ARB_shader_bit_encoding),
+   EXT(ARB_shader_clock,                 true,  false,     ARB_shader_clock),
    EXT(ARB_shader_image_load_store,      true,  false,     ARB_shader_image_load_store),
    EXT(ARB_shader_image_size,            true,  false,     ARB_shader_image_size),
    EXT(ARB_shader_precision,             true,  false,     ARB_shader_precision),
@@ -632,7 +636,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
     */
    EXT(OES_EGL_image_external,         false, true,      OES_EGL_image_external),
    EXT(OES_standard_derivatives,       false, true,      OES_standard_derivatives),
-   EXT(OES_texture_3D,                 false, true,      EXT_texture3D),
+   EXT(OES_texture_3D,                 false, true,      dummy_true),
    EXT(OES_texture_storage_multisample_2d_array, false, true, ARB_texture_multisample),
 
    /* All other extensions go here, sorted alphabetically.
@@ -642,9 +646,11 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(AMD_shader_trinary_minmax,      true,  false,     dummy_true),
    EXT(AMD_vertex_shader_layer,        true,  false,     AMD_vertex_shader_layer),
    EXT(AMD_vertex_shader_viewport_index, true,  false,   AMD_vertex_shader_viewport_index),
+   EXT(EXT_blend_func_extended,        false,  true,     ARB_blend_func_extended),
    EXT(EXT_draw_buffers,               false,  true,     dummy_true),
    EXT(EXT_separate_shader_objects,    false, true,      dummy_true),
    EXT(EXT_shader_integer_mix,         true,  true,      EXT_shader_integer_mix),
+   EXT(EXT_shader_samples_identical,   true,  true,      EXT_shader_samples_identical),
    EXT(EXT_texture_array,              true,  false,     EXT_texture_array),
 };
 
@@ -868,7 +874,7 @@ void
 _mesa_ast_process_interface_block(YYLTYPE *locp,
                                   _mesa_glsl_parse_state *state,
                                   ast_interface_block *const block,
-                                  const struct ast_type_qualifier q)
+                                  const struct ast_type_qualifier &q)
 {
    if (q.flags.q.buffer) {
       if (!state->has_shader_storage_buffer_objects()) {
@@ -1080,7 +1086,7 @@ void
 ast_compound_statement::print(void) const
 {
    printf("{\n");
-   
+
    foreach_list_typed(ast_node, ast, link, &this->statements) {
       ast->print();
    }
@@ -1406,7 +1412,6 @@ ast_selection_statement::print(void) const
       printf("else ");
       else_statement->print();
    }
-   
 }
 
 
@@ -1642,8 +1647,20 @@ set_shader_inout_layout(struct gl_shader *shader,
    switch (shader->Stage) {
    case MESA_SHADER_TESS_CTRL:
       shader->TessCtrl.VerticesOut = 0;
-      if (state->tcs_output_vertices_specified)
-         shader->TessCtrl.VerticesOut = state->out_qualifier->vertices;
+      if (state->tcs_output_vertices_specified) {
+         unsigned vertices;
+         if (state->out_qualifier->vertices->
+               process_qualifier_constant(state, "vertices", &vertices,
+                                          false)) {
+
+            YYLTYPE loc = state->out_qualifier->vertices->get_location();
+            if (vertices > state->Const.MaxPatchVertices) {
+               _mesa_glsl_error(&loc, state, "vertices (%d) exceeds "
+                                "GL_MAX_PATCH_VERTICES", vertices);
+            }
+            shader->TessCtrl.VerticesOut = vertices;
+         }
+      }
       break;
    case MESA_SHADER_TESS_EVAL:
       shader->TessEval.PrimitiveMode = PRIM_UNKNOWN;
@@ -1664,8 +1681,14 @@ set_shader_inout_layout(struct gl_shader *shader,
       break;
    case MESA_SHADER_GEOMETRY:
       shader->Geom.VerticesOut = 0;
-      if (state->out_qualifier->flags.q.max_vertices)
-         shader->Geom.VerticesOut = state->out_qualifier->max_vertices;
+      if (state->out_qualifier->flags.q.max_vertices) {
+         unsigned qual_max_vertices;
+         if (state->out_qualifier->max_vertices->
+               process_qualifier_constant(state, "max_vertices",
+                                          &qual_max_vertices, true)) {
+            shader->Geom.VerticesOut = qual_max_vertices;
+         }
+      }
 
       if (state->gs_input_prim_type_specified) {
          shader->Geom.InputType = state->in_qualifier->prim_type;
@@ -1680,8 +1703,22 @@ set_shader_inout_layout(struct gl_shader *shader,
       }
 
       shader->Geom.Invocations = 0;
-      if (state->in_qualifier->flags.q.invocations)
-         shader->Geom.Invocations = state->in_qualifier->invocations;
+      if (state->in_qualifier->flags.q.invocations) {
+         unsigned invocations;
+         if (state->in_qualifier->invocations->
+               process_qualifier_constant(state, "invocations",
+                                          &invocations, false)) {
+
+            YYLTYPE loc = state->in_qualifier->invocations->get_location();
+            if (invocations > MAX_GEOMETRY_SHADER_INVOCATIONS) {
+               _mesa_glsl_error(&loc, state,
+                                "invocations (%d) exceeds "
+                                "GL_MAX_GEOMETRY_SHADER_INVOCATIONS",
+                                invocations);
+            }
+            shader->Geom.Invocations = invocations;
+         }
+      }
       break;
 
    case MESA_SHADER_COMPUTE:
@@ -1793,15 +1830,15 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
    if (shader->InfoLog)
       ralloc_free(shader->InfoLog);
 
+   if (!state->error)
+      set_shader_inout_layout(shader, state);
+
    shader->symbols = new(shader->ir) glsl_symbol_table;
    shader->CompileStatus = !state->error;
    shader->InfoLog = state->info_log;
    shader->Version = state->language_version;
    shader->IsES = state->es_shader;
    shader->uses_builtin_functions = state->uses_builtin_functions;
-
-   if (!state->error)
-      set_shader_inout_layout(shader, state);
 
    /* Retain any live IR, but trash the rest. */
    reparent_ir(shader->ir, shader->ir);
@@ -1899,7 +1936,6 @@ do_common_optimization(exec_list *ir, bool linked,
       progress = do_constant_variable_unlinked(ir) || progress;
    progress = do_constant_folding(ir) || progress;
    progress = do_minmax_prune(ir) || progress;
-   progress = do_cse(ir) || progress;
    progress = do_rebalance_tree(ir) || progress;
    progress = do_algebraic(ir, native_integers, options) || progress;
    progress = do_lower_jumps(ir) || progress;

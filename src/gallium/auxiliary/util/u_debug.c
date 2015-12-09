@@ -70,6 +70,20 @@ void _debug_vprintf(const char *format, va_list ap)
 #endif
 }
 
+void
+_pipe_debug_message(
+   struct pipe_debug_callback *cb,
+   unsigned *id,
+   enum pipe_debug_type type,
+   const char *fmt, ...)
+{
+   va_list args;
+   va_start(args, fmt);
+   if (cb && cb->debug_message)
+      cb->debug_message(cb->data, id, type, fmt, args);
+   va_end(args);
+}
+
 
 void
 debug_disable_error_message_boxes(void)
@@ -139,7 +153,7 @@ debug_get_option(const char *name, const char *dfault)
    const char *result;
 
    result = os_get_option(name);
-   if(!result)
+   if (!result)
       result = dfault;
 
    if (debug_get_option_should_print())
@@ -276,7 +290,7 @@ debug_get_flags_option(const char *name,
       for (; flags->name; ++flags)
          namealign = MAX2(namealign, strlen(flags->name));
       for (flags = orig; flags->name; ++flags)
-         _debug_printf("| %*s [0x%0*"PRIu64"]%s%s\n", namealign, flags->name,
+         _debug_printf("| %*s [0x%0*"PRIx64"]%s%s\n", namealign, flags->name,
                       (int)sizeof(uint64_t)*CHAR_BIT/4, flags->value,
                       flags->desc ? " " : "", flags->desc ? flags->desc : "");
    }
@@ -291,9 +305,9 @@ debug_get_flags_option(const char *name,
 
    if (debug_get_option_should_print()) {
       if (str) {
-         debug_printf("%s: %s = 0x%"PRIu64" (%s)\n", __FUNCTION__, name, result, str);
+         debug_printf("%s: %s = 0x%"PRIx64" (%s)\n", __FUNCTION__, name, result, str);
       } else {
-         debug_printf("%s: %s = 0x%"PRIu64"\n", __FUNCTION__, name, result);
+         debug_printf("%s: %s = 0x%"PRIx64"\n", __FUNCTION__, name, result);
       }
    }
 
@@ -543,7 +557,7 @@ void debug_dump_surface(struct pipe_context *pipe,
                             surface->u.tex.first_layer,
                             PIPE_TRANSFER_READ,
                             0, 0, surface->width, surface->height, &transfer);
-   if(!data)
+   if (!data)
       return;
 
    debug_dump_image(prefix,
@@ -640,7 +654,7 @@ debug_dump_transfer_bmp(struct pipe_context *pipe,
 		 transfer->box.height *
 		 transfer->box.depth *
 		 4*sizeof(float));
-   if(!rgba)
+   if (!rgba)
       goto error1;
 
    pipe_get_tile_rgba(transfer, ptr, 0, 0,
@@ -666,7 +680,7 @@ debug_dump_float_rgba_bmp(const char *filename,
    struct bmp_info_header bmih;
    unsigned x, y;
 
-   if(!rgba)
+   if (!rgba)
       goto error1;
 
    bmfh.bfType = 0x4d42;
@@ -688,7 +702,7 @@ debug_dump_float_rgba_bmp(const char *filename,
    bmih.biClrImportant = 0;
 
    stream = fopen(filename, "wb");
-   if(!stream)
+   if (!stream)
       goto error1;
 
    fwrite(&bmfh, 14, 1, stream);

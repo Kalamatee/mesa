@@ -164,49 +164,6 @@ unsigned si_shader_io_get_unique_index(unsigned semantic_name, unsigned index)
 }
 
 /**
- * Given a semantic name and index of a parameter and a mask of used parameters
- * (inputs or outputs), return the index of the parameter in the list of all
- * used parameters.
- *
- * For example, assume this list of parameters:
- *   POSITION, PSIZE, GENERIC0, GENERIC2
- * which has the mask:
- *   11000000000101
- * Then:
- *   querying POSITION returns 0,
- *   querying PSIZE returns 1,
- *   querying GENERIC0 returns 2,
- *   querying GENERIC2 returns 3.
- *
- * Which can be used as an offset to a parameter buffer in units of vec4s.
- */
-static int get_param_index(unsigned semantic_name, unsigned index,
-			   uint64_t mask)
-{
-	unsigned unique_index = si_shader_io_get_unique_index(semantic_name, index);
-	int i, param_index = 0;
-
-	/* If not present... */
-	if (!((1llu << unique_index) & mask))
-		return -1;
-
-	for (i = 0; mask; i++) {
-		uint64_t bit = 1llu << i;
-
-		if (bit & mask) {
-			if (i == unique_index)
-				return param_index;
-
-			mask &= ~bit;
-			param_index++;
-		}
-	}
-
-	assert(!"unreachable");
-	return -1;
-}
-
-/**
  * Get the value of a shader input parameter and extract a bitfield.
  */
 static LLVMValueRef unpack_param(struct si_shader_context *si_shader_ctx,
@@ -637,6 +594,14 @@ static LLVMValueRef lds_load(struct lp_build_tgsi_context *bld_base,
 			    lp_build_const_int32(gallivm, swizzle));
 
 	value = build_indexed_load(si_shader_ctx, si_shader_ctx->lds, dw_addr);
+	if (type == TGSI_TYPE_DOUBLE) {
+		LLVMValueRef value2;
+		dw_addr = lp_build_add(&bld_base->uint_bld, dw_addr,
+				       lp_build_const_int32(gallivm, swizzle + 1));
+		value2 = build_indexed_load(si_shader_ctx, si_shader_ctx->lds, dw_addr);
+		return radeon_llvm_emit_fetch_double(bld_base, value, value2);
+	}
+
 	return LLVMBuildBitCast(gallivm->builder, value,
 				tgsi2llvmtype(bld_base, type), "");
 }
@@ -775,6 +740,8 @@ static LLVMValueRef fetch_input_gs(
 	struct tgsi_shader_info *info = &shader->selector->info;
 	unsigned semantic_name = info->input_semantic_name[reg->Register.Index];
 	unsigned semantic_index = info->input_semantic_index[reg->Register.Index];
+	unsigned param;
+	LLVMValueRef value;
 
 	if (swizzle != ~0 && semantic_name == TGSI_SEMANTIC_PRIMID)
 		return get_primitive_id(bld_base, swizzle);
@@ -805,12 +772,10 @@ static LLVMValueRef fetch_input_gs(
 						   vtx_offset_param),
 				      4);
 
+	param = si_shader_io_get_unique_index(semantic_name, semantic_index);
 	args[0] = si_shader_ctx->esgs_ring;
 	args[1] = vtx_offset;
-	args[2] = lp_build_const_int32(gallivm,
-				       (get_param_index(semantic_name, semantic_index,
-							shader->selector->inputs_read) * 4 +
-					swizzle) * 256);
+	args[2] = lp_build_const_int32(gallivm, (param * 4 + swizzle) * 256);
 	args[3] = uint->zero;
 	args[4] = uint->one;  /* OFFEN */
 	args[5] = uint->zero; /* IDXEN */
@@ -818,11 +783,22 @@ static LLVMValueRef fetch_input_gs(
 	args[7] = uint->zero; /* SLC */
 	args[8] = uint->zero; /* TFE */
 
+	value = lp_build_intrinsic(gallivm->builder,
+				   "llvm.SI.buffer.load.dword.i32.i32",
+				   i32, args, 9,
+				   LLVMReadOnlyAttribute | LLVMNoUnwindAttribute);
+	if (type == TGSI_TYPE_DOUBLE) {
+		LLVMValueRef value2;
+		args[2] = lp_build_const_int32(gallivm, (param * 4 + swizzle + 1) * 256);
+		value2 = lp_build_intrinsic(gallivm->builder,
+					    "llvm.SI.buffer.load.dword.i32.i32",
+					    i32, args, 9,
+					    LLVMReadOnlyAttribute | LLVMNoUnwindAttribute);
+		return radeon_llvm_emit_fetch_double(bld_base,
+						     value, value2);
+	}
 	return LLVMBuildBitCast(gallivm->builder,
-				lp_build_intrinsic(gallivm->builder,
-						"llvm.SI.buffer.load.dword.i32.i32",
-						i32, args, 9,
-						LLVMReadOnlyAttribute | LLVMNoUnwindAttribute),
+				value,
 				tgsi2llvmtype(bld_base, type), "");
 }
 
@@ -853,6 +829,56 @@ static int lookup_interp_param_index(unsigned interpolate, unsigned location)
 		fprintf(stderr, "Warning: Unhandled interpolation mode.\n");
 		return -1;
 	}
+}
+
+/* This shouldn't be used by explicit INTERP opcodes. */
+static LLVMValueRef get_interp_param(struct si_shader_context *si_shader_ctx,
+				     unsigned param)
+{
+	struct gallivm_state *gallivm = &si_shader_ctx->radeon_bld.gallivm;
+	unsigned sample_param = 0;
+	LLVMValueRef default_ij, sample_ij, force_sample;
+
+	default_ij = LLVMGetParam(si_shader_ctx->radeon_bld.main_fn, param);
+
+	/* If the shader doesn't use center/centroid, just return the parameter.
+	 *
+	 * If the shader only uses one set of (i,j), "si_emit_spi_ps_input" can
+	 * switch between center/centroid and sample without shader changes.
+	 */
+	switch (param) {
+	case SI_PARAM_PERSP_CENTROID:
+	case SI_PARAM_PERSP_CENTER:
+		if (!si_shader_ctx->shader->selector->forces_persample_interp_for_persp)
+			return default_ij;
+
+		sample_param = SI_PARAM_PERSP_SAMPLE;
+		break;
+
+	case SI_PARAM_LINEAR_CENTROID:
+	case SI_PARAM_LINEAR_CENTER:
+		if (!si_shader_ctx->shader->selector->forces_persample_interp_for_linear)
+			return default_ij;
+
+		sample_param = SI_PARAM_LINEAR_SAMPLE;
+		break;
+
+	default:
+		return default_ij;
+	}
+
+	/* Otherwise, we have to select (i,j) based on a user data SGPR. */
+	sample_ij = LLVMGetParam(si_shader_ctx->radeon_bld.main_fn, sample_param);
+
+	/* TODO: this can be done more efficiently by switching between
+	 * 2 prologs.
+	 */
+	force_sample = LLVMGetParam(si_shader_ctx->radeon_bld.main_fn,
+				    SI_PARAM_PS_STATE_BITS);
+	force_sample = LLVMBuildTrunc(gallivm->builder, force_sample,
+				      LLVMInt1TypeInContext(gallivm->context), "");
+	return LLVMBuildSelect(gallivm->builder, force_sample,
+			       sample_ij, default_ij, "");
 }
 
 static void declare_input_fs(
@@ -925,7 +951,7 @@ static void declare_input_fs(
 	if (interp_param_idx == -1)
 		return;
 	else if (interp_param_idx)
-		interp_param = LLVMGetParam(main_fn, interp_param_idx);
+		interp_param = get_interp_param(si_shader_ctx, interp_param_idx);
 
 	/* fs.constant returns the param from the middle vertex, so it's not
 	 * really useful for flat shading. It's meant to be used for custom
@@ -1256,6 +1282,23 @@ static void si_llvm_init_export_args(struct lp_build_tgsi_context *bld_base,
 	unsigned compressed = 0;
 	unsigned chan;
 
+	/* XXX: This controls which components of the output
+	 * registers actually get exported. (e.g bit 0 means export
+	 * X component, bit 1 means export Y component, etc.)  I'm
+	 * hard coding this to 0xf for now.  In the future, we might
+	 * want to do something else.
+	 */
+	args[0] = lp_build_const_int32(base->gallivm, 0xf);
+
+	/* Specify whether the EXEC mask represents the valid mask */
+	args[1] = uint->zero;
+
+	/* Specify whether this is the last export */
+	args[2] = uint->zero;
+
+	/* Specify the target we are exporting */
+	args[3] = lp_build_const_int32(base->gallivm, target);
+
 	if (si_shader_ctx->type == TGSI_PROCESSOR_FRAGMENT) {
 		int cbuf = target - V_008DFC_SQ_EXP_MRT;
 
@@ -1273,55 +1316,31 @@ static void si_llvm_init_export_args(struct lp_build_tgsi_context *bld_base,
 		}
 	}
 
+	/* Set COMPR flag */
+	args[4] = compressed ? uint->one : uint->zero;
+
 	if (compressed) {
 		/* Pixel shader needs to pack output values before export */
-		for (chan = 0; chan < 2; chan++ ) {
-			args[0] = values[2 * chan];
-			args[1] = values[2 * chan + 1];
-			args[chan + 5] =
-				lp_build_intrinsic(base->gallivm->builder,
-						"llvm.SI.packf16",
-						LLVMInt32TypeInContext(base->gallivm->context),
-						args, 2,
-						LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+		for (chan = 0; chan < 2; chan++) {
+			LLVMValueRef pack_args[2] = {
+				values[2 * chan],
+				values[2 * chan + 1]
+			};
+			LLVMValueRef packed;
+
+			packed = lp_build_intrinsic(base->gallivm->builder,
+						    "llvm.SI.packf16",
+						    LLVMInt32TypeInContext(base->gallivm->context),
+						    pack_args, 2,
+						    LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
 			args[chan + 7] = args[chan + 5] =
 				LLVMBuildBitCast(base->gallivm->builder,
-						 args[chan + 5],
+						 packed,
 						 LLVMFloatTypeInContext(base->gallivm->context),
 						 "");
 		}
-
-		/* Set COMPR flag */
-		args[4] = uint->one;
-	} else {
-		for (chan = 0; chan < 4; chan++ )
-			/* +5 because the first output value will be
-			 * the 6th argument to the intrinsic. */
-			args[chan + 5] = values[chan];
-
-		/* Clear COMPR flag */
-		args[4] = uint->zero;
-	}
-
-	/* XXX: This controls which components of the output
-	 * registers actually get exported. (e.g bit 0 means export
-	 * X component, bit 1 means export Y component, etc.)  I'm
-	 * hard coding this to 0xf for now.  In the future, we might
-	 * want to do something else. */
-	args[0] = lp_build_const_int32(base->gallivm, 0xf);
-
-	/* Specify whether the EXEC mask represents the valid mask */
-	args[1] = uint->zero;
-
-	/* Specify whether this is the last export */
-	args[2] = uint->zero;
-
-	/* Specify the target we are exporting */
-	args[3] = lp_build_const_int32(base->gallivm, target);
-
-	/* XXX: We probably need to keep track of the output
-	 * values, so we know what we are passing to the next
-	 * stage. */
+	} else
+		memcpy(&args[5], values, sizeof(values[0]) * 4);
 }
 
 /* Load from output pointers and initialize arguments for the shader export intrinsic */
@@ -1973,9 +1992,6 @@ static void si_llvm_emit_es_epilogue(struct lp_build_tgsi_context * bld_base)
 	LLVMTypeRef i32 = LLVMInt32TypeInContext(gallivm->context);
 	LLVMValueRef soffset = LLVMGetParam(si_shader_ctx->radeon_bld.main_fn,
 					    si_shader_ctx->param_es2gs_offset);
-	uint64_t enabled_outputs = si_shader_ctx->type == TGSI_PROCESSOR_TESS_EVAL ?
-					   es->key.tes.es_enabled_outputs :
-					   es->key.vs.es_enabled_outputs;
 	unsigned chan;
 	int i;
 
@@ -1988,11 +2004,8 @@ static void si_llvm_emit_es_epilogue(struct lp_build_tgsi_context * bld_base)
 		    info->output_semantic_name[i] == TGSI_SEMANTIC_LAYER)
 			continue;
 
-		param_index = get_param_index(info->output_semantic_name[i],
-					      info->output_semantic_index[i],
-					      enabled_outputs);
-		if (param_index < 0)
-			continue;
+		param_index = si_shader_io_get_unique_index(info->output_semantic_name[i],
+							    info->output_semantic_index[i]);
 
 		for (chan = 0; chan < 4; chan++) {
 			LLVMValueRef out_val = LLVMBuildLoad(gallivm->builder, out_ptr[chan], "");
@@ -2033,6 +2046,45 @@ static void si_llvm_emit_vs_epilogue(struct lp_build_tgsi_context * bld_base)
 
 	outputs = MALLOC((info->num_outputs + 1) * sizeof(outputs[0]));
 
+	/* Vertex color clamping.
+	 *
+	 * This uses a state constant loaded in a user data SGPR and
+	 * an IF statement is added that clamps all colors if the constant
+	 * is true.
+	 */
+	if (si_shader_ctx->type == TGSI_PROCESSOR_VERTEX &&
+	    !si_shader_ctx->shader->is_gs_copy_shader) {
+		struct lp_build_if_state if_ctx;
+		LLVMValueRef cond = NULL;
+		LLVMValueRef addr, val;
+
+		for (i = 0; i < info->num_outputs; i++) {
+			if (info->output_semantic_name[i] != TGSI_SEMANTIC_COLOR &&
+			    info->output_semantic_name[i] != TGSI_SEMANTIC_BCOLOR)
+				continue;
+
+			/* We've found a color. */
+			if (!cond) {
+				/* The state is in the first bit of the user SGPR. */
+				cond = LLVMGetParam(si_shader_ctx->radeon_bld.main_fn,
+						    SI_PARAM_VS_STATE_BITS);
+				cond = LLVMBuildTrunc(gallivm->builder, cond,
+						      LLVMInt1TypeInContext(gallivm->context), "");
+				lp_build_if(&if_ctx, gallivm, cond);
+			}
+
+			for (j = 0; j < 4; j++) {
+				addr = si_shader_ctx->radeon_bld.soa.outputs[i][j];
+				val = LLVMBuildLoad(gallivm->builder, addr, "");
+				val = radeon_llvm_saturate(bld_base, val);
+				LLVMBuildStore(gallivm->builder, val, addr);
+			}
+		}
+
+		if (cond)
+			lp_build_endif(&if_ctx);
+	}
+
 	for (i = 0; i < info->num_outputs; i++) {
 		outputs[i].name = info->output_semantic_name[i];
 		outputs[i].sid = info->output_semantic_index[i];
@@ -2067,6 +2119,7 @@ static void si_llvm_emit_fs_epilogue(struct lp_build_tgsi_context * bld_base)
 	struct lp_build_context * base = &bld_base->base;
 	struct lp_build_context * uint = &bld_base->uint_bld;
 	struct tgsi_shader_info *info = &shader->selector->info;
+	LLVMBuilderRef builder = base->gallivm->builder;
 	LLVMValueRef args[9];
 	LLVMValueRef last_args[9] = { 0 };
 	int depth_index = -1, stencil_index = -1, samplemask_index = -1;
@@ -2093,6 +2146,16 @@ static void si_llvm_emit_fs_epilogue(struct lp_build_tgsi_context * bld_base)
 			target = V_008DFC_SQ_EXP_MRT + semantic_index;
 			alpha_ptr = si_shader_ctx->radeon_bld.soa.outputs[i][3];
 
+			if (si_shader_ctx->shader->key.ps.clamp_color) {
+				for (int j = 0; j < 4; j++) {
+					LLVMValueRef ptr = si_shader_ctx->radeon_bld.soa.outputs[i][j];
+					LLVMValueRef result = LLVMBuildLoad(builder, ptr, "");
+
+					result = radeon_llvm_saturate(bld_base, result);
+					LLVMBuildStore(builder, result, ptr);
+				}
+			}
+
 			if (si_shader_ctx->shader->key.ps.alpha_to_one)
 				LLVMBuildStore(base->gallivm->builder,
 					       base->one, alpha_ptr);
@@ -2103,6 +2166,7 @@ static void si_llvm_emit_fs_epilogue(struct lp_build_tgsi_context * bld_base)
 
 			if (si_shader_ctx->shader->key.ps.poly_line_smoothing)
 				si_scale_alpha_by_sample_mask(bld_base, alpha_ptr);
+
 			break;
 		default:
 			target = 0;
@@ -3390,6 +3454,9 @@ static void create_function(struct si_shader_context *si_shader_ctx)
 			if (shader->is_gs_copy_shader) {
 				last_array_pointer = SI_PARAM_CONST;
 				num_params = SI_PARAM_CONST+1;
+			} else {
+				params[SI_PARAM_VS_STATE_BITS] = i32;
+				num_params = SI_PARAM_VS_STATE_BITS+1;
 			}
 
 			/* The locations of the other parameters are assigned dynamically. */
@@ -3458,6 +3525,7 @@ static void create_function(struct si_shader_context *si_shader_ctx)
 
 	case TGSI_PROCESSOR_FRAGMENT:
 		params[SI_PARAM_ALPHA_REF] = f32;
+		params[SI_PARAM_PS_STATE_BITS] = i32;
 		params[SI_PARAM_PRIM_MASK] = i32;
 		last_sgpr = SI_PARAM_PRIM_MASK;
 		params[SI_PARAM_PERSP_SAMPLE] = v2i32;
@@ -3697,12 +3765,14 @@ void si_shader_binary_read_config(const struct si_screen *sscreen,
 			shader->num_sgprs = MAX2(shader->num_sgprs, (G_00B028_SGPRS(value) + 1) * 8);
 			shader->num_vgprs = MAX2(shader->num_vgprs, (G_00B028_VGPRS(value) + 1) * 4);
 			shader->float_mode =  G_00B028_FLOAT_MODE(value);
+			shader->rsrc1 = value;
 			break;
 		case R_00B02C_SPI_SHADER_PGM_RSRC2_PS:
 			shader->lds_size = MAX2(shader->lds_size, G_00B02C_EXTRA_LDS_SIZE(value));
 			break;
 		case R_00B84C_COMPUTE_PGM_RSRC2:
 			shader->lds_size = MAX2(shader->lds_size, G_00B84C_LDS_SIZE(value));
+			shader->rsrc2 = value;
 			break;
 		case R_0286CC_SPI_PS_INPUT_ENA:
 			shader->spi_ps_input_ena = value;
@@ -3925,12 +3995,9 @@ void si_dump_shader_key(unsigned shader, union si_shader_key *key, FILE *f)
 			fprintf(f, !i ? "%u" : ", %u",
 				key->vs.instance_divisors[i]);
 		fprintf(f, "}\n");
-
-		if (key->vs.as_es)
-			fprintf(f, "  es_enabled_outputs = 0x%"PRIx64"\n",
-				key->vs.es_enabled_outputs);
 		fprintf(f, "  as_es = %u\n", key->vs.as_es);
 		fprintf(f, "  as_ls = %u\n", key->vs.as_ls);
+		fprintf(f, "  export_prim_id = %u\n", key->vs.export_prim_id);
 		break;
 
 	case PIPE_SHADER_TESS_CTRL:
@@ -3938,10 +4005,8 @@ void si_dump_shader_key(unsigned shader, union si_shader_key *key, FILE *f)
 		break;
 
 	case PIPE_SHADER_TESS_EVAL:
-		if (key->tes.as_es)
-			fprintf(f, "  es_enabled_outputs = 0x%"PRIx64"\n",
-				key->tes.es_enabled_outputs);
 		fprintf(f, "  as_es = %u\n", key->tes.as_es);
+		fprintf(f, "  export_prim_id = %u\n", key->tes.export_prim_id);
 		break;
 
 	case PIPE_SHADER_GEOMETRY:
@@ -3954,6 +4019,7 @@ void si_dump_shader_key(unsigned shader, union si_shader_key *key, FILE *f)
 		fprintf(f, "  alpha_func = %u\n", key->ps.alpha_func);
 		fprintf(f, "  alpha_to_one = %u\n", key->ps.alpha_to_one);
 		fprintf(f, "  poly_stipple = %u\n", key->ps.poly_stipple);
+		fprintf(f, "  clamp_color = %u\n", key->ps.clamp_color);
 		break;
 
 	default:
@@ -4145,10 +4211,12 @@ out:
 	return r;
 }
 
-void si_shader_destroy(struct pipe_context *ctx, struct si_shader *shader)
+void si_shader_destroy(struct si_shader *shader)
 {
-	if (shader->gs_copy_shader)
-		si_shader_destroy(ctx, shader->gs_copy_shader);
+	if (shader->gs_copy_shader) {
+		si_shader_destroy(shader->gs_copy_shader);
+		FREE(shader->gs_copy_shader);
+	}
 
 	if (shader->scratch_bo)
 		r600_resource_reference(&shader->scratch_bo, NULL);

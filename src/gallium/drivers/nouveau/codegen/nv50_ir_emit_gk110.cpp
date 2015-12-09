@@ -75,6 +75,7 @@ private:
    void emitLOAD(const Instruction *);
    void emitSTORE(const Instruction *);
    void emitMOV(const Instruction *);
+   void emitMEMBAR(const Instruction *);
 
    void emitINTERP(const Instruction *);
    void emitAFETCH(const Instruction *);
@@ -575,8 +576,8 @@ CodeEmitterGK110::emitIMUL(const Instruction *i)
    if (isLIMM(i->src(1), TYPE_S32)) {
       emitForm_L(i, 0x280, 2, Modifier(0));
 
-      assert(i->subOp != NV50_IR_SUBOP_MUL_HIGH);
-
+      if (i->subOp == NV50_IR_SUBOP_MUL_HIGH)
+         code[1] |= 1 << 24;
       if (i->sType == TYPE_S32)
          code[1] |= 3 << 25;
    } else {
@@ -695,14 +696,9 @@ CodeEmitterGK110::emitIMAD(const Instruction *i)
    if (i->sType == TYPE_S32)
       code[1] |= (1 << 19) | (1 << 24);
 
-   if (code[0] & 0x1) {
-      assert(!i->subOp);
-      SAT_(39);
-   } else {
-      if (i->subOp == NV50_IR_SUBOP_MUL_HIGH)
-         code[1] |= 1 << 25;
-      SAT_(35);
-   }
+   if (i->subOp == NV50_IR_SUBOP_MUL_HIGH)
+      code[1] |= 1 << 25;
+   SAT_(35);
 }
 
 void
@@ -1437,6 +1433,30 @@ CodeEmitterGK110::emitInterpMode(const Instruction *i)
    code[1] |= (i->ipa & 0xc) << (19 - 2);
 }
 
+static void
+interpApply(const InterpEntry *entry, uint32_t *code,
+      bool force_persample_interp, bool flatshade)
+{
+   int ipa = entry->ipa;
+   int reg = entry->reg;
+   int loc = entry->loc;
+
+   if (flatshade &&
+       (ipa & NV50_IR_INTERP_MODE_MASK) == NV50_IR_INTERP_SC) {
+      ipa = NV50_IR_INTERP_FLAT;
+      reg = 0xff;
+   } else if (force_persample_interp &&
+              (ipa & NV50_IR_INTERP_SAMPLE_MASK) == NV50_IR_INTERP_DEFAULT &&
+              (ipa & NV50_IR_INTERP_MODE_MASK) != NV50_IR_INTERP_FLAT) {
+      ipa |= NV50_IR_INTERP_CENTROID;
+   }
+   code[loc + 1] &= ~(0xf << 19);
+   code[loc + 1] |= (ipa & 0x3) << 21;
+   code[loc + 1] |= (ipa & 0xc) << (19 - 2);
+   code[loc + 0] &= ~(0xff << 23);
+   code[loc + 0] |= reg << 23;
+}
+
 void
 CodeEmitterGK110::emitINTERP(const Instruction *i)
 {
@@ -1448,10 +1468,13 @@ CodeEmitterGK110::emitINTERP(const Instruction *i)
    if (i->saturate)
       code[1] |= 1 << 18;
 
-   if (i->op == OP_PINTERP)
+   if (i->op == OP_PINTERP) {
       srcId(i->src(1), 23);
-   else
+      addInterp(i->ipa, SDATA(i->src(1)).id, interpApply);
+   } else {
       code[0] |= 0xff << 23;
+      addInterp(i->ipa, 0xff, interpApply);
+   }
 
    srcId(i->src(0).getIndirect(0), 10);
    emitInterpMode(i);
@@ -1617,6 +1640,7 @@ CodeEmitterGK110::getSRegEncoding(const ValueRef& ref)
    case SV_VERTEX_COUNT:  return 0x10;
    case SV_INVOCATION_ID: return 0x11;
    case SV_YDIR:          return 0x12;
+   case SV_THREAD_KILL:   return 0x13;
    case SV_TID:           return 0x21 + SDATA(ref).sv.index;
    case SV_CTAID:         return 0x25 + SDATA(ref).sv.index;
    case SV_NTID:          return 0x29 + SDATA(ref).sv.index;
@@ -1657,6 +1681,14 @@ CodeEmitterGK110::emitMOV(const Instruction *i)
       emitForm_C(i, 0x24c, 2);
       code[1] |= i->lanes << 10;
    }
+}
+
+void CodeEmitterGK110::emitMEMBAR(const Instruction *i)
+{
+   code[0] = 0x00000002 | NV50_IR_SUBOP_MEMBAR_SCOPE(i->subOp) << 8;
+   code[1] = 0x7cc00000;
+
+   emitPredicate(i);
 }
 
 bool
@@ -1890,6 +1922,9 @@ CodeEmitterGK110::emitInstruction(Instruction *insn)
    case OP_BAR:
       emitBAR(insn);
       break;
+   case OP_MEMBAR:
+      emitMEMBAR(insn);
+      break;
    case OP_PHI:
    case OP_UNION:
    case OP_CONSTRAINT:
@@ -1902,7 +1937,7 @@ CodeEmitterGK110::emitInstruction(Instruction *insn)
       ERROR("operation should have been lowered\n");
       return false;
    default:
-      ERROR("unknow op\n");
+      ERROR("unknown op: %u\n", insn->op);
       return false;
    }
 

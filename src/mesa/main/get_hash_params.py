@@ -124,6 +124,15 @@ descriptor=[
 
 # GL_EXT_texture_filter_anisotropic
   [ "MAX_TEXTURE_MAX_ANISOTROPY_EXT", "CONTEXT_FLOAT(Const.MaxTextureMaxAnisotropy), extra_EXT_texture_filter_anisotropic" ],
+
+# GL_KHR_debug (GL 4.3)/ GL_ARB_debug_output
+  [ "DEBUG_LOGGED_MESSAGES", "LOC_CUSTOM, TYPE_INT, 0, NO_EXTRA" ],
+  [ "DEBUG_NEXT_LOGGED_MESSAGE_LENGTH", "LOC_CUSTOM, TYPE_INT, 0, NO_EXTRA" ],
+  [ "MAX_DEBUG_LOGGED_MESSAGES", "CONST(MAX_DEBUG_LOGGED_MESSAGES), NO_EXTRA" ],
+  [ "MAX_DEBUG_MESSAGE_LENGTH", "CONST(MAX_DEBUG_MESSAGE_LENGTH), NO_EXTRA" ],
+  [ "MAX_LABEL_LENGTH", "CONST(MAX_LABEL_LENGTH), NO_EXTRA" ],
+  [ "MAX_DEBUG_GROUP_STACK_DEPTH", "CONST(MAX_DEBUG_GROUP_STACK_DEPTH), NO_EXTRA" ],
+  [ "DEBUG_GROUP_STACK_DEPTH", "LOC_CUSTOM, TYPE_INT, 0, NO_EXTRA" ],
 ]},
 
 # Enums in OpenGL and GLES1
@@ -321,6 +330,9 @@ descriptor=[
 
 # GL_KHR_context_flush_control
   [ "CONTEXT_RELEASE_BEHAVIOR", "CONTEXT_ENUM(Const.ContextReleaseBehavior), NO_EXTRA" ],
+
+# blend_func_extended
+  [ "MAX_DUAL_SOURCE_DRAW_BUFFERS", "CONTEXT_INT(Const.MaxDualSourceDrawBuffers), extra_ARB_blend_func_extended" ],
 ]},
 
 # GLES3 is not a typo.
@@ -451,6 +463,7 @@ descriptor=[
   [ "MAX_COMPUTE_UNIFORM_COMPONENTS", "CONST(MAX_COMPUTE_UNIFORM_COMPONENTS), extra_ARB_compute_shader_es31" ],
   [ "MAX_COMPUTE_IMAGE_UNIFORMS", "CONST(MAX_COMPUTE_IMAGE_UNIFORMS), extra_ARB_compute_shader_es31" ],
   [ "DISPATCH_INDIRECT_BUFFER_BINDING", "LOC_CUSTOM, TYPE_INT, 0, extra_ARB_compute_shader_es31" ],
+  [ "MAX_COMBINED_COMPUTE_UNIFORM_COMPONENTS", "CONTEXT_INT(Const.Program[MESA_SHADER_COMPUTE].MaxCombinedUniformComponents), extra_ARB_compute_shader_es31" ],
 
 # GL_ARB_framebuffer_no_attachments / GLES 3.1
   ["MAX_FRAMEBUFFER_WIDTH", "CONTEXT_INT(Const.MaxFramebufferWidth), extra_ARB_framebuffer_no_attachments"],
@@ -752,14 +765,6 @@ descriptor=[
   [ "MAX_TRANSFORM_FEEDBACK_BUFFERS", "CONTEXT_INT(Const.MaxTransformFeedbackBuffers), extra_ARB_transform_feedback3" ],
   [ "MAX_VERTEX_STREAMS", "CONTEXT_INT(Const.MaxVertexStreams), extra_ARB_transform_feedback3_ARB_gpu_shader5" ],
 
-# GL_ARB_geometry_shader4
-  [ "MAX_GEOMETRY_TEXTURE_IMAGE_UNITS_ARB", "CONTEXT_INT(Const.Program[MESA_SHADER_GEOMETRY].MaxTextureImageUnits), extra_gl32_ARB_geometry_shader4" ],
-  [ "MAX_GEOMETRY_OUTPUT_VERTICES_ARB", "CONTEXT_INT(Const.MaxGeometryOutputVertices), extra_gl32_ARB_geometry_shader4" ],
-  [ "MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS_ARB", "CONTEXT_INT(Const.MaxGeometryTotalOutputComponents), extra_gl32_ARB_geometry_shader4" ],
-  [ "MAX_GEOMETRY_UNIFORM_COMPONENTS_ARB", "CONTEXT_INT(Const.Program[MESA_SHADER_GEOMETRY].MaxUniformComponents), extra_gl32_ARB_geometry_shader4" ],
-  [ "MAX_GEOMETRY_VARYING_COMPONENTS_ARB", "CONTEXT_INT(Const.Program[MESA_SHADER_GEOMETRY].MaxOutputComponents), extra_ARB_geometry_shader4" ],
-  [ "MAX_VERTEX_VARYING_COMPONENTS_ARB", "CONTEXT_INT(Const.Program[MESA_SHADER_VERTEX].MaxOutputComponents), extra_ARB_geometry_shader4" ],
-
 # GL_ARB_color_buffer_float
   [ "RGBA_FLOAT_MODE_ARB", "BUFFER_FIELD(Visual.floatMode, TYPE_BOOLEAN), extra_core_ARB_color_buffer_float_and_new_buffers" ],
 
@@ -787,20 +792,14 @@ descriptor=[
   [ "CONTEXT_PROFILE_MASK", "CONTEXT_INT(Const.ProfileMask), extra_version_32" ],
   [ "MAX_GEOMETRY_INPUT_COMPONENTS", "CONTEXT_INT(Const.Program[MESA_SHADER_GEOMETRY].MaxInputComponents), extra_version_32" ],
   [ "MAX_GEOMETRY_OUTPUT_COMPONENTS", "CONTEXT_INT(Const.Program[MESA_SHADER_GEOMETRY].MaxOutputComponents), extra_version_32" ],
+  [ "MAX_GEOMETRY_TEXTURE_IMAGE_UNITS", "CONTEXT_INT(Const.Program[MESA_SHADER_GEOMETRY].MaxTextureImageUnits), extra_version_32" ],
+  [ "MAX_GEOMETRY_OUTPUT_VERTICES", "CONTEXT_INT(Const.MaxGeometryOutputVertices), extra_version_32" ],
+  [ "MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS", "CONTEXT_INT(Const.MaxGeometryTotalOutputComponents), extra_version_32" ],
+  [ "MAX_GEOMETRY_UNIFORM_COMPONENTS", "CONTEXT_INT(Const.Program[MESA_SHADER_GEOMETRY].MaxUniformComponents), extra_version_32" ],
 
 # GL_ARB_robustness
   [ "RESET_NOTIFICATION_STRATEGY_ARB", "CONTEXT_ENUM(Const.ResetStrategy), NO_EXTRA" ],
 
-# GL_KHR_debug (GL 4.3)/ GL_ARB_debug_output
-  [ "DEBUG_LOGGED_MESSAGES", "LOC_CUSTOM, TYPE_INT, 0, NO_EXTRA" ],
-  [ "DEBUG_NEXT_LOGGED_MESSAGE_LENGTH", "LOC_CUSTOM, TYPE_INT, 0, NO_EXTRA" ],
-  [ "MAX_DEBUG_LOGGED_MESSAGES", "CONST(MAX_DEBUG_LOGGED_MESSAGES), NO_EXTRA" ],
-  [ "MAX_DEBUG_MESSAGE_LENGTH", "CONST(MAX_DEBUG_MESSAGE_LENGTH), NO_EXTRA" ],
-  [ "MAX_LABEL_LENGTH", "CONST(MAX_LABEL_LENGTH), NO_EXTRA" ],
-  [ "MAX_DEBUG_GROUP_STACK_DEPTH", "CONST(MAX_DEBUG_GROUP_STACK_DEPTH), NO_EXTRA" ],
-  [ "DEBUG_GROUP_STACK_DEPTH", "LOC_CUSTOM, TYPE_INT, 0, NO_EXTRA" ],
-
-  [ "MAX_DUAL_SOURCE_DRAW_BUFFERS", "CONTEXT_INT(Const.MaxDualSourceDrawBuffers), extra_ARB_blend_func_extended" ],
 
 # GL_ARB_uniform_buffer_object
   [ "MAX_GEOMETRY_UNIFORM_BLOCKS", "CONTEXT_INT(Const.Program[MESA_SHADER_GEOMETRY].MaxUniformBlocks), extra_ARB_uniform_buffer_object_and_geometry_shader" ],
@@ -848,8 +847,8 @@ descriptor=[
   [ "MAX_VIEWPORTS", "CONTEXT_INT(Const.MaxViewports), extra_ARB_viewport_array" ],
   [ "VIEWPORT_SUBPIXEL_BITS", "CONTEXT_INT(Const.ViewportSubpixelBits), extra_ARB_viewport_array" ],
   [ "VIEWPORT_BOUNDS_RANGE", "CONTEXT_FLOAT2(Const.ViewportBounds), extra_ARB_viewport_array" ],
-  [ "LAYER_PROVOKING_VERTEX", "CONTEXT_ENUM(Light.ProvokingVertex), extra_ARB_viewport_array" ],
-  [ "VIEWPORT_INDEX_PROVOKING_VERTEX", "CONTEXT_ENUM(Light.ProvokingVertex), extra_ARB_viewport_array" ],
+  [ "LAYER_PROVOKING_VERTEX", "CONTEXT_ENUM(Const.LayerAndVPIndexProvokingVertex), extra_ARB_viewport_array" ],
+  [ "VIEWPORT_INDEX_PROVOKING_VERTEX", "CONTEXT_ENUM(Const.LayerAndVPIndexProvokingVertex), extra_ARB_viewport_array" ],
 
 # GL_ARB_gpu_shader5
   [ "MAX_GEOMETRY_SHADER_INVOCATIONS", "CONST(MAX_GEOMETRY_SHADER_INVOCATIONS), extra_ARB_gpu_shader5" ],

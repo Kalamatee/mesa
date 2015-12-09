@@ -37,6 +37,8 @@
 #include "util/u_math.h"
 
 #include "vc4_screen.h"
+#include "vc4_qpu_defines.h"
+#include "kernel/vc4_packet.h"
 #include "pipe/p_state.h"
 
 struct nir_builder;
@@ -64,9 +66,16 @@ struct qreg {
 enum qop {
         QOP_UNDEF,
         QOP_MOV,
+        QOP_FMOV,
+        QOP_MMOV,
         QOP_FADD,
         QOP_FSUB,
         QOP_FMUL,
+        QOP_V8MULD,
+        QOP_V8MIN,
+        QOP_V8MAX,
+        QOP_V8ADDS,
+        QOP_V8SUBS,
         QOP_MUL24,
         QOP_FMIN,
         QOP_FMAX,
@@ -91,11 +100,15 @@ enum qop {
         QOP_SEL_X_0_ZC,
         QOP_SEL_X_0_NS,
         QOP_SEL_X_0_NC,
+        QOP_SEL_X_0_CS,
+        QOP_SEL_X_0_CC,
         /* Selects the src[0] if the ns flag bit is set, otherwise src[1]. */
         QOP_SEL_X_Y_ZS,
         QOP_SEL_X_Y_ZC,
         QOP_SEL_X_Y_NS,
         QOP_SEL_X_Y_NC,
+        QOP_SEL_X_Y_CS,
+        QOP_SEL_X_Y_CC,
 
         QOP_FTOI,
         QOP_ITOF,
@@ -105,16 +118,13 @@ enum qop {
         QOP_LOG2,
         QOP_VW_SETUP,
         QOP_VR_SETUP,
-        QOP_PACK_8888_F,
-        QOP_PACK_8A_F,
-        QOP_PACK_8B_F,
-        QOP_PACK_8C_F,
-        QOP_PACK_8D_F,
         QOP_TLB_DISCARD_SETUP,
         QOP_TLB_STENCIL_SETUP,
         QOP_TLB_Z_WRITE,
         QOP_TLB_COLOR_WRITE,
+        QOP_TLB_COLOR_WRITE_MS,
         QOP_TLB_COLOR_READ,
+        QOP_MS_MASK,
         QOP_VARY_ADD_C,
 
         QOP_FRAG_X,
@@ -122,20 +132,6 @@ enum qop {
         QOP_FRAG_Z,
         QOP_FRAG_W,
         QOP_FRAG_REV_FLAG,
-
-        QOP_UNPACK_8A_F,
-        QOP_UNPACK_8B_F,
-        QOP_UNPACK_8C_F,
-        QOP_UNPACK_8D_F,
-        QOP_UNPACK_16A_F,
-        QOP_UNPACK_16B_F,
-
-        QOP_UNPACK_8A_I,
-        QOP_UNPACK_8B_I,
-        QOP_UNPACK_8C_I,
-        QOP_UNPACK_8D_I,
-        QOP_UNPACK_16A_I,
-        QOP_UNPACK_16B_I,
 
         /** Texture x coordinate parameter write */
         QOP_TEX_S,
@@ -237,6 +233,8 @@ enum quniform_contents {
         /** A reference to a texture config parameter 2 cubemap stride uniform */
         QUNIFORM_TEXTURE_CONFIG_P2,
 
+        QUNIFORM_TEXTURE_MSAA_ADDR,
+
         QUNIFORM_UBO_ADDR,
 
         QUNIFORM_TEXRECT_SCALE_X,
@@ -248,10 +246,13 @@ enum quniform_contents {
         QUNIFORM_BLEND_CONST_COLOR_Y,
         QUNIFORM_BLEND_CONST_COLOR_Z,
         QUNIFORM_BLEND_CONST_COLOR_W,
+        QUNIFORM_BLEND_CONST_COLOR_RGBA,
+        QUNIFORM_BLEND_CONST_COLOR_AAAA,
 
         QUNIFORM_STENCIL,
 
         QUNIFORM_ALPHA_REF,
+        QUNIFORM_SAMPLE_MASK,
 };
 
 struct vc4_varying_slot {
@@ -288,11 +289,18 @@ struct vc4_key {
         struct vc4_uncompiled_shader *shader_state;
         struct {
                 enum pipe_format format;
-                unsigned compare_mode:1;
-                unsigned compare_func:3;
-                unsigned wrap_s:3;
-                unsigned wrap_t:3;
                 uint8_t swizzle[4];
+                union {
+                        struct {
+                                unsigned compare_mode:1;
+                                unsigned compare_func:3;
+                                unsigned wrap_s:3;
+                                unsigned wrap_t:3;
+                        };
+                        struct {
+                                uint16_t msaa_width, msaa_height;
+                        };
+                };
         } tex[VC4_MAX_TEXTURE_SAMPLERS];
         uint8_t ucp_enables;
 };
@@ -309,6 +317,10 @@ struct vc4_fs_key {
         bool alpha_test;
         bool point_coord_upper_left;
         bool light_twoside;
+        bool msaa;
+        bool sample_coverage;
+        bool sample_alpha_to_coverage;
+        bool sample_alpha_to_one;
         uint8_t alpha_test_func;
         uint8_t logicop_func;
         uint32_t point_sprite_mask;
@@ -353,6 +365,9 @@ struct vc4_compile {
          */
         struct qreg *inputs;
         struct qreg *outputs;
+        bool msaa_per_sample_output;
+        struct qreg color_reads[VC4_MAX_SAMPLES];
+        struct qreg sample_colors[VC4_MAX_SAMPLES];
         uint32_t inputs_array_size;
         uint32_t outputs_array_size;
         uint32_t uniforms_array_size;
@@ -399,9 +414,9 @@ struct vc4_compile {
         uint32_t num_outputs;
         uint32_t num_texture_samples;
         uint32_t output_position_index;
-        uint32_t output_clipvertex_index;
         uint32_t output_color_index;
         uint32_t output_point_size_index;
+        uint32_t output_sample_mask_index;
 
         struct qreg undef;
         enum qstage stage;
@@ -423,6 +438,8 @@ struct vc4_compile {
  * destination color.
  */
 #define VC4_NIR_TLB_COLOR_READ_INPUT		2000000000
+
+#define VC4_NIR_MS_MASK_OUTPUT			2000000000
 
 /* Special offset for nir_load_uniform values to get a QUNIFORM_*
  * state-dependent value.
@@ -457,10 +474,11 @@ bool qir_has_side_effects(struct vc4_compile *c, struct qinst *inst);
 bool qir_has_side_effect_reads(struct vc4_compile *c, struct qinst *inst);
 bool qir_is_multi_instruction(struct qinst *inst);
 bool qir_is_mul(struct qinst *inst);
+bool qir_is_raw_mov(struct qinst *inst);
 bool qir_is_tex(struct qinst *inst);
+bool qir_is_float_input(struct qinst *inst);
 bool qir_depends_on_flags(struct qinst *inst);
 bool qir_writes_r4(struct qinst *inst);
-bool qir_src_needs_a_file(struct qinst *inst);
 struct qreg qir_follow_movs(struct vc4_compile *c, struct qreg reg);
 
 void qir_dump(struct vc4_compile *c);
@@ -481,6 +499,7 @@ nir_ssa_def *vc4_nir_get_state_uniform(struct nir_builder *b,
                                        enum quniform_contents contents);
 nir_ssa_def *vc4_nir_get_swizzled_channel(struct nir_builder *b,
                                           nir_ssa_def **srcs, int swiz);
+void vc4_nir_lower_txf_ms(struct vc4_compile *c);
 void qir_lower_uniforms(struct vc4_compile *c);
 
 void qpu_schedule_instructions(struct vc4_compile *c);
@@ -561,18 +580,29 @@ qir_##name(struct vc4_compile *c, struct qreg dest, struct qreg a)       \
 }
 
 QIR_ALU1(MOV)
+QIR_ALU1(FMOV)
+QIR_ALU1(MMOV)
 QIR_ALU2(FADD)
 QIR_ALU2(FSUB)
 QIR_ALU2(FMUL)
+QIR_ALU2(V8MULD)
+QIR_ALU2(V8MIN)
+QIR_ALU2(V8MAX)
+QIR_ALU2(V8ADDS)
+QIR_ALU2(V8SUBS)
 QIR_ALU2(MUL24)
 QIR_ALU1(SEL_X_0_ZS)
 QIR_ALU1(SEL_X_0_ZC)
 QIR_ALU1(SEL_X_0_NS)
 QIR_ALU1(SEL_X_0_NC)
+QIR_ALU1(SEL_X_0_CS)
+QIR_ALU1(SEL_X_0_CC)
 QIR_ALU2(SEL_X_Y_ZS)
 QIR_ALU2(SEL_X_Y_ZC)
 QIR_ALU2(SEL_X_Y_NS)
 QIR_ALU2(SEL_X_Y_NC)
+QIR_ALU2(SEL_X_Y_CS)
+QIR_ALU2(SEL_X_Y_CC)
 QIR_ALU2(FMIN)
 QIR_ALU2(FMAX)
 QIR_ALU2(FMINABS)
@@ -596,11 +626,6 @@ QIR_ALU1(RCP)
 QIR_ALU1(RSQ)
 QIR_ALU1(EXP2)
 QIR_ALU1(LOG2)
-QIR_ALU1(PACK_8888_F)
-QIR_PACK(PACK_8A_F)
-QIR_PACK(PACK_8B_F)
-QIR_PACK(PACK_8C_F)
-QIR_PACK(PACK_8D_F)
 QIR_ALU1(VARY_ADD_C)
 QIR_NODST_2(TEX_S)
 QIR_NODST_2(TEX_T)
@@ -615,48 +640,59 @@ QIR_ALU0(FRAG_REV_FLAG)
 QIR_ALU0(TEX_RESULT)
 QIR_ALU0(TLB_COLOR_READ)
 QIR_NODST_1(TLB_COLOR_WRITE)
+QIR_NODST_1(TLB_COLOR_WRITE_MS)
 QIR_NODST_1(TLB_Z_WRITE)
 QIR_NODST_1(TLB_DISCARD_SETUP)
 QIR_NODST_1(TLB_STENCIL_SETUP)
+QIR_NODST_1(MS_MASK)
 
 static inline struct qreg
 qir_UNPACK_8_F(struct vc4_compile *c, struct qreg src, int i)
 {
-        struct qreg t = qir_get_temp(c);
-        qir_emit(c, qir_inst(QOP_UNPACK_8A_F + i, t, src, c->undef));
+        struct qreg t = qir_FMOV(c, src);
+        c->defs[t.index]->src[0].pack = QPU_UNPACK_8A + i;
         return t;
 }
 
 static inline struct qreg
 qir_UNPACK_8_I(struct vc4_compile *c, struct qreg src, int i)
 {
-        struct qreg t = qir_get_temp(c);
-        qir_emit(c, qir_inst(QOP_UNPACK_8A_I + i, t, src, c->undef));
+        struct qreg t = qir_MOV(c, src);
+        c->defs[t.index]->src[0].pack = QPU_UNPACK_8A + i;
         return t;
 }
 
 static inline struct qreg
 qir_UNPACK_16_F(struct vc4_compile *c, struct qreg src, int i)
 {
-        struct qreg t = qir_get_temp(c);
-        qir_emit(c, qir_inst(QOP_UNPACK_16A_F + i, t, src, c->undef));
+        struct qreg t = qir_FMOV(c, src);
+        c->defs[t.index]->src[0].pack = QPU_UNPACK_16A + i;
         return t;
 }
 
 static inline struct qreg
 qir_UNPACK_16_I(struct vc4_compile *c, struct qreg src, int i)
 {
-        struct qreg t = qir_get_temp(c);
-        qir_emit(c, qir_inst(QOP_UNPACK_16A_I + i, t, src, c->undef));
+        struct qreg t = qir_MOV(c, src);
+        c->defs[t.index]->src[0].pack = QPU_UNPACK_16A + i;
         return t;
 }
 
-static inline struct qreg
+static inline void
 qir_PACK_8_F(struct vc4_compile *c, struct qreg dest, struct qreg val, int chan)
 {
-        qir_emit(c, qir_inst(QOP_PACK_8A_F + chan, dest, val, c->undef));
+        assert(!dest.pack);
+        dest.pack = QPU_PACK_MUL_8A + chan;
+        qir_emit(c, qir_inst(QOP_MMOV, dest, val, c->undef));
         if (dest.file == QFILE_TEMP)
                 c->defs[dest.index] = NULL;
+}
+
+static inline struct qreg
+qir_PACK_8888_F(struct vc4_compile *c, struct qreg val)
+{
+        struct qreg dest = qir_MMOV(c, val);
+        c->defs[dest.index]->dst.pack = QPU_PACK_MUL_8888;
         return dest;
 }
 

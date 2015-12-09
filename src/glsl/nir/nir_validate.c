@@ -290,11 +290,11 @@ validate_alu_instr(nir_alu_instr *instr, validate_state *state)
 {
    assert(instr->op < nir_num_opcodes);
 
-   validate_alu_dest(&instr->dest, state);
-
    for (unsigned i = 0; i < nir_op_infos[instr->op].num_inputs; i++) {
       validate_alu_src(instr, i, state);
    }
+
+   validate_alu_dest(&instr->dest, state);
 }
 
 static void
@@ -375,6 +375,11 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
       validate_src(&instr->src[i], state);
    }
 
+   unsigned num_vars = nir_intrinsic_infos[instr->intrinsic].num_variables;
+   for (unsigned i = 0; i < num_vars; i++) {
+      validate_deref_var(instr, instr->variables[i], state);
+   }
+
    if (nir_intrinsic_infos[instr->intrinsic].has_dest) {
       unsigned components_written =
          nir_intrinsic_infos[instr->intrinsic].dest_components;
@@ -392,25 +397,34 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
       validate_dest(&instr->dest, state);
    }
 
-   unsigned num_vars = nir_intrinsic_infos[instr->intrinsic].num_variables;
-   for (unsigned i = 0; i < num_vars; i++) {
-      validate_deref_var(instr, instr->variables[i], state);
-   }
-
    switch (instr->intrinsic) {
-   case nir_intrinsic_load_var:
-      assert(instr->variables[0]->var->data.mode != nir_var_shader_out);
+   case nir_intrinsic_load_var: {
+      const struct glsl_type *type =
+         nir_deref_tail(&instr->variables[0]->deref)->type;
+      assert(glsl_type_is_vector_or_scalar(type) ||
+             (instr->variables[0]->var->data.mode == nir_var_uniform &&
+              glsl_get_base_type(type) == GLSL_TYPE_SUBROUTINE));
+      assert(instr->num_components == glsl_get_vector_elements(type));
       break;
-   case nir_intrinsic_store_var:
+   }
+   case nir_intrinsic_store_var: {
+      const struct glsl_type *type =
+         nir_deref_tail(&instr->variables[0]->deref)->type;
+      assert(glsl_type_is_vector_or_scalar(type) ||
+             (instr->variables[0]->var->data.mode == nir_var_uniform &&
+              glsl_get_base_type(type) == GLSL_TYPE_SUBROUTINE));
+      assert(instr->num_components == glsl_get_vector_elements(type));
       assert(instr->variables[0]->var->data.mode != nir_var_shader_in &&
              instr->variables[0]->var->data.mode != nir_var_uniform &&
              instr->variables[0]->var->data.mode != nir_var_shader_storage);
       break;
+   }
    case nir_intrinsic_copy_var:
+      assert(nir_deref_tail(&instr->variables[0]->deref)->type ==
+             nir_deref_tail(&instr->variables[1]->deref)->type);
       assert(instr->variables[0]->var->data.mode != nir_var_shader_in &&
              instr->variables[0]->var->data.mode != nir_var_uniform &&
              instr->variables[0]->var->data.mode != nir_var_shader_storage);
-      assert(instr->variables[1]->var->data.mode != nir_var_shader_out);
       break;
    default:
       break;
@@ -420,8 +434,6 @@ validate_intrinsic_instr(nir_intrinsic_instr *instr, validate_state *state)
 static void
 validate_tex_instr(nir_tex_instr *instr, validate_state *state)
 {
-   validate_dest(&instr->dest, state);
-
    bool src_type_seen[nir_num_tex_src_types];
    for (unsigned i = 0; i < nir_num_tex_src_types; i++)
       src_type_seen[i] = false;
@@ -434,6 +446,8 @@ validate_tex_instr(nir_tex_instr *instr, validate_state *state)
 
    if (instr->sampler != NULL)
       validate_deref_var(instr, instr->sampler, state);
+
+   validate_dest(&instr->dest, state);
 }
 
 static void
@@ -934,7 +948,7 @@ validate_function_impl(nir_function_impl *impl, validate_state *state)
    state->parent_node = &impl->cf_node;
 
    exec_list_validate(&impl->locals);
-   foreach_list_typed(nir_variable, var, node, &impl->locals) {
+   nir_foreach_variable(var, &impl->locals) {
       validate_var_decl(var, false, state);
    }
 
@@ -1016,27 +1030,27 @@ nir_validate_shader(nir_shader *shader)
    state.shader = shader;
 
    exec_list_validate(&shader->uniforms);
-   foreach_list_typed(nir_variable, var, node, &shader->uniforms) {
+   nir_foreach_variable(var, &shader->uniforms) {
       validate_var_decl(var, true, &state);
    }
 
    exec_list_validate(&shader->inputs);
-   foreach_list_typed(nir_variable, var, node, &shader->inputs) {
+   nir_foreach_variable(var, &shader->inputs) {
      validate_var_decl(var, true, &state);
    }
 
    exec_list_validate(&shader->outputs);
-   foreach_list_typed(nir_variable, var, node, &shader->outputs) {
+   nir_foreach_variable(var, &shader->outputs) {
      validate_var_decl(var, true, &state);
    }
 
    exec_list_validate(&shader->globals);
-   foreach_list_typed(nir_variable, var, node, &shader->globals) {
+   nir_foreach_variable(var, &shader->globals) {
      validate_var_decl(var, true, &state);
    }
 
    exec_list_validate(&shader->system_values);
-   foreach_list_typed(nir_variable, var, node, &shader->system_values) {
+   nir_foreach_variable(var, &shader->system_values) {
      validate_var_decl(var, true, &state);
    }
 

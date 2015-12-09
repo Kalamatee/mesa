@@ -23,11 +23,9 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "main/glheader.h"
 #include "main/context.h"
 #include "main/macros.h"
 #include "main/enums.h"
-#include "main/colormac.h"
 #include "main/dd.h"
 
 #include "intel_screen.h"

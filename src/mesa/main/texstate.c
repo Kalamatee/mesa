@@ -34,7 +34,6 @@
 #include "context.h"
 #include "enums.h"
 #include "macros.h"
-#include "shaderimage.h"
 #include "texobj.h"
 #include "teximage.h"
 #include "texstate.h"
@@ -331,7 +330,8 @@ _mesa_ClientActiveTexture(GLenum texture)
       return;
 
    if (texUnit >= ctx->Const.MaxTextureCoordUnits) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "glClientActiveTexture(texture)");
+      _mesa_error(ctx, GL_INVALID_ENUM, "glClientActiveTexture(texture=%s)",
+                  _mesa_enum_to_string(texture));
       return;
    }
 
@@ -741,8 +741,6 @@ update_texture_state( struct gl_context *ctx )
 
    if (!prog[MESA_SHADER_FRAGMENT] || !prog[MESA_SHADER_VERTEX])
       update_texgen(ctx);
-
-   _mesa_validate_image_units(ctx);
 }
 
 

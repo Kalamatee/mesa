@@ -459,7 +459,7 @@ emit_consts_vgpu9(struct svga_context *svga, unsigned shader)
       data = (const float (*)[4])
          pipe_buffer_map(&svga->pipe, svga->curr.constbufs[shader][0].buffer,
                          PIPE_TRANSFER_READ, &transfer);
-      if (data == NULL) {
+      if (!data) {
          return PIPE_ERROR_OUT_OF_MEMORY;
       }
 
@@ -704,6 +704,24 @@ emit_consts_vgpu10(struct svga_context *svga, unsigned shader)
          assert(size == 0);
       }
 
+      if (size % 16 != 0) {
+         /* GL's buffer range sizes can be any number of bytes but the
+          * SVGA3D device requires a multiple of 16 bytes.
+          */
+         const unsigned total_size = buffer->b.b.width0;
+
+         if (offset + align(size, 16) <= total_size) {
+            /* round up size to multiple of 16 */
+            size = align(size, 16);
+         }
+         else {
+            /* round down to mulitple of 16 (this may cause rendering problems
+             * but should avoid a device error).
+             */
+            size &= ~15;
+         }
+      }
+
       assert(size % 16 == 0);
       ret = SVGA3D_vgpu10_SetSingleConstantBuffer(svga->swc,
                                                   index,
@@ -729,7 +747,7 @@ emit_fs_consts(struct svga_context *svga, unsigned dirty)
 
    /* SVGA_NEW_FS_VARIANT
     */
-   if (variant == NULL)
+   if (!variant)
       return PIPE_OK;
 
    /* SVGA_NEW_FS_CONST_BUFFER
@@ -764,7 +782,7 @@ emit_vs_consts(struct svga_context *svga, unsigned dirty)
 
    /* SVGA_NEW_VS_VARIANT
     */
-   if (variant == NULL)
+   if (!variant)
       return PIPE_OK;
 
    /* SVGA_NEW_VS_CONST_BUFFER
@@ -798,7 +816,7 @@ emit_gs_consts(struct svga_context *svga, unsigned dirty)
 
    /* SVGA_NEW_GS_VARIANT
     */
-   if (variant == NULL)
+   if (!variant)
       return PIPE_OK;
 
    /* SVGA_NEW_GS_CONST_BUFFER

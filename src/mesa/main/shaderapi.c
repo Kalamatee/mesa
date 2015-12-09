@@ -320,7 +320,7 @@ create_shader_program(struct gl_context *ctx)
 
    name = _mesa_HashFindFreeKeyBlock(ctx->Shared->ShaderObjects, 1);
 
-   shProg = ctx->Driver.NewShaderProgram(name);
+   shProg = _mesa_new_shader_program(name);
 
    _mesa_HashInsert(ctx->Shared->ShaderObjects, name, shProg);
 
@@ -630,9 +630,16 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
    case GL_ACTIVE_ATTRIBUTE_MAX_LENGTH:
       *params = _mesa_longest_attribute_name_length(shProg);
       return;
-   case GL_ACTIVE_UNIFORMS:
-      *params = shProg->NumUniformStorage - shProg->NumHiddenUniforms;
+   case GL_ACTIVE_UNIFORMS: {
+      unsigned i;
+      const unsigned num_uniforms =
+         shProg->NumUniformStorage - shProg->NumHiddenUniforms;
+      for (*params = 0, i = 0; i < num_uniforms; i++) {
+         if (!shProg->UniformStorage[i].is_shader_storage)
+            (*params)++;
+      }
       return;
+   }
    case GL_ACTIVE_UNIFORM_MAX_LENGTH: {
       unsigned i;
       GLint max_len = 0;
@@ -640,6 +647,9 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
          shProg->NumUniformStorage - shProg->NumHiddenUniforms;
 
       for (i = 0; i < num_uniforms; i++) {
+         if (shProg->UniformStorage[i].is_shader_storage)
+            continue;
+
 	 /* Add one for the terminating NUL character for a non-array, and
 	  * 4 for the "[0]" and the NUL for an array.
 	  */
@@ -713,10 +723,10 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       if (!has_ubo)
          break;
 
-      for (i = 0; i < shProg->NumBufferInterfaceBlocks; i++) {
+      for (i = 0; i < shProg->NumUniformBlocks; i++) {
 	 /* Add one for the terminating NUL character.
 	  */
-	 const GLint len = strlen(shProg->UniformBlocks[i].Name) + 1;
+	 const GLint len = strlen(shProg->UniformBlocks[i]->Name) + 1;
 
 	 if (len > max_len)
 	    max_len = len;
@@ -729,11 +739,7 @@ get_programiv(struct gl_context *ctx, GLuint program, GLenum pname,
       if (!has_ubo)
          break;
 
-      *params = 0;
-      for (unsigned i = 0; i < shProg->NumBufferInterfaceBlocks; i++) {
-         if (!shProg->UniformBlocks[i].IsShaderStorage)
-            (*params)++;
-      }
+      *params = shProg->NumUniformBlocks;
       return;
    case GL_PROGRAM_BINARY_RETRIEVABLE_HINT:
       /* This enum isn't part of the OES extension for OpenGL ES 2.0.  It is
@@ -2072,7 +2078,7 @@ _mesa_copy_linked_program_data(gl_shader_stage type,
 {
    switch (type) {
    case MESA_SHADER_VERTEX:
-      dst->UsesClipDistanceOut = src->Vert.UsesClipDistance;
+      dst->ClipDistanceArraySize = src->Vert.ClipDistanceArraySize;
       break;
    case MESA_SHADER_TESS_CTRL: {
       struct gl_tess_ctrl_program *dst_tcp =
@@ -2087,7 +2093,7 @@ _mesa_copy_linked_program_data(gl_shader_stage type,
       dst_tep->Spacing = src->TessEval.Spacing;
       dst_tep->VertexOrder = src->TessEval.VertexOrder;
       dst_tep->PointMode = src->TessEval.PointMode;
-      dst->UsesClipDistanceOut = src->TessEval.UsesClipDistance;
+      dst->ClipDistanceArraySize = src->TessEval.ClipDistanceArraySize;
       break;
    }
    case MESA_SHADER_GEOMETRY: {
@@ -2097,7 +2103,7 @@ _mesa_copy_linked_program_data(gl_shader_stage type,
       dst_gp->Invocations = src->Geom.Invocations;
       dst_gp->InputType = src->Geom.InputType;
       dst_gp->OutputType = src->Geom.OutputType;
-      dst->UsesClipDistanceOut = src->Geom.UsesClipDistance;
+      dst->ClipDistanceArraySize = src->Geom.ClipDistanceArraySize;
       dst_gp->UsesEndPrimitive = src->Geom.UsesEndPrimitive;
       dst_gp->UsesStreams = src->Geom.UsesStreams;
       break;
@@ -2597,7 +2603,7 @@ _mesa_GetUniformSubroutineuiv(GLenum shadertype, GLint location,
 
    {
       struct gl_uniform_storage *uni = sh->SubroutineUniformRemapTable[location];
-      int offset = location - uni->subroutine[stage].index;
+      int offset = location - uni->opaque[stage].index;
       memcpy(params, &uni->storage[offset],
 	     sizeof(GLuint));
    }

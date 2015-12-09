@@ -35,119 +35,29 @@
 #include "program/prog_parameter.h"
 #include "program/program.h"
 #include "intel_mipmap_tree.h"
+#include "brw_nir.h"
+#include "brw_program.h"
 
 #include "util/ralloc.h"
 
-/**
- * Return a bitfield where bit n is set if barycentric interpolation mode n
- * (see enum brw_wm_barycentric_interp_mode) is needed by the fragment shader.
- */
-static unsigned
-brw_compute_barycentric_interp_modes(struct brw_context *brw,
-                                     bool shade_model_flat,
-                                     bool persample_shading,
-                                     const struct gl_fragment_program *fprog)
+static void
+assign_fs_binding_table_offsets(const struct brw_device_info *devinfo,
+                                const struct gl_shader_program *shader_prog,
+                                const struct gl_program *prog,
+                                const struct brw_wm_prog_key *key,
+                                struct brw_wm_prog_data *prog_data)
 {
-   unsigned barycentric_interp_modes = 0;
-   int attr;
+   uint32_t next_binding_table_offset = 0;
 
-   /* Loop through all fragment shader inputs to figure out what interpolation
-    * modes are in use, and set the appropriate bits in
-    * barycentric_interp_modes.
+   /* If there are no color regions, we still perform an FB write to a null
+    * renderbuffer, which we place at surface index 0.
     */
-   for (attr = 0; attr < VARYING_SLOT_MAX; ++attr) {
-      enum glsl_interp_qualifier interp_qualifier =
-         fprog->InterpQualifier[attr];
-      bool is_centroid = (fprog->IsCentroid & BITFIELD64_BIT(attr)) &&
-         !persample_shading;
-      bool is_sample = (fprog->IsSample & BITFIELD64_BIT(attr)) ||
-         persample_shading;
-      bool is_gl_Color = attr == VARYING_SLOT_COL0 || attr == VARYING_SLOT_COL1;
+   prog_data->binding_table.render_target_start = next_binding_table_offset;
+   next_binding_table_offset += MAX2(key->nr_color_regions, 1);
 
-      /* Ignore unused inputs. */
-      if (!(fprog->Base.InputsRead & BITFIELD64_BIT(attr)))
-         continue;
-
-      /* Ignore WPOS and FACE, because they don't require interpolation. */
-      if (attr == VARYING_SLOT_POS || attr == VARYING_SLOT_FACE)
-         continue;
-
-      /* Determine the set (or sets) of barycentric coordinates needed to
-       * interpolate this variable.  Note that when
-       * brw->needs_unlit_centroid_workaround is set, centroid interpolation
-       * uses PIXEL interpolation for unlit pixels and CENTROID interpolation
-       * for lit pixels, so we need both sets of barycentric coordinates.
-       */
-      if (interp_qualifier == INTERP_QUALIFIER_NOPERSPECTIVE) {
-         if (is_centroid) {
-            barycentric_interp_modes |=
-               1 << BRW_WM_NONPERSPECTIVE_CENTROID_BARYCENTRIC;
-         } else if (is_sample) {
-            barycentric_interp_modes |=
-               1 << BRW_WM_NONPERSPECTIVE_SAMPLE_BARYCENTRIC;
-         }
-         if ((!is_centroid && !is_sample) ||
-             brw->needs_unlit_centroid_workaround) {
-            barycentric_interp_modes |=
-               1 << BRW_WM_NONPERSPECTIVE_PIXEL_BARYCENTRIC;
-         }
-      } else if (interp_qualifier == INTERP_QUALIFIER_SMOOTH ||
-                 (!(shade_model_flat && is_gl_Color) &&
-                  interp_qualifier == INTERP_QUALIFIER_NONE)) {
-         if (is_centroid) {
-            barycentric_interp_modes |=
-               1 << BRW_WM_PERSPECTIVE_CENTROID_BARYCENTRIC;
-         } else if (is_sample) {
-            barycentric_interp_modes |=
-               1 << BRW_WM_PERSPECTIVE_SAMPLE_BARYCENTRIC;
-         }
-         if ((!is_centroid && !is_sample) ||
-             brw->needs_unlit_centroid_workaround) {
-            barycentric_interp_modes |=
-               1 << BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC;
-         }
-      }
-   }
-
-   return barycentric_interp_modes;
-}
-
-static uint8_t
-computed_depth_mode(struct gl_fragment_program *fp)
-{
-   if (fp->Base.OutputsWritten & BITFIELD64_BIT(FRAG_RESULT_DEPTH)) {
-      switch (fp->FragDepthLayout) {
-      case FRAG_DEPTH_LAYOUT_NONE:
-      case FRAG_DEPTH_LAYOUT_ANY:
-         return BRW_PSCDEPTH_ON;
-      case FRAG_DEPTH_LAYOUT_GREATER:
-         return BRW_PSCDEPTH_ON_GE;
-      case FRAG_DEPTH_LAYOUT_LESS:
-         return BRW_PSCDEPTH_ON_LE;
-      case FRAG_DEPTH_LAYOUT_UNCHANGED:
-         return BRW_PSCDEPTH_OFF;
-      }
-   }
-   return BRW_PSCDEPTH_OFF;
-}
-
-bool
-brw_wm_prog_data_compare(const void *in_a, const void *in_b)
-{
-   const struct brw_wm_prog_data *a = in_a;
-   const struct brw_wm_prog_data *b = in_b;
-
-   /* Compare the base structure. */
-   if (!brw_stage_prog_data_compare(&a->base, &b->base))
-      return false;
-
-   /* Compare the rest of the structure. */
-   const unsigned offset = sizeof(struct brw_stage_prog_data);
-   if (memcmp(((char *) a) + offset, ((char *) b) + offset,
-              sizeof(struct brw_wm_prog_data) - offset))
-      return false;
-
-   return true;
+   brw_assign_common_binding_table_offsets(MESA_SHADER_FRAGMENT, devinfo,
+                                           shader_prog, prog, &prog_data->base,
+                                           next_binding_table_offset);
 }
 
 /**
@@ -174,32 +84,21 @@ brw_codegen_wm_prog(struct brw_context *brw,
       fs = (struct brw_shader *)prog->_LinkedShaders[MESA_SHADER_FRAGMENT];
 
    memset(&prog_data, 0, sizeof(prog_data));
-   /* key->alpha_test_func means simulating alpha testing via discards,
-    * so the shader definitely kills pixels.
-    */
-   prog_data.uses_kill = fp->program.UsesKill || key->alpha_test_func;
-   prog_data.uses_omask =
-      fp->program.Base.OutputsWritten & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK);
-   prog_data.computed_depth_mode = computed_depth_mode(&fp->program);
-
-   prog_data.early_fragment_tests = fs && fs->base.EarlyFragmentTests;
 
    /* Use ALT floating point mode for ARB programs so that 0^0 == 1. */
    if (!prog)
       prog_data.base.use_alt_mode = true;
 
+   assign_fs_binding_table_offsets(brw->intelScreen->devinfo, prog,
+                                   &fp->program.Base, key, &prog_data);
+
    /* Allocate the references to the uniforms that will end up in the
     * prog_data associated with the compiled program, and which will be freed
     * by the state cache.
     */
-   int param_count;
-   if (fs) {
-      param_count = fs->base.num_uniform_components +
-                    fs->base.NumImages * BRW_IMAGE_PARAM_SIZE;
+   int param_count = fp->program.Base.nir->num_uniforms;
+   if (fs)
       prog_data.base.nr_image_params = fs->base.NumImages;
-   } else {
-      param_count = fp->program.Base.Parameters->NumParameters * 4;
-   }
    /* The backend also sometimes adds params for texture size. */
    param_count += 2 * ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxTextureImageUnits;
    prog_data.base.param =
@@ -211,10 +110,13 @@ brw_codegen_wm_prog(struct brw_context *brw,
                     prog_data.base.nr_image_params);
    prog_data.base.nr_params = param_count;
 
-   prog_data.barycentric_interp_modes =
-      brw_compute_barycentric_interp_modes(brw, key->flat_shade,
-                                           key->persample_shading,
-                                           &fp->program);
+   if (prog) {
+      brw_nir_setup_glsl_uniforms(fp->program.Base.nir, prog, &fp->program.Base,
+                                  &prog_data.base, true);
+   } else {
+      brw_nir_setup_arb_uniforms(fp->program.Base.nir, &fp->program.Base,
+                                 &prog_data.base);
+   }
 
    if (unlikely(brw->perf_debug)) {
       start_busy = (brw->batch.last_bo &&
@@ -222,9 +124,28 @@ brw_codegen_wm_prog(struct brw_context *brw,
       start_time = get_time();
    }
 
-   program = brw_wm_fs_emit(brw, mem_ctx, key, &prog_data,
-                            &fp->program, prog, &program_size);
+   if (unlikely(INTEL_DEBUG & DEBUG_WM))
+      brw_dump_ir("fragment", prog, fs ? &fs->base : NULL, &fp->program.Base);
+
+   int st_index8 = -1, st_index16 = -1;
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME) {
+      st_index8 = brw_get_shader_time_index(brw, prog, &fp->program.Base, ST_FS8);
+      st_index16 = brw_get_shader_time_index(brw, prog, &fp->program.Base, ST_FS16);
+   }
+
+   char *error_str = NULL;
+   program = brw_compile_fs(brw->intelScreen->compiler, brw, mem_ctx,
+                            key, &prog_data, fp->program.Base.nir,
+                            &fp->program.Base, st_index8, st_index16,
+                            brw->use_rep_send, &program_size, &error_str);
    if (program == NULL) {
+      if (prog) {
+         prog->LinkStatus = false;
+         ralloc_strcat(&prog->InfoLog, error_str);
+      }
+
+      _mesa_problem(NULL, "Failed to compile fragment shader: %s\n", error_str);
+
       ralloc_free(mem_ctx);
       return false;
    }
@@ -259,17 +180,6 @@ brw_codegen_wm_prog(struct brw_context *brw,
    return true;
 }
 
-static bool
-key_debug(struct brw_context *brw, const char *name, int a, int b)
-{
-   if (a != b) {
-      perf_debug("  %s %d->%d\n", name, a, b);
-      return true;
-   } else {
-      return false;
-   }
-}
-
 bool
 brw_debug_recompile_sampler_key(struct brw_context *brw,
                                 const struct brw_sampler_prog_key_data *old_key,
@@ -292,6 +202,9 @@ brw_debug_recompile_sampler_key(struct brw_context *brw,
    found |= key_debug(brw, "compressed multisample layout",
                       old_key->compressed_multisample_layout_mask,
                       key->compressed_multisample_layout_mask);
+   found |= key_debug(brw, "16x msaa",
+                      old_key->msaa_16,
+                      key->msaa_16);
 
    for (unsigned int i = 0; i < MAX_SAMPLERS; i++) {
       found |= key_debug(brw, "textureGather workarounds",
@@ -451,6 +364,11 @@ brw_populate_sampler_prog_key_data(struct gl_context *ctx,
          if (brw->gen >= 7 &&
              intel_tex->mt->msaa_layout == INTEL_MSAA_LAYOUT_CMS) {
             key->compressed_multisample_layout_mask |= 1 << s;
+
+            if (intel_tex->mt->num_samples >= 16) {
+               assert(brw->gen >= 9);
+               key->msaa_16 |= 1 << s;
+            }
          }
       }
    }

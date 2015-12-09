@@ -41,6 +41,7 @@ nir_shader_create(void *mem_ctx,
    exec_list_make_empty(&shader->outputs);
 
    shader->options = options;
+   memset(&shader->info, 0, sizeof(shader->info));
 
    exec_list_make_empty(&shader->functions);
    exec_list_make_empty(&shader->registers);
@@ -53,9 +54,6 @@ nir_shader_create(void *mem_ctx,
    shader->num_uniforms = 0;
 
    shader->stage = stage;
-
-   shader->gs.vertices_out = 0;
-   shader->gs.invocations = 0;
 
    return shader;
 }
@@ -103,6 +101,76 @@ void
 nir_reg_remove(nir_register *reg)
 {
    exec_node_remove(&reg->node);
+}
+
+void
+nir_shader_add_variable(nir_shader *shader, nir_variable *var)
+{
+   switch (var->data.mode) {
+   case nir_var_all:
+      assert(!"invalid mode");
+      break;
+
+   case nir_var_local:
+      assert(!"nir_shader_add_variable cannot be used for local variables");
+      break;
+
+   case nir_var_global:
+      exec_list_push_tail(&shader->globals, &var->node);
+      break;
+
+   case nir_var_shader_in:
+      exec_list_push_tail(&shader->inputs, &var->node);
+      break;
+
+   case nir_var_shader_out:
+      exec_list_push_tail(&shader->outputs, &var->node);
+      break;
+
+   case nir_var_uniform:
+   case nir_var_shader_storage:
+      exec_list_push_tail(&shader->uniforms, &var->node);
+      break;
+
+   case nir_var_system_value:
+      exec_list_push_tail(&shader->system_values, &var->node);
+      break;
+   }
+}
+
+nir_variable *
+nir_variable_create(nir_shader *shader, nir_variable_mode mode,
+                    const struct glsl_type *type, const char *name)
+{
+   nir_variable *var = rzalloc(shader, nir_variable);
+   var->name = ralloc_strdup(var, name);
+   var->type = type;
+   var->data.mode = mode;
+
+   if ((mode == nir_var_shader_in && shader->stage != MESA_SHADER_VERTEX) ||
+       (mode == nir_var_shader_out && shader->stage != MESA_SHADER_FRAGMENT))
+      var->data.interpolation = INTERP_QUALIFIER_SMOOTH;
+
+   if (mode == nir_var_shader_in || mode == nir_var_uniform)
+      var->data.read_only = true;
+
+   nir_shader_add_variable(shader, var);
+
+   return var;
+}
+
+nir_variable *
+nir_local_variable_create(nir_function_impl *impl,
+                          const struct glsl_type *type, const char *name)
+{
+   nir_variable *var = rzalloc(impl->overload->function->shader, nir_variable);
+   var->name = ralloc_strdup(var, name);
+   var->type = type;
+   var->data.mode = nir_var_local;
+
+   nir_function_impl_add_variable(impl, var);
+
+   return var;
 }
 
 nir_function *
@@ -238,9 +306,9 @@ nir_function_impl_create(nir_function_overload *overload)
 }
 
 nir_block *
-nir_block_create(void *mem_ctx)
+nir_block_create(nir_shader *shader)
 {
-   nir_block *block = ralloc(mem_ctx, nir_block);
+   nir_block *block = ralloc(shader, nir_block);
 
    cf_init(&block->cf_node, nir_cf_node_block);
 
@@ -248,6 +316,14 @@ nir_block_create(void *mem_ctx)
    block->predecessors = _mesa_set_create(block, _mesa_hash_pointer,
                                           _mesa_key_pointer_equal);
    block->imm_dom = NULL;
+   /* XXX maybe it would be worth it to defer allocation?  This
+    * way it doesn't get allocated for shader ref's that never run
+    * nir_calc_dominance?  For example, state-tracker creates an
+    * initial IR, clones that, runs appropriate lowering pass, passes
+    * to driver which does common lowering/opt, and then stores ref
+    * which is later used to do state specific lowering and futher
+    * opt.  Do any of the references not need dominance metadata?
+    */
    block->dom_frontier = _mesa_set_create(block, _mesa_hash_pointer,
                                           _mesa_key_pointer_equal);
 
@@ -266,19 +342,19 @@ src_init(nir_src *src)
 }
 
 nir_if *
-nir_if_create(void *mem_ctx)
+nir_if_create(nir_shader *shader)
 {
-   nir_if *if_stmt = ralloc(mem_ctx, nir_if);
+   nir_if *if_stmt = ralloc(shader, nir_if);
 
    cf_init(&if_stmt->cf_node, nir_cf_node_if);
    src_init(&if_stmt->condition);
 
-   nir_block *then = nir_block_create(mem_ctx);
+   nir_block *then = nir_block_create(shader);
    exec_list_make_empty(&if_stmt->then_list);
    exec_list_push_tail(&if_stmt->then_list, &then->cf_node.node);
    then->cf_node.parent = &if_stmt->cf_node;
 
-   nir_block *else_stmt = nir_block_create(mem_ctx);
+   nir_block *else_stmt = nir_block_create(shader);
    exec_list_make_empty(&if_stmt->else_list);
    exec_list_push_tail(&if_stmt->else_list, &else_stmt->cf_node.node);
    else_stmt->cf_node.parent = &if_stmt->cf_node;
@@ -287,13 +363,13 @@ nir_if_create(void *mem_ctx)
 }
 
 nir_loop *
-nir_loop_create(void *mem_ctx)
+nir_loop_create(nir_shader *shader)
 {
-   nir_loop *loop = ralloc(mem_ctx, nir_loop);
+   nir_loop *loop = ralloc(shader, nir_loop);
 
    cf_init(&loop->cf_node, nir_cf_node_loop);
 
-   nir_block *body = nir_block_create(mem_ctx);
+   nir_block *body = nir_block_create(shader);
    exec_list_make_empty(&loop->body);
    exec_list_push_tail(&loop->body, &body->cf_node.node);
    body->cf_node.parent = &loop->cf_node;
@@ -1082,31 +1158,33 @@ nir_src_as_const_value(nir_src src)
    return &load->value;
 }
 
+/**
+ * Returns true if the source is known to be dynamically uniform. Otherwise it
+ * returns false which means it may or may not be dynamically uniform but it
+ * can't be determined.
+ */
 bool
-nir_srcs_equal(nir_src src1, nir_src src2)
+nir_src_is_dynamically_uniform(nir_src src)
 {
-   if (src1.is_ssa) {
-      if (src2.is_ssa) {
-         return src1.ssa == src2.ssa;
-      } else {
-         return false;
-      }
-   } else {
-      if (src2.is_ssa) {
-         return false;
-      } else {
-         if ((src1.reg.indirect == NULL) != (src2.reg.indirect == NULL))
-            return false;
+   if (!src.is_ssa)
+      return false;
 
-         if (src1.reg.indirect) {
-            if (!nir_srcs_equal(*src1.reg.indirect, *src2.reg.indirect))
-               return false;
-         }
+   /* Constants are trivially dynamically uniform */
+   if (src.ssa->parent_instr->type == nir_instr_type_load_const)
+      return true;
 
-         return src1.reg.reg == src2.reg.reg &&
-                src1.reg.base_offset == src2.reg.base_offset;
-      }
+   /* As are uniform variables */
+   if (src.ssa->parent_instr->type == nir_instr_type_intrinsic) {
+      nir_intrinsic_instr *intr = nir_instr_as_intrinsic(src.ssa->parent_instr);
+
+      if (intr->intrinsic == nir_intrinsic_load_uniform)
+         return true;
    }
+
+   /* XXX: this could have many more tests, such as when a sampler function is
+    * called with dynamically uniform arguments.
+    */
+   return false;
 }
 
 static void
@@ -1234,21 +1312,62 @@ nir_ssa_def_rewrite_uses(nir_ssa_def *def, nir_src new_src)
 {
    assert(!new_src.is_ssa || def != new_src.ssa);
 
-   nir_foreach_use_safe(def, use_src) {
-      nir_instr *src_parent_instr = use_src->parent_instr;
-      list_del(&use_src->use_link);
-      nir_src_copy(use_src, &new_src, src_parent_instr);
-      src_add_all_uses(use_src, src_parent_instr, NULL);
-   }
+   nir_foreach_use_safe(def, use_src)
+      nir_instr_rewrite_src(use_src->parent_instr, use_src, new_src);
 
-   nir_foreach_if_use_safe(def, use_src) {
-      nir_if *src_parent_if = use_src->parent_if;
-      list_del(&use_src->use_link);
-      nir_src_copy(use_src, &new_src, src_parent_if);
-      src_add_all_uses(use_src, NULL, src_parent_if);
-   }
+   nir_foreach_if_use_safe(def, use_src)
+      nir_if_rewrite_condition(use_src->parent_if, new_src);
 }
 
+static bool
+is_instr_between(nir_instr *start, nir_instr *end, nir_instr *between)
+{
+   assert(start->block == end->block);
+
+   if (between->block != start->block)
+      return false;
+
+   /* Search backwards looking for "between" */
+   while (start != end) {
+      if (between == end)
+         return true;
+
+      end = nir_instr_prev(end);
+      assert(end);
+   }
+
+   return false;
+}
+
+/* Replaces all uses of the given SSA def with the given source but only if
+ * the use comes after the after_me instruction.  This can be useful if you
+ * are emitting code to fix up the result of some instruction: you can freely
+ * use the result in that code and then call rewrite_uses_after and pass the
+ * last fixup instruction as after_me and it will replace all of the uses you
+ * want without touching the fixup code.
+ *
+ * This function assumes that after_me is in the same block as
+ * def->parent_instr and that after_me comes after def->parent_instr.
+ */
+void
+nir_ssa_def_rewrite_uses_after(nir_ssa_def *def, nir_src new_src,
+                               nir_instr *after_me)
+{
+   assert(!new_src.is_ssa || def != new_src.ssa);
+
+   nir_foreach_use_safe(def, use_src) {
+      assert(use_src->parent_instr != def->parent_instr);
+      /* Since def already dominates all of its uses, the only way a use can
+       * not be dominated by after_me is if it is between def and after_me in
+       * the instruction list.
+       */
+      if (!is_instr_between(def->parent_instr, after_me, use_src->parent_instr))
+         nir_instr_rewrite_src(use_src->parent_instr, use_src, new_src);
+   }
+
+   nir_foreach_if_use_safe(def, use_src)
+      nir_if_rewrite_condition(use_src->parent_if, new_src);
+}
 
 static bool foreach_cf_node(nir_cf_node *node, nir_foreach_block_cb cb,
                             bool reverse, void *state);
@@ -1257,13 +1376,13 @@ static inline bool
 foreach_if(nir_if *if_stmt, nir_foreach_block_cb cb, bool reverse, void *state)
 {
    if (reverse) {
-      foreach_list_typed_safe_reverse(nir_cf_node, node, node,
+      foreach_list_typed_reverse_safe(nir_cf_node, node, node,
                                       &if_stmt->else_list) {
          if (!foreach_cf_node(node, cb, reverse, state))
             return false;
       }
 
-      foreach_list_typed_safe_reverse(nir_cf_node, node, node,
+      foreach_list_typed_reverse_safe(nir_cf_node, node, node,
                                       &if_stmt->then_list) {
          if (!foreach_cf_node(node, cb, reverse, state))
             return false;
@@ -1287,7 +1406,7 @@ static inline bool
 foreach_loop(nir_loop *loop, nir_foreach_block_cb cb, bool reverse, void *state)
 {
    if (reverse) {
-      foreach_list_typed_safe_reverse(nir_cf_node, node, node, &loop->body) {
+      foreach_list_typed_reverse_safe(nir_cf_node, node, node, &loop->body) {
          if (!foreach_cf_node(node, cb, reverse, state))
             return false;
       }
@@ -1347,7 +1466,7 @@ nir_foreach_block_reverse(nir_function_impl *impl, nir_foreach_block_cb cb,
    if (!cb(impl->end_block, state))
       return false;
 
-   foreach_list_typed_safe_reverse(nir_cf_node, node, node, &impl->body) {
+   foreach_list_typed_reverse_safe(nir_cf_node, node, node, &impl->body) {
       if (!foreach_cf_node(node, cb, true, state))
          return false;
    }
@@ -1491,12 +1610,16 @@ nir_intrinsic_from_system_value(gl_system_value val)
       return nir_intrinsic_load_num_work_groups;
    case SYSTEM_VALUE_PRIMITIVE_ID:
       return nir_intrinsic_load_primitive_id;
-   /* FINISHME: Add tessellation intrinsics.
    case SYSTEM_VALUE_TESS_COORD:
-   case SYSTEM_VALUE_VERTICES_IN:
+      return nir_intrinsic_load_tess_coord;
    case SYSTEM_VALUE_TESS_LEVEL_OUTER:
+      return nir_intrinsic_load_tess_level_outer;
    case SYSTEM_VALUE_TESS_LEVEL_INNER:
-    */
+      return nir_intrinsic_load_tess_level_inner;
+   case SYSTEM_VALUE_VERTICES_IN:
+      return nir_intrinsic_load_patch_vertices_in;
+   case SYSTEM_VALUE_HELPER_INVOCATION:
+      return nir_intrinsic_load_helper_invocation;
    default:
       unreachable("system value does not directly correspond to intrinsic");
    }
@@ -1532,13 +1655,16 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_WORK_GROUP_ID;
    case nir_intrinsic_load_primitive_id:
       return SYSTEM_VALUE_PRIMITIVE_ID;
-   /* FINISHME: Add tessellation intrinsics.
+   case nir_intrinsic_load_tess_coord:
       return SYSTEM_VALUE_TESS_COORD;
-      return SYSTEM_VALUE_VERTICES_IN;
-      return SYSTEM_VALUE_PRIMITIVE_ID;
+   case nir_intrinsic_load_tess_level_outer:
       return SYSTEM_VALUE_TESS_LEVEL_OUTER;
+   case nir_intrinsic_load_tess_level_inner:
       return SYSTEM_VALUE_TESS_LEVEL_INNER;
-    */
+   case nir_intrinsic_load_patch_vertices_in:
+      return SYSTEM_VALUE_VERTICES_IN;
+   case nir_intrinsic_load_helper_invocation:
+      return SYSTEM_VALUE_HELPER_INVOCATION;
    default:
       unreachable("intrinsic doesn't produce a system value");
    }

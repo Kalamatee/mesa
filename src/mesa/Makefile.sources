@@ -77,6 +77,7 @@ MAIN_FILES = \
 	main/execmem.c \
 	main/extensions.c \
 	main/extensions.h \
+	main/extensions_table.h \
 	main/fbobject.c \
 	main/fbobject.h \
 	main/feedback.c \
@@ -345,7 +346,6 @@ TNL_FILES = \
 	tnl/tnl.h \
 	tnl/t_pipeline.c \
 	tnl/t_pipeline.h \
-	tnl/t_rasterpos.c \
 	tnl/t_vb_cliptmp.h \
 	tnl/t_vb_fog.c \
 	tnl/t_vb_light.c \
@@ -415,6 +415,7 @@ STATETRACKER_FILES = \
 	state_tracker/st_cache.h \
 	state_tracker/st_cb_bitmap.c \
 	state_tracker/st_cb_bitmap.h \
+	state_tracker/st_cb_bitmap_shader.c \
 	state_tracker/st_cb_blit.c \
 	state_tracker/st_cb_blit.h \
 	state_tracker/st_cb_bufferobjects.c \
@@ -423,8 +424,11 @@ STATETRACKER_FILES = \
 	state_tracker/st_cb_clear.h \
 	state_tracker/st_cb_condrender.c \
 	state_tracker/st_cb_condrender.h \
+	state_tracker/st_cb_copyimage.c \
+	state_tracker/st_cb_copyimage.h \
 	state_tracker/st_cb_drawpixels.c \
 	state_tracker/st_cb_drawpixels.h \
+	state_tracker/st_cb_drawpixels_shader.c \
 	state_tracker/st_cb_drawtex.c \
 	state_tracker/st_cb_drawtex.h \
 	state_tracker/st_cb_eglimage.c \
@@ -461,6 +465,8 @@ STATETRACKER_FILES = \
 	state_tracker/st_cb_xformfb.h \
 	state_tracker/st_context.c \
 	state_tracker/st_context.h \
+	state_tracker/st_copytex.c \
+	state_tracker/st_copytex.h \
 	state_tracker/st_debug.c \
 	state_tracker/st_debug.h \
 	state_tracker/st_draw.c \
@@ -525,9 +531,7 @@ PROGRAM_FILES = \
 	program/sampler.h \
 	program/string_to_uint_map.cpp \
 	program/symbol_table.c \
-	program/symbol_table.h \
-	../glsl/shader_enums.c \
-	../glsl/shader_enums.h
+	program/symbol_table.h
 
 PROGRAM_NIR_FILES = \
 	program/prog_to_nir.c \
@@ -620,6 +624,7 @@ INCLUDE_DIRS = \
 	-I$(top_srcdir)/include \
 	-I$(top_srcdir)/src \
 	-I$(top_srcdir)/src/glsl \
+	-I$(top_srcdir)/src/glsl/nir \
 	-I$(top_builddir)/src/glsl \
 	-I$(top_builddir)/src/glsl/nir \
 	-I$(top_srcdir)/src/glsl/glcpp \

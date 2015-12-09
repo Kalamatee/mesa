@@ -35,6 +35,7 @@
 #include "tgsi/tgsi_dump.h"
 #include "tgsi/tgsi_sanity.h"
 #include "util/u_debug.h"
+#include "util/u_inlines.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
 #include "util/u_bitmask.h"
@@ -1017,7 +1018,7 @@ static void validate( unsigned opcode,
 #ifdef DEBUG
    const struct tgsi_opcode_info *info = tgsi_get_opcode_info( opcode );
    assert(info);
-   if(info) {
+   if (info) {
       assert(nr_dst == info->num_dst);
       assert(nr_src == info->num_src);
    }
@@ -1082,7 +1083,7 @@ ureg_emit_label(struct ureg_program *ureg,
 {
    union tgsi_any_token *out, *insn;
 
-   if(!label_token)
+   if (!label_token)
       return;
 
    out = get_tokens( ureg, DOMAIN_INSN, 1 );
@@ -1830,29 +1831,6 @@ void ureg_free_tokens( const struct tgsi_token *tokens )
 }
 
 
-static inline unsigned
-pipe_shader_from_tgsi_processor(unsigned processor)
-{
-   switch (processor) {
-   case TGSI_PROCESSOR_VERTEX:
-      return PIPE_SHADER_VERTEX;
-   case TGSI_PROCESSOR_TESS_CTRL:
-      return PIPE_SHADER_TESS_CTRL;
-   case TGSI_PROCESSOR_TESS_EVAL:
-      return PIPE_SHADER_TESS_EVAL;
-   case TGSI_PROCESSOR_GEOMETRY:
-      return PIPE_SHADER_GEOMETRY;
-   case TGSI_PROCESSOR_FRAGMENT:
-      return PIPE_SHADER_FRAGMENT;
-   case TGSI_PROCESSOR_COMPUTE:
-      return PIPE_SHADER_COMPUTE;
-   default:
-      assert(0);
-      return PIPE_SHADER_VERTEX;
-   }
-}
-
-
 struct ureg_program *
 ureg_create(unsigned processor)
 {
@@ -1865,14 +1843,14 @@ ureg_create_with_screen(unsigned processor, struct pipe_screen *screen)
 {
    int i;
    struct ureg_program *ureg = CALLOC_STRUCT( ureg_program );
-   if (ureg == NULL)
+   if (!ureg)
       goto no_ureg;
 
    ureg->processor = processor;
    ureg->supports_any_inout_decl_range =
       screen &&
       screen->get_shader_param(screen,
-                               pipe_shader_from_tgsi_processor(processor),
+                               util_pipe_shader_from_tgsi_processor(processor),
                                PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE) != 0;
 
    for (i = 0; i < Elements(ureg->properties); i++)

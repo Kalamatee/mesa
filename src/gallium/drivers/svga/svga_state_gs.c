@@ -53,13 +53,9 @@ translate_geometry_program(struct svga_context *svga,
                            const struct svga_geometry_shader *gs,
                            const struct svga_compile_key *key)
 {
-   if (svga_have_vgpu10(svga)) {
-      return svga_tgsi_vgpu10_translate(svga, &gs->base, key,
-                                        PIPE_SHADER_GEOMETRY);
-   }
-   else {
-      return svga_tgsi_vgpu9_translate(&gs->base, key, PIPE_SHADER_GEOMETRY);
-   }
+   assert(svga_have_vgpu10(svga));
+   return svga_tgsi_vgpu10_translate(svga, &gs->base, key,
+                                     PIPE_SHADER_GEOMETRY);
 }
 
 
@@ -76,7 +72,7 @@ compile_gs(struct svga_context *svga,
    enum pipe_error ret = PIPE_ERROR;
 
    variant = translate_geometry_program(svga, gs, key);
-   if (variant == NULL) {
+   if (!variant) {
       /* some problem during translation, try the dummy shader */
       const struct tgsi_token *dummy = get_dummy_geometry_shader();
       if (!dummy) {
@@ -86,7 +82,7 @@ compile_gs(struct svga_context *svga,
       FREE((void *) gs->base.tokens);
       gs->base.tokens = dummy;
       variant = translate_geometry_program(svga, gs, key);
-      if (variant == NULL) {
+      if (!variant) {
          return PIPE_ERROR;
       }
    }
@@ -185,7 +181,7 @@ emit_hw_gs(struct svga_context *svga, unsigned dirty)
    if (svga->curr.user_gs)
       assert(svga->curr.gs);
 
-   if (gs == NULL) {
+   if (!gs) {
       if (svga->state.hw_draw.gs != NULL) {
 
          /** The previous geometry shader is made inactive.

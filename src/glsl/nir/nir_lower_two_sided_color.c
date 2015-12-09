@@ -60,6 +60,8 @@ create_input(nir_shader *shader, unsigned drvloc, gl_varying_slot slot)
 
    exec_list_push_tail(&shader->inputs, &var->node);
 
+   shader->num_inputs++;     /* TODO use type_size() */
+
    return var;
 }
 
@@ -83,7 +85,7 @@ setup_inputs(lower_2side_state *state)
    int maxloc = -1;
 
    /* find color/face inputs: */
-   foreach_list_typed(nir_variable, var, node, &state->shader->inputs) {
+   nir_foreach_variable(var, &state->shader->inputs) {
       int loc = var->data.driver_location;
 
       /* keep track of last used driver-location.. we'll be

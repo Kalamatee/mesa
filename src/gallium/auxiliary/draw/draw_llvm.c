@@ -551,7 +551,7 @@ draw_llvm_create_variant(struct draw_llvm *llvm,
    variant = MALLOC(sizeof *variant +
                     shader->variant_key_size -
                     sizeof variant->key);
-   if (variant == NULL)
+   if (!variant)
       return NULL;
 
    variant->llvm = llvm;
@@ -625,6 +625,7 @@ generate_vs(struct draw_llvm_variant *variant,
                      inputs,
                      outputs,
                      context_ptr,
+                     NULL,
                      draw_sampler,
                      &llvm->draw->vs.vertex_shader->info,
                      NULL);
@@ -749,7 +750,8 @@ generate_fetch(struct gallivm_state *gallivm,
                                     lp_float32_vec4_type(),
                                     FALSE,
                                     map_ptr,
-                                    zero, zero, zero);
+                                    zero, zero, zero,
+                                    NULL);
       LLVMBuildStore(builder, val, temp_ptr);
    }
    lp_build_endif(&if_ctx);
@@ -2193,6 +2195,7 @@ draw_gs_llvm_generate(struct draw_llvm *llvm,
                      NULL,
                      outputs,
                      context_ptr,
+                     NULL,
                      sampler,
                      &llvm->draw->gs.geometry_shader->info,
                      (const struct lp_build_tgsi_gs_iface *)&gs_iface);
@@ -2221,7 +2224,7 @@ draw_gs_llvm_create_variant(struct draw_llvm *llvm,
    variant = MALLOC(sizeof *variant +
                     shader->variant_key_size -
                     sizeof variant->key);
-   if (variant == NULL)
+   if (!variant)
       return NULL;
 
    variant->llvm = llvm;

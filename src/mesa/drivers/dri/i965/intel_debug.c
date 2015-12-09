@@ -31,12 +31,12 @@
 
 #include "brw_context.h"
 #include "intel_debug.h"
-#include "utils.h"
 #include "util/u_atomic.h" /* for p_atomic_cmpxchg */
+#include "util/debug.h"
 
 uint64_t INTEL_DEBUG = 0;
 
-static const struct dri_debug_control debug_control[] = {
+static const struct debug_control debug_control[] = {
    { "tex",         DEBUG_TEXTURE},
    { "state",       DEBUG_STATE},
    { "blit",        DEBUG_BLIT},
@@ -72,6 +72,12 @@ static const struct dri_debug_control debug_control[] = {
    { "spill_fs",    DEBUG_SPILL_FS },
    { "spill_vec4",  DEBUG_SPILL_VEC4 },
    { "cs",          DEBUG_CS },
+   { "hex",         DEBUG_HEX },
+   { "nocompact",   DEBUG_NO_COMPACTION },
+   { "hs",          DEBUG_TCS },
+   { "tcs",         DEBUG_TCS },
+   { "ds",          DEBUG_TES },
+   { "tes",         DEBUG_TES },
    { NULL,    0 }
 };
 
@@ -80,8 +86,8 @@ intel_debug_flag_for_shader_stage(gl_shader_stage stage)
 {
    uint64_t flags[] = {
       [MESA_SHADER_VERTEX] = DEBUG_VS,
-      [MESA_SHADER_TESS_CTRL] = 0,
-      [MESA_SHADER_TESS_EVAL] = 0,
+      [MESA_SHADER_TESS_CTRL] = DEBUG_TCS,
+      [MESA_SHADER_TESS_EVAL] = DEBUG_TES,
       [MESA_SHADER_GEOMETRY] = DEBUG_GS,
       [MESA_SHADER_FRAGMENT] = DEBUG_WM,
       [MESA_SHADER_COMPUTE] = DEBUG_CS,
@@ -91,45 +97,8 @@ intel_debug_flag_for_shader_stage(gl_shader_stage stage)
 }
 
 void
-brw_process_intel_debug_variable(struct intel_screen *screen)
+brw_process_intel_debug_variable(void)
 {
-   uint64_t intel_debug = driParseDebugString(getenv("INTEL_DEBUG"), debug_control);
+   uint64_t intel_debug = parse_debug_string(getenv("INTEL_DEBUG"), debug_control);
    (void) p_atomic_cmpxchg(&INTEL_DEBUG, 0, intel_debug);
-
-   if (INTEL_DEBUG & DEBUG_BUFMGR)
-      dri_bufmgr_set_debug(screen->bufmgr, true);
-
-   if ((INTEL_DEBUG & DEBUG_SHADER_TIME) && screen->devinfo->gen < 7) {
-      fprintf(stderr,
-              "shader_time debugging requires gen7 (Ivybridge) or better.\n");
-      INTEL_DEBUG &= ~DEBUG_SHADER_TIME;
-   }
-
-   if (INTEL_DEBUG & DEBUG_AUB)
-      drm_intel_bufmgr_gem_set_aub_dump(screen->bufmgr, true);
-}
-
-/**
- * Reads an environment variable and interprets its value as a boolean.
- *
- * Recognizes 0/false/no and 1/true/yes.  Other values result in the default value.
- */
-bool
-brw_env_var_as_boolean(const char *var_name, bool default_value)
-{
-   const char *str = getenv(var_name);
-   if (str == NULL)
-      return default_value;
-
-   if (strcmp(str, "1") == 0 ||
-       strcasecmp(str, "true") == 0 ||
-       strcasecmp(str, "yes") == 0) {
-      return true;
-   } else if (strcmp(str, "0") == 0 ||
-              strcasecmp(str, "false") == 0 ||
-              strcasecmp(str, "no") == 0) {
-      return false;
-   } else {
-      return default_value;
-   }
 }

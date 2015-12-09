@@ -60,15 +60,15 @@ translate_indices(struct svga_hwtnl *hwtnl, struct pipe_resource *src,
 
    dst = pipe_buffer_create(pipe->screen,
                             PIPE_BIND_INDEX_BUFFER, PIPE_USAGE_DEFAULT, size);
-   if (dst == NULL)
+   if (!dst)
       goto fail;
 
    src_map = pipe_buffer_map(pipe, src, PIPE_TRANSFER_READ, &src_transfer);
-   if (src_map == NULL)
+   if (!src_map)
       goto fail;
 
    dst_map = pipe_buffer_map(pipe, dst, PIPE_TRANSFER_WRITE, &dst_transfer);
-   if (dst_map == NULL)
+   if (!dst_map)
       goto fail;
 
    translate((const char *) src_map + offset, 0, 0, nr, 0, dst_map);
@@ -133,7 +133,8 @@ svga_hwtnl_draw_range_elements(struct svga_hwtnl *hwtnl,
                                unsigned prim, unsigned start, unsigned count,
                                unsigned start_instance, unsigned instance_count)
 {
-   unsigned gen_prim, gen_size, gen_nr, gen_type;
+   unsigned gen_prim, gen_size, gen_nr;
+   enum indices_mode gen_type;
    u_translate_func gen_func;
    enum pipe_error ret = PIPE_OK;
 

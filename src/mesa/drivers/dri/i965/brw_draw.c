@@ -25,7 +25,6 @@
 
 #include <sys/errno.h>
 
-#include "main/glheader.h"
 #include "main/context.h"
 #include "main/condrender.h"
 #include "main/samplerobj.h"
@@ -33,6 +32,7 @@
 #include "main/enums.h"
 #include "main/macros.h"
 #include "main/transformfeedback.h"
+#include "main/framebuffer.h"
 #include "tnl/tnl.h"
 #include "vbo/vbo_context.h"
 #include "swrast/swrast.h"
@@ -55,34 +55,34 @@
 #define FILE_DEBUG_FLAG DEBUG_PRIMS
 
 static const GLuint prim_to_hw_prim[GL_TRIANGLE_STRIP_ADJACENCY+1] = {
-   _3DPRIM_POINTLIST,
-   _3DPRIM_LINELIST,
-   _3DPRIM_LINELOOP,
-   _3DPRIM_LINESTRIP,
-   _3DPRIM_TRILIST,
-   _3DPRIM_TRISTRIP,
-   _3DPRIM_TRIFAN,
-   _3DPRIM_QUADLIST,
-   _3DPRIM_QUADSTRIP,
-   _3DPRIM_POLYGON,
-   _3DPRIM_LINELIST_ADJ,
-   _3DPRIM_LINESTRIP_ADJ,
-   _3DPRIM_TRILIST_ADJ,
-   _3DPRIM_TRISTRIP_ADJ,
+   [GL_POINTS] =_3DPRIM_POINTLIST,
+   [GL_LINES] = _3DPRIM_LINELIST,
+   [GL_LINE_LOOP] = _3DPRIM_LINELOOP,
+   [GL_LINE_STRIP] = _3DPRIM_LINESTRIP,
+   [GL_TRIANGLES] = _3DPRIM_TRILIST,
+   [GL_TRIANGLE_STRIP] = _3DPRIM_TRISTRIP,
+   [GL_TRIANGLE_FAN] = _3DPRIM_TRIFAN,
+   [GL_QUADS] = _3DPRIM_QUADLIST,
+   [GL_QUAD_STRIP] = _3DPRIM_QUADSTRIP,
+   [GL_POLYGON] = _3DPRIM_POLYGON,
+   [GL_LINES_ADJACENCY] = _3DPRIM_LINELIST_ADJ,
+   [GL_LINE_STRIP_ADJACENCY] = _3DPRIM_LINESTRIP_ADJ,
+   [GL_TRIANGLES_ADJACENCY] = _3DPRIM_TRILIST_ADJ,
+   [GL_TRIANGLE_STRIP_ADJACENCY] = _3DPRIM_TRISTRIP_ADJ,
 };
 
 
 static const GLenum reduced_prim[GL_POLYGON+1] = {
-   GL_POINTS,
-   GL_LINES,
-   GL_LINES,
-   GL_LINES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES,
-   GL_TRIANGLES
+   [GL_POINTS] = GL_POINTS,
+   [GL_LINES] = GL_LINES,
+   [GL_LINE_LOOP] = GL_LINES,
+   [GL_LINE_STRIP] = GL_LINES,
+   [GL_TRIANGLES] = GL_TRIANGLES,
+   [GL_TRIANGLE_STRIP] = GL_TRIANGLES,
+   [GL_TRIANGLE_FAN] = GL_TRIANGLES,
+   [GL_QUADS] = GL_TRIANGLES,
+   [GL_QUAD_STRIP] = GL_TRIANGLES,
+   [GL_POLYGON] = GL_TRIANGLES
 };
 
 uint32_t
@@ -139,12 +139,22 @@ brw_set_prim(struct brw_context *brw, const struct _mesa_prim *prim)
 static void
 gen6_set_prim(struct brw_context *brw, const struct _mesa_prim *prim)
 {
+   const struct gl_context *ctx = &brw->ctx;
+   uint32_t hw_prim;
+
    DBG("PRIM: %s\n", _mesa_enum_to_string(prim->mode));
 
-   const uint32_t hw_prim = get_hw_prim_for_gl_prim(prim->mode);
+   if (prim->mode == GL_PATCHES) {
+      hw_prim = _3DPRIM_PATCHLIST(ctx->TessCtrlProgram.patch_vertices);
+   } else {
+      hw_prim = get_hw_prim_for_gl_prim(prim->mode);
+   }
+
    if (hw_prim != brw->primitive) {
       brw->primitive = hw_prim;
       brw->ctx.NewDriverState |= BRW_NEW_PRIMITIVE;
+      if (prim->mode == GL_PATCHES)
+         brw->ctx.NewDriverState |= BRW_NEW_PATCH_PRIMITIVE;
    }
 }
 
@@ -364,7 +374,7 @@ brw_postdraw_set_buffers_need_resolve(struct brw_context *brw)
    struct intel_renderbuffer *stencil_irb = intel_get_renderbuffer(fb, BUFFER_STENCIL);
    struct gl_renderbuffer_attachment *depth_att = &fb->Attachment[BUFFER_DEPTH];
 
-   if (brw_is_front_buffer_drawing(fb))
+   if (_mesa_is_front_buffer_drawing(fb))
       front_irb = intel_get_renderbuffer(fb, BUFFER_FRONT_LEFT);
 
    if (front_irb)
@@ -418,6 +428,10 @@ brw_try_draw_prims(struct gl_context *ctx,
       _mesa_fls(ctx->FragmentProgram._Current->Base.SamplersUsed);
    brw->gs.base.sampler_count = ctx->GeometryProgram._Current ?
       _mesa_fls(ctx->GeometryProgram._Current->Base.SamplersUsed) : 0;
+   brw->tes.base.sampler_count = ctx->TessEvalProgram._Current ?
+      _mesa_fls(ctx->TessEvalProgram._Current->Base.SamplersUsed) : 0;
+   brw->tcs.base.sampler_count = ctx->TessCtrlProgram._Current ?
+      _mesa_fls(ctx->TessCtrlProgram._Current->Base.SamplersUsed) : 0;
    brw->vs.base.sampler_count =
       _mesa_fls(ctx->VertexProgram._Current->Base.SamplersUsed);
 

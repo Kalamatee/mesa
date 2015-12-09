@@ -75,24 +75,49 @@ do_dead_code(exec_list *instructions, bool uniform_locations_assigned)
 	  || !entry->declaration)
 	 continue;
 
-      if (entry->assign) {
-	 /* Remove a single dead assignment to the variable we found.
-	  * Don't do so if it's a shader or function output or a shader
-	  * storage variable though.
+      /* Section 7.4.1 (Shader Interface Matching) of the OpenGL 4.5
+       * (Core Profile) spec says:
+       *
+       *    "With separable program objects, interfaces between shader
+       *    stages may involve the outputs from one program object and the
+       *    inputs from a second program object.  For such interfaces, it is
+       *    not possible to detect mismatches at link time, because the
+       *    programs are linked separately. When each such program is
+       *    linked, all inputs or outputs interfacing with another program
+       *    stage are treated as active."
+       */
+      if (entry->var->data.always_active_io)
+         continue;
+
+      if (!entry->assign_list.is_empty()) {
+	 /* Remove all the dead assignments to the variable we found.
+	  * Don't do so if it's a shader or function output, though.
 	  */
 	 if (entry->var->data.mode != ir_var_function_out &&
 	     entry->var->data.mode != ir_var_function_inout &&
              entry->var->data.mode != ir_var_shader_out &&
              entry->var->data.mode != ir_var_shader_storage) {
-	    entry->assign->remove();
-	    progress = true;
 
-	    if (debug) {
-	       printf("Removed assignment to %s@%p\n",
-		      entry->var->name, (void *) entry->var);
-	    }
+            while (!entry->assign_list.is_empty()) {
+               struct assignment_entry *assignment_entry =
+                  exec_node_data(struct assignment_entry,
+                                 entry->assign_list.head, link);
+
+	       assignment_entry->assign->remove();
+
+	       if (debug) {
+	          printf("Removed assignment to %s@%p\n",
+		         entry->var->name, (void *) entry->var);
+               }
+
+               assignment_entry->link.remove();
+               free(assignment_entry);
+            }
+            progress = true;
 	 }
-      } else {
+      }
+
+      if (entry->assign_list.is_empty()) {
 	 /* If there are no assignments or references to the variable left,
 	  * then we can remove its declaration.
 	  */
@@ -103,7 +128,7 @@ do_dead_code(exec_list *instructions, bool uniform_locations_assigned)
 	  */
          if (entry->var->data.mode == ir_var_uniform ||
              entry->var->data.mode == ir_var_shader_storage) {
-            if (uniform_locations_assigned || entry->var->constant_value)
+            if (uniform_locations_assigned || entry->var->constant_initializer)
                continue;
 
             /* Section 2.11.6 (Uniform Variables) of the OpenGL ES 3.0.3 spec

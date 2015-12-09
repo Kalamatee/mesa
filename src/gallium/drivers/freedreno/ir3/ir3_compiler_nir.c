@@ -36,7 +36,6 @@
 #include "tgsi/tgsi_strings.h"
 
 #include "nir/tgsi_to_nir.h"
-#include "glsl/shader_enums.h"
 
 #include "freedreno_util.h"
 
@@ -96,9 +95,6 @@ struct ir3_compile {
 	 * figuring out the blocks successors
 	 */
 	struct hash_table *block_ht;
-
-	/* for calculating input/output positions/linkages: */
-	unsigned next_inloc;
 
 	/* a4xx (at least patchlevel 0) cannot seem to flat-interpolate
 	 * so we need to use ldlv.u32 to load the varying directly:
@@ -167,7 +163,7 @@ static struct nir_shader *to_nir(struct ir3_compile *ctx,
 
 	struct nir_shader *s = tgsi_to_nir(tokens, &options);
 
-	if (fd_mesa_debug & FD_DBG_OPTMSGS) {
+	if (fd_mesa_debug & FD_DBG_DISASM) {
 		debug_printf("----------------------\n");
 		nir_print_shader(s, stdout);
 		debug_printf("----------------------\n");
@@ -205,7 +201,7 @@ static struct nir_shader *to_nir(struct ir3_compile *ctx,
 	nir_remove_dead_variables(s);
 	nir_validate_shader(s);
 
-	if (fd_mesa_debug & FD_DBG_OPTMSGS) {
+	if (fd_mesa_debug & FD_DBG_DISASM) {
 		debug_printf("----------------------\n");
 		nir_print_shader(s, stdout);
 		debug_printf("----------------------\n");
@@ -236,12 +232,9 @@ compile_init(struct ir3_compiler *compiler,
 	ctx->compiler = compiler;
 	ctx->ir = so->ir;
 	ctx->so = so;
-	ctx->next_inloc = 8;
 	ctx->def_ht = _mesa_hash_table_create(ctx,
 			_mesa_hash_pointer, _mesa_key_pointer_equal);
 	ctx->var_ht = _mesa_hash_table_create(ctx,
-			_mesa_hash_pointer, _mesa_key_pointer_equal);
-	ctx->addr_ht = _mesa_hash_table_create(ctx,
 			_mesa_hash_pointer, _mesa_key_pointer_equal);
 	ctx->block_ht = _mesa_hash_table_create(ctx,
 			_mesa_hash_pointer, _mesa_key_pointer_equal);
@@ -334,12 +327,12 @@ struct ir3_nir_block_data {
 static struct ir3_nir_block_data *
 get_block_data(struct ir3_compile *ctx, struct ir3_block *block)
 {
-	if (!block->bd) {
+	if (!block->data) {
 		struct ir3_nir_block_data *bd = ralloc_size(ctx, sizeof(*bd) +
 				((ctx->num_arrays + 1) * sizeof(bd->arrs[0])));
-		block->bd = bd;
+		block->data = bd;
 	}
-	return block->bd;
+	return block->data;
 }
 
 static void
@@ -402,7 +395,7 @@ get_var(struct ir3_compile *ctx, nir_variable *var)
 				pred_block && (pred_block->predecessors->entries < 2) && !defn;
 				pred_block = nir_block_pred(pred_block)) {
 			struct ir3_block *pblock = get_block(ctx, pred_block);
-			struct ir3_nir_block_data *pbd = pblock->bd;
+			struct ir3_nir_block_data *pbd = pblock->data;
 			if (!pbd)
 				continue;
 			defn = pbd->arrs[arr->aid];
@@ -457,7 +450,7 @@ add_array_phi_srcs(struct ir3_compile *ctx, nir_block *nblock,
 	BITSET_SET(visited, nblock->index);
 
 	block = get_block(ctx, nblock);
-	bd = block->bd;
+	bd = block->data;
 
 	if (bd && bd->arrs[av->aid]) {
 		struct ir3_array_value *dav = bd->arrs[av->aid];
@@ -477,7 +470,7 @@ add_array_phi_srcs(struct ir3_compile *ctx, nir_block *nblock,
 static void
 resolve_array_phis(struct ir3_compile *ctx, struct ir3_block *block)
 {
-	struct ir3_nir_block_data *bd = block->bd;
+	struct ir3_nir_block_data *bd = block->data;
 	unsigned bitset_words = BITSET_WORDS(ctx->impl->num_blocks);
 
 	if (!bd)
@@ -588,12 +581,17 @@ static struct ir3_instruction *
 get_addr(struct ir3_compile *ctx, struct ir3_instruction *src)
 {
 	struct ir3_instruction *addr;
-	struct hash_entry *entry;
-	entry = _mesa_hash_table_search(ctx->addr_ht, src);
-	if (entry)
-		return entry->data;
 
-	/* TODO do we need to cache per block? */
+	if (!ctx->addr_ht) {
+		ctx->addr_ht = _mesa_hash_table_create(ctx,
+				_mesa_hash_pointer, _mesa_key_pointer_equal);
+	} else {
+		struct hash_entry *entry;
+		entry = _mesa_hash_table_search(ctx->addr_ht, src);
+		if (entry)
+			return entry->data;
+	}
+
 	addr = create_addr(ctx->block, src);
 	_mesa_hash_table_insert(ctx->addr_ht, src, addr);
 
@@ -723,11 +721,12 @@ create_input(struct ir3_block *block, unsigned n)
 }
 
 static struct ir3_instruction *
-create_frag_input(struct ir3_compile *ctx, unsigned n, bool use_ldlv)
+create_frag_input(struct ir3_compile *ctx, bool use_ldlv)
 {
 	struct ir3_block *block = ctx->block;
 	struct ir3_instruction *instr;
-	struct ir3_instruction *inloc = create_immed(block, n);
+	/* actual inloc is assigned and fixed up later: */
+	struct ir3_instruction *inloc = create_immed(block, 0);
 
 	if (use_ldlv) {
 		instr = ir3_LDLV(block, inloc, 0, create_immed(block, 1), 0);
@@ -1178,6 +1177,33 @@ emit_alu(struct ir3_compile *ctx, nir_alu_instr *alu)
 		dst[0] = ir3_SEL_B32(b, src[1], 0, ir3_b2n(b, src[0]), 0, src[2], 0);
 		break;
 
+	case nir_op_bit_count:
+		dst[0] = ir3_CBITS_B(b, src[0], 0);
+		break;
+	case nir_op_ifind_msb: {
+		struct ir3_instruction *cmp;
+		dst[0] = ir3_CLZ_S(b, src[0], 0);
+		cmp = ir3_CMPS_S(b, dst[0], 0, create_immed(b, 0), 0);
+		cmp->cat2.condition = IR3_COND_GE;
+		dst[0] = ir3_SEL_B32(b,
+				ir3_SUB_U(b, create_immed(b, 31), 0, dst[0], 0), 0,
+				cmp, 0, dst[0], 0);
+		break;
+	}
+	case nir_op_ufind_msb:
+		dst[0] = ir3_CLZ_B(b, src[0], 0);
+		dst[0] = ir3_SEL_B32(b,
+				ir3_SUB_U(b, create_immed(b, 31), 0, dst[0], 0), 0,
+				src[0], 0, dst[0], 0);
+		break;
+	case nir_op_find_lsb:
+		dst[0] = ir3_BFREV_B(b, src[0], 0);
+		dst[0] = ir3_CLZ_B(b, dst[0], 0);
+		break;
+	case nir_op_bitfield_reverse:
+		dst[0] = ir3_BFREV_B(b, src[0], 0);
+		break;
+
 	default:
 		compile_error(ctx, "Unhandled ALU op: %s\n",
 				nir_op_infos[alu->op].name);
@@ -1548,10 +1574,10 @@ tex_info(nir_tex_instr *tex, unsigned *flagsp, unsigned *coordsp)
 		unreachable("bad sampler_dim");
 	}
 
-	if (tex->is_shadow)
+	if (tex->is_shadow && tex->op != nir_texop_lod)
 		flags |= IR3_INSTR_S;
 
-	if (tex->is_array)
+	if (tex->is_array && tex->op != nir_texop_lod)
 		flags |= IR3_INSTR_A;
 
 	*flagsp = flags;
@@ -1619,12 +1645,13 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 	case nir_texop_txl:      opc = OPC_SAML;     break;
 	case nir_texop_txd:      opc = OPC_SAMGQ;    break;
 	case nir_texop_txf:      opc = OPC_ISAML;    break;
+	case nir_texop_lod:      opc = OPC_GETLOD;   break;
 	case nir_texop_txf_ms:
 	case nir_texop_txs:
-	case nir_texop_lod:
 	case nir_texop_tg4:
 	case nir_texop_query_levels:
 	case nir_texop_texture_samples:
+	case nir_texop_samples_identical:
 		compile_error(ctx, "Unhandled NIR tex type: %d\n", tex->op);
 		return;
 	}
@@ -1666,10 +1693,10 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 		src0[nsrc0++] = create_immed(b, fui(0.5));
 	}
 
-	if (tex->is_shadow)
+	if (tex->is_shadow && tex->op != nir_texop_lod)
 		src0[nsrc0++] = compare;
 
-	if (tex->is_array)
+	if (tex->is_array && tex->op != nir_texop_lod)
 		src0[nsrc0++] = coord[coords];
 
 	if (has_proj) {
@@ -1718,7 +1745,7 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 	case nir_type_int:
 		type = TYPE_S32;
 		break;
-	case nir_type_unsigned:
+	case nir_type_uint:
 	case nir_type_bool:
 		type = TYPE_U32;
 		break;
@@ -1726,12 +1753,26 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 		unreachable("bad dest_type");
 	}
 
+	if (opc == OPC_GETLOD)
+		type = TYPE_U32;
+
 	sam = ir3_SAM(b, opc, type, TGSI_WRITEMASK_XYZW,
 			flags, tex->sampler_index, tex->sampler_index,
 			create_collect(b, src0, nsrc0),
 			create_collect(b, src1, nsrc1));
 
 	split_dest(b, dst, sam, 4);
+
+	/* GETLOD returns results in 4.8 fixed point */
+	if (opc == OPC_GETLOD) {
+		struct ir3_instruction *factor = create_immed(b, fui(1.0 / 256));
+
+		compile_assert(ctx, tex->dest_type == nir_type_float);
+		for (i = 0; i < 2; i++) {
+			dst[i] = ir3_MUL_F(b, ir3_COV(b, dst[i], TYPE_U32, TYPE_F32), 0,
+							   factor, 0);
+		}
+	}
 }
 
 static void
@@ -1890,6 +1931,8 @@ emit_instr(struct ir3_compile *ctx, nir_instr *instr)
 		case nir_texop_query_levels:
 			emit_tex_query_levels(ctx, tex);
 			break;
+		case nir_texop_samples_identical:
+			unreachable("nir_texop_samples_identical");
 		default:
 			emit_tex(ctx, tex);
 			break;
@@ -1939,6 +1982,10 @@ emit_block(struct ir3_compile *ctx, nir_block *nblock)
 
 	ctx->block = block;
 	list_addtail(&block->node, &ctx->ir->block_list);
+
+	/* re-emit addr register in each block if needed: */
+	_mesa_hash_table_destroy(ctx->addr_ht, NULL);
+	ctx->addr_ht = NULL;
 
 	nir_foreach_instr(nblock, instr) {
 		emit_instr(ctx, instr);
@@ -2142,8 +2189,6 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 
 	so->inputs[n].slot = slot;
 	so->inputs[n].compmask = (1 << ncomp) - 1;
-	so->inputs[n].inloc = ctx->next_inloc;
-	so->inputs[n].interpolate = INTERP_QUALIFIER_NONE;
 	so->inputs_count = MAX2(so->inputs_count, n + 1);
 	so->inputs[n].interpolate = in->data.interpolation;
 
@@ -2188,8 +2233,7 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 
 				so->inputs[n].bary = true;
 
-				instr = create_frag_input(ctx,
-						so->inputs[n].inloc + i - 8, use_ldlv);
+				instr = create_frag_input(ctx, use_ldlv);
 			}
 
 			ctx->ir->inputs[idx] = instr;
@@ -2204,7 +2248,6 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 	}
 
 	if (so->inputs[n].bary || (ctx->so->type == SHADER_VERTEX)) {
-		ctx->next_inloc += ncomp;
 		so->total_in += ncomp;
 	}
 }
@@ -2326,17 +2369,17 @@ emit_instructions(struct ir3_compile *ctx)
 	}
 
 	/* Setup inputs: */
-	foreach_list_typed(nir_variable, var, node, &ctx->s->inputs) {
+	nir_foreach_variable(var, &ctx->s->inputs) {
 		setup_input(ctx, var);
 	}
 
 	/* Setup outputs: */
-	foreach_list_typed(nir_variable, var, node, &ctx->s->outputs) {
+	nir_foreach_variable(var, &ctx->s->outputs) {
 		setup_output(ctx, var);
 	}
 
 	/* Setup variables (which should only be arrays): */
-	foreach_list_typed(nir_variable, var, node, &ctx->s->globals) {
+	nir_foreach_variable(var, &ctx->s->globals) {
 		declare_var(ctx, var);
 	}
 
@@ -2428,7 +2471,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 	struct ir3_compile *ctx;
 	struct ir3 *ir;
 	struct ir3_instruction **inputs;
-	unsigned i, j, actual_in;
+	unsigned i, j, actual_in, inloc;
 	int ret = 0, max_bary;
 
 	assert(!so->ir);
@@ -2548,13 +2591,6 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		ir3_print(ir);
 	}
 
-	ir3_legalize(ir, &so->has_samp, &max_bary);
-
-	if (fd_mesa_debug & FD_DBG_OPTMSGS) {
-		printf("AFTER LEGALIZE:\n");
-		ir3_print(ir);
-	}
-
 	/* fixup input/outputs: */
 	for (i = 0; i < so->outputs_count; i++) {
 		so->outputs[i].regid = ir->outputs[i*4]->regs[0]->num;
@@ -2568,32 +2604,46 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 
 	/* Note that some or all channels of an input may be unused: */
 	actual_in = 0;
+	inloc = 0;
 	for (i = 0; i < so->inputs_count; i++) {
 		unsigned j, regid = ~0, compmask = 0;
 		so->inputs[i].ncomp = 0;
+		so->inputs[i].inloc = inloc + 8;
 		for (j = 0; j < 4; j++) {
 			struct ir3_instruction *in = inputs[(i*4) + j];
-			if (in) {
+			if (in && !(in->flags & IR3_INSTR_UNUSED)) {
 				compmask |= (1 << j);
 				regid = in->regs[0]->num - j;
 				actual_in++;
 				so->inputs[i].ncomp++;
+				if ((so->type == SHADER_FRAGMENT) && so->inputs[i].bary) {
+					/* assign inloc: */
+					assert(in->regs[1]->flags & IR3_REG_IMMED);
+					in->regs[1]->iim_val = inloc++;
+				}
 			}
 		}
+		if ((so->type == SHADER_FRAGMENT) && compmask && so->inputs[i].bary)
+			so->varying_in++;
 		so->inputs[i].regid = regid;
 		so->inputs[i].compmask = compmask;
 	}
 
-	/* fragment shader always gets full vec4's even if it doesn't
-	 * fetch all components, but vertex shader we need to update
-	 * with the actual number of components fetch, otherwise thing
-	 * will hang due to mismaptch between VFD_DECODE's and
-	 * TOTALATTRTOVS
+	/* We need to do legalize after (for frag shader's) the "bary.f"
+	 * offsets (inloc) have been assigned.
 	 */
+	ir3_legalize(ir, &so->has_samp, &max_bary);
+
+	if (fd_mesa_debug & FD_DBG_OPTMSGS) {
+		printf("AFTER LEGALIZE:\n");
+		ir3_print(ir);
+	}
+
+	/* Note that actual_in counts inputs that are not bary.f'd for FS: */
 	if (so->type == SHADER_VERTEX)
 		so->total_in = actual_in;
 	else
-		so->total_in = align(max_bary + 1, 4);
+		so->total_in = max_bary + 1;
 
 out:
 	if (ret) {

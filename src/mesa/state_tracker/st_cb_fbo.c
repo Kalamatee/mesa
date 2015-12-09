@@ -246,17 +246,6 @@ st_renderbuffer_delete(struct gl_context *ctx, struct gl_renderbuffer *rb)
 
 
 /**
- * Called via ctx->Driver.NewFramebuffer()
- */
-static struct gl_framebuffer *
-st_new_framebuffer(struct gl_context *ctx, GLuint name)
-{
-   /* XXX not sure we need to subclass gl_framebuffer for pipe */
-   return _mesa_new_framebuffer(ctx, name);
-}
-
-
-/**
  * Called via ctx->Driver.NewRenderbuffer()
  */
 static struct gl_renderbuffer *
@@ -467,7 +456,7 @@ st_update_renderbuffer_surface(struct st_context *st,
       surf_tmpl.u.tex.first_layer = first_layer;
       surf_tmpl.u.tex.last_layer = last_layer;
 
-      pipe_surface_reference(&strb->surface, NULL);
+      pipe_surface_release(pipe, &strb->surface);
 
       strb->surface = pipe->create_surface(pipe, resource, &surf_tmpl);
    }
@@ -826,7 +815,7 @@ st_UnmapRenderbuffer(struct gl_context *ctx,
 
 void st_init_fbo_functions(struct dd_function_table *functions)
 {
-   functions->NewFramebuffer = st_new_framebuffer;
+   functions->NewFramebuffer = _mesa_new_framebuffer;
    functions->NewRenderbuffer = st_new_renderbuffer;
    functions->FramebufferRenderbuffer = _mesa_FramebufferRenderbuffer_sw;
    functions->RenderTexture = st_render_texture;

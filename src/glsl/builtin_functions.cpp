@@ -290,6 +290,20 @@ texture_multisample_array(const _mesa_glsl_parse_state *state)
 }
 
 static bool
+texture_samples_identical(const _mesa_glsl_parse_state *state)
+{
+   return texture_multisample(state) &&
+          state->EXT_shader_samples_identical_enable;
+}
+
+static bool
+texture_samples_identical_array(const _mesa_glsl_parse_state *state)
+{
+   return texture_multisample_array(state) &&
+          state->EXT_shader_samples_identical_enable;
+}
+
+static bool
 fs_texture_cube_map_array(const _mesa_glsl_parse_state *state)
 {
    return state->stage == MESA_SHADER_FRAGMENT &&
@@ -401,9 +415,15 @@ shader_atomic_counters(const _mesa_glsl_parse_state *state)
 }
 
 static bool
+shader_clock(const _mesa_glsl_parse_state *state)
+{
+   return state->ARB_shader_clock_enable;
+}
+
+static bool
 shader_storage_buffer_object(const _mesa_glsl_parse_state *state)
 {
-   return state->ARB_shader_storage_buffer_object_enable;
+   return state->has_shader_storage_buffer_objects();
 }
 
 static bool
@@ -453,9 +473,15 @@ fp64(const _mesa_glsl_parse_state *state)
 }
 
 static bool
+compute_shader(const _mesa_glsl_parse_state *state)
+{
+   return state->stage == MESA_SHADER_COMPUTE;
+}
+
+static bool
 barrier_supported(const _mesa_glsl_parse_state *state)
 {
-   return state->stage == MESA_SHADER_COMPUTE ||
+   return compute_shader(state) ||
           state->stage == MESA_SHADER_TESS_CTRL;
 }
 
@@ -580,8 +606,8 @@ private:
                                ir_expression_operation opcode,
                                const glsl_type *return_type,
                                const glsl_type *param_type);
-   ir_function_signature *binop(ir_expression_operation opcode,
-                                builtin_available_predicate avail,
+   ir_function_signature *binop(builtin_available_predicate avail,
+                                ir_expression_operation opcode,
                                 const glsl_type *return_type,
                                 const glsl_type *param0_type,
                                 const glsl_type *param1_type);
@@ -712,6 +738,7 @@ private:
 
    BA2(textureQueryLod);
    B1(textureQueryLevels);
+   BA2(textureSamplesIdentical);
    B1(dFdx);
    B1(dFdy);
    B1(fwidth);
@@ -779,8 +806,13 @@ private:
 
    ir_function_signature *_memory_barrier_intrinsic(
       builtin_available_predicate avail);
-   ir_function_signature *_memory_barrier(
-      builtin_available_predicate avail);
+   ir_function_signature *_memory_barrier(const char *intrinsic_name,
+                                          builtin_available_predicate avail);
+
+   ir_function_signature *_shader_clock_intrinsic(builtin_available_predicate avail,
+                                                  const glsl_type *type);
+   ir_function_signature *_shader_clock(builtin_available_predicate avail,
+                                        const glsl_type *type);
 
 #undef B0
 #undef B1
@@ -951,6 +983,26 @@ builtin_builder::create_intrinsics()
 
    add_function("__intrinsic_memory_barrier",
                 _memory_barrier_intrinsic(shader_image_load_store),
+                NULL);
+   add_function("__intrinsic_group_memory_barrier",
+                _memory_barrier_intrinsic(compute_shader),
+                NULL);
+   add_function("__intrinsic_memory_barrier_atomic_counter",
+                _memory_barrier_intrinsic(compute_shader),
+                NULL);
+   add_function("__intrinsic_memory_barrier_buffer",
+                _memory_barrier_intrinsic(compute_shader),
+                NULL);
+   add_function("__intrinsic_memory_barrier_image",
+                _memory_barrier_intrinsic(compute_shader),
+                NULL);
+   add_function("__intrinsic_memory_barrier_shared",
+                _memory_barrier_intrinsic(compute_shader),
+                NULL);
+
+   add_function("__intrinsic_shader_clock",
+                _shader_clock_intrinsic(shader_clock,
+                                        glsl_type::uvec2_type),
                 NULL);
 }
 
@@ -1284,7 +1336,7 @@ builtin_builder::create_builtins()
                 _smoothstep(fp64, glsl_type::dvec3_type,  glsl_type::dvec3_type),
                 _smoothstep(fp64, glsl_type::dvec4_type,  glsl_type::dvec4_type),
                 NULL);
- 
+
    FD130(isnan)
    FD130(isinf)
 
@@ -1321,7 +1373,7 @@ builtin_builder::create_builtins()
    FD(distance)
    FD(dot)
 
-   add_function("cross", _cross(always_available, glsl_type::vec3_type), 
+   add_function("cross", _cross(always_available, glsl_type::vec3_type),
                 _cross(fp64, glsl_type::dvec3_type), NULL);
 
    FD(normalize)
@@ -2173,6 +2225,16 @@ builtin_builder::create_builtins()
 
                 NULL);
 
+   add_function("textureSamplesIdenticalEXT",
+                _textureSamplesIdentical(texture_samples_identical, glsl_type::sampler2DMS_type,  glsl_type::ivec2_type),
+                _textureSamplesIdentical(texture_samples_identical, glsl_type::isampler2DMS_type, glsl_type::ivec2_type),
+                _textureSamplesIdentical(texture_samples_identical, glsl_type::usampler2DMS_type, glsl_type::ivec2_type),
+
+                _textureSamplesIdentical(texture_samples_identical_array, glsl_type::sampler2DMSArray_type,  glsl_type::ivec3_type),
+                _textureSamplesIdentical(texture_samples_identical_array, glsl_type::isampler2DMSArray_type, glsl_type::ivec3_type),
+                _textureSamplesIdentical(texture_samples_identical_array, glsl_type::usampler2DMSArray_type, glsl_type::ivec3_type),
+                NULL);
+
    add_function("texture1D",
                 _texture(ir_tex, v110,         glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::float_type),
                 _texture(ir_txb, v110_fs_only, glsl_type::vec4_type,  glsl_type::sampler1D_type, glsl_type::float_type),
@@ -2738,7 +2800,33 @@ builtin_builder::create_builtins()
    add_image_functions(true);
 
    add_function("memoryBarrier",
-                _memory_barrier(shader_image_load_store),
+                _memory_barrier("__intrinsic_memory_barrier",
+                                shader_image_load_store),
+                NULL);
+   add_function("groupMemoryBarrier",
+                _memory_barrier("__intrinsic_group_memory_barrier",
+                                compute_shader),
+                NULL);
+   add_function("memoryBarrierAtomicCounter",
+                _memory_barrier("__intrinsic_memory_barrier_atomic_counter",
+                                compute_shader),
+                NULL);
+   add_function("memoryBarrierBuffer",
+                _memory_barrier("__intrinsic_memory_barrier_buffer",
+                                compute_shader),
+                NULL);
+   add_function("memoryBarrierImage",
+                _memory_barrier("__intrinsic_memory_barrier_image",
+                                compute_shader),
+                NULL);
+   add_function("memoryBarrierShared",
+                _memory_barrier("__intrinsic_memory_barrier_shared",
+                                compute_shader),
+                NULL);
+
+   add_function("clock2x32ARB",
+                _shader_clock(shader_clock,
+                              glsl_type::uvec2_type),
                 NULL);
 
 #undef F
@@ -3026,8 +3114,8 @@ builtin_builder::_##NAME(builtin_available_predicate avail, const glsl_type *typ
 }
 
 ir_function_signature *
-builtin_builder::binop(ir_expression_operation opcode,
-                       builtin_available_predicate avail,
+builtin_builder::binop(builtin_available_predicate avail,
+                       ir_expression_operation opcode,
                        const glsl_type *return_type,
                        const glsl_type *param0_type,
                        const glsl_type *param1_type)
@@ -3323,7 +3411,7 @@ builtin_builder::_atanh(const glsl_type *type)
 ir_function_signature *
 builtin_builder::_pow(const glsl_type *type)
 {
-   return binop(ir_binop_pow, always_available, type, type, type);
+   return binop(always_available, ir_binop_pow, type, type, type);
 }
 
 UNOP(exp,         ir_unop_exp,  always_available)
@@ -3347,7 +3435,7 @@ UNOPA(fract,     ir_unop_fract)
 ir_function_signature *
 builtin_builder::_mod(const glsl_type *x_type, const glsl_type *y_type)
 {
-   return binop(ir_binop_mod, always_available, x_type, x_type, y_type);
+   return binop(always_available, ir_binop_mod, x_type, x_type, y_type);
 }
 
 ir_function_signature *
@@ -3369,14 +3457,14 @@ ir_function_signature *
 builtin_builder::_min(builtin_available_predicate avail,
                       const glsl_type *x_type, const glsl_type *y_type)
 {
-   return binop(ir_binop_min, avail, x_type, x_type, y_type);
+   return binop(avail, ir_binop_min, x_type, x_type, y_type);
 }
 
 ir_function_signature *
 builtin_builder::_max(builtin_available_predicate avail,
                       const glsl_type *x_type, const glsl_type *y_type)
 {
-   return binop(ir_binop_max, avail, x_type, x_type, y_type);
+   return binop(avail, ir_binop_max, x_type, x_type, y_type);
 }
 
 ir_function_signature *
@@ -3510,7 +3598,16 @@ builtin_builder::_isinf(builtin_available_predicate avail, const glsl_type *type
 
    ir_constant_data infinities;
    for (int i = 0; i < type->vector_elements; i++) {
-      infinities.f[i] = INFINITY;
+      switch (type->base_type) {
+      case GLSL_TYPE_FLOAT:
+         infinities.f[i] = INFINITY;
+         break;
+      case GLSL_TYPE_DOUBLE:
+         infinities.d[i] = INFINITY;
+         break;
+      default:
+         unreachable("unknown type");
+      }
    }
 
    body.emit(ret(equal(abs(x), imm(type, infinities))));
@@ -3696,9 +3793,9 @@ ir_function_signature *
 builtin_builder::_dot(builtin_available_predicate avail, const glsl_type *type)
 {
    if (type->vector_elements == 1)
-      return binop(ir_binop_mul, avail, type, type, type);
+      return binop(avail, ir_binop_mul, type, type, type);
 
-   return binop(ir_binop_dot, avail,
+   return binop(avail, ir_binop_dot,
                 type->get_base_type(), type, type);
 }
 
@@ -4214,7 +4311,7 @@ ir_function_signature *
 builtin_builder::_lessThan(builtin_available_predicate avail,
                            const glsl_type *type)
 {
-   return binop(ir_binop_less, avail,
+   return binop(avail, ir_binop_less,
                 glsl_type::bvec(type->vector_elements), type, type);
 }
 
@@ -4222,7 +4319,7 @@ ir_function_signature *
 builtin_builder::_lessThanEqual(builtin_available_predicate avail,
                                 const glsl_type *type)
 {
-   return binop(ir_binop_lequal, avail,
+   return binop(avail, ir_binop_lequal,
                 glsl_type::bvec(type->vector_elements), type, type);
 }
 
@@ -4230,7 +4327,7 @@ ir_function_signature *
 builtin_builder::_greaterThan(builtin_available_predicate avail,
                               const glsl_type *type)
 {
-   return binop(ir_binop_greater, avail,
+   return binop(avail, ir_binop_greater,
                 glsl_type::bvec(type->vector_elements), type, type);
 }
 
@@ -4238,7 +4335,7 @@ ir_function_signature *
 builtin_builder::_greaterThanEqual(builtin_available_predicate avail,
                                    const glsl_type *type)
 {
-   return binop(ir_binop_gequal, avail,
+   return binop(avail, ir_binop_gequal,
                 glsl_type::bvec(type->vector_elements), type, type);
 }
 
@@ -4246,7 +4343,7 @@ ir_function_signature *
 builtin_builder::_equal(builtin_available_predicate avail,
                         const glsl_type *type)
 {
-   return binop(ir_binop_equal, avail,
+   return binop(avail, ir_binop_equal,
                 glsl_type::bvec(type->vector_elements), type, type);
 }
 
@@ -4254,7 +4351,7 @@ ir_function_signature *
 builtin_builder::_notEqual(builtin_available_predicate avail,
                            const glsl_type *type)
 {
-   return binop(ir_binop_nequal, avail,
+   return binop(avail, ir_binop_nequal,
                 glsl_type::bvec(type->vector_elements), type, type);
 }
 
@@ -4612,6 +4709,25 @@ builtin_builder::_textureQueryLevels(const glsl_type *sampler_type)
    return sig;
 }
 
+ir_function_signature *
+builtin_builder::_textureSamplesIdentical(builtin_available_predicate avail,
+                                          const glsl_type *sampler_type,
+                                          const glsl_type *coord_type)
+{
+   ir_variable *s = in_var(sampler_type, "sampler");
+   ir_variable *P = in_var(coord_type, "P");
+   const glsl_type *return_type = glsl_type::bool_type;
+   MAKE_SIG(return_type, avail, 2, s, P);
+
+   ir_texture *tex = new(mem_ctx) ir_texture(ir_samples_identical);
+   tex->coordinate = var_ref(P);
+   tex->set_sampler(var_ref(s), return_type);
+
+   body.emit(ret(tex));
+
+   return sig;
+}
+
 UNOP(dFdx, ir_unop_dFdx, fs_oes_derivatives)
 UNOP(dFdxCoarse, ir_unop_dFdx_coarse, fs_derivative_control)
 UNOP(dFdxFine, ir_unop_dFdx_fine, fs_derivative_control)
@@ -4823,7 +4939,8 @@ builtin_builder::_fma(builtin_available_predicate avail, const glsl_type *type)
 ir_function_signature *
 builtin_builder::_ldexp(const glsl_type *x_type, const glsl_type *exp_type)
 {
-   return binop(ir_binop_ldexp, x_type->base_type == GLSL_TYPE_DOUBLE ? fp64 : gpu_shader5_or_es31, x_type, x_type, exp_type);
+   return binop(x_type->base_type == GLSL_TYPE_DOUBLE ? fp64 : gpu_shader5_or_es31,
+                ir_binop_ldexp, x_type, x_type, exp_type);
 }
 
 ir_function_signature *
@@ -5180,8 +5297,8 @@ builtin_builder::_image_size_prototype(const glsl_type *image_type,
 
 ir_function_signature *
 builtin_builder::_image_samples_prototype(const glsl_type *image_type,
-                                          unsigned num_arguments,
-                                          unsigned flags)
+                                          unsigned /* num_arguments */,
+                                          unsigned /* flags */)
 {
    ir_variable *image = in_var(image_type, "image");
    ir_function_signature *sig =
@@ -5243,11 +5360,34 @@ builtin_builder::_memory_barrier_intrinsic(builtin_available_predicate avail)
 }
 
 ir_function_signature *
-builtin_builder::_memory_barrier(builtin_available_predicate avail)
+builtin_builder::_memory_barrier(const char *intrinsic_name,
+                                 builtin_available_predicate avail)
 {
    MAKE_SIG(glsl_type::void_type, avail, 0);
-   body.emit(call(shader->symbols->get_function("__intrinsic_memory_barrier"),
+   body.emit(call(shader->symbols->get_function(intrinsic_name),
                   NULL, sig->parameters));
+   return sig;
+}
+
+ir_function_signature *
+builtin_builder::_shader_clock_intrinsic(builtin_available_predicate avail,
+                                         const glsl_type *type)
+{
+   MAKE_INTRINSIC(type, avail, 0);
+   return sig;
+}
+
+ir_function_signature *
+builtin_builder::_shader_clock(builtin_available_predicate avail,
+                               const glsl_type *type)
+{
+   MAKE_SIG(type, avail, 0);
+
+   ir_variable *retval = body.make_temp(type, "clock_retval");
+
+   body.emit(call(shader->symbols->get_function("__intrinsic_shader_clock"),
+                  retval, sig->parameters));
+   body.emit(ret(retval));
    return sig;
 }
 

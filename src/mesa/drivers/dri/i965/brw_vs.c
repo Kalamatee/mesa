@@ -31,60 +31,17 @@
 
 
 #include "main/compiler.h"
+#include "main/context.h"
 #include "brw_context.h"
 #include "brw_vs.h"
 #include "brw_util.h"
 #include "brw_state.h"
 #include "program/prog_print.h"
 #include "program/prog_parameter.h"
+#include "brw_nir.h"
+#include "brw_program.h"
 
 #include "util/ralloc.h"
-
-/**
- * Decide which set of clip planes should be used when clipping via
- * gl_Position or gl_ClipVertex.
- */
-gl_clip_plane *brw_select_clip_planes(struct gl_context *ctx)
-{
-   if (ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX]) {
-      /* There is currently a GLSL vertex shader, so clip according to GLSL
-       * rules, which means compare gl_ClipVertex (or gl_Position, if
-       * gl_ClipVertex wasn't assigned) against the eye-coordinate clip planes
-       * that were stored in EyeUserPlane at the time the clip planes were
-       * specified.
-       */
-      return ctx->Transform.EyeUserPlane;
-   } else {
-      /* Either we are using fixed function or an ARB vertex program.  In
-       * either case the clip planes are going to be compared against
-       * gl_Position (which is in clip coordinates) so we have to clip using
-       * _ClipUserPlane, which was transformed into clip coordinates by Mesa
-       * core.
-       */
-      return ctx->Transform._ClipUserPlane;
-   }
-}
-
-
-bool
-brw_vs_prog_data_compare(const void *in_a, const void *in_b)
-{
-   const struct brw_vs_prog_data *a = in_a;
-   const struct brw_vs_prog_data *b = in_b;
-
-   /* Compare the base structure. */
-   if (!brw_stage_prog_data_compare(&a->base.base, &b->base.base))
-      return false;
-
-   /* Compare the rest of the struct. */
-   const unsigned offset = sizeof(struct brw_stage_prog_data);
-   if (memcmp(((char *) a) + offset, ((char *) b) + offset,
-              sizeof(struct brw_vs_prog_data) - offset)) {
-      return false;
-   }
-
-   return true;
-}
 
 bool
 brw_codegen_vs_prog(struct brw_context *brw,
@@ -92,6 +49,7 @@ brw_codegen_vs_prog(struct brw_context *brw,
                     struct brw_vertex_program *vp,
                     struct brw_vs_prog_key *key)
 {
+   const struct brw_compiler *compiler = brw->intelScreen->compiler;
    GLuint program_size;
    const GLuint *program;
    struct brw_vs_prog_data prog_data;
@@ -113,22 +71,22 @@ brw_codegen_vs_prog(struct brw_context *brw,
 
    mem_ctx = ralloc_context(NULL);
 
+   brw_assign_common_binding_table_offsets(MESA_SHADER_VERTEX,
+                                           brw->intelScreen->devinfo,
+                                           prog, &vp->program.Base,
+                                           &prog_data.base.base, 0);
+
    /* Allocate the references to the uniforms that will end up in the
     * prog_data associated with the compiled program, and which will be freed
     * by the state cache.
     */
-   int param_count;
-   if (vs) {
-      /* We add padding around uniform values below vec4 size, with the worst
-       * case being a float value that gets blown up to a vec4, so be
-       * conservative here.
-       */
-      param_count = vs->base.num_uniform_components * 4 +
-                    vs->base.NumImages * BRW_IMAGE_PARAM_SIZE;
-      stage_prog_data->nr_image_params = vs->base.NumImages;
-   } else {
-      param_count = vp->program.Base.Parameters->NumParameters * 4;
-   }
+   int param_count = vp->program.Base.nir->num_uniforms;
+   if (!compiler->scalar_stage[MESA_SHADER_VERTEX])
+      param_count *= 4;
+
+   if (vs)
+      prog_data.base.base.nr_image_params = vs->base.NumImages;
+
    /* vec4_visitor::setup_uniform_clipplane_values() also uploads user clip
     * planes as uniforms.
     */
@@ -142,6 +100,15 @@ brw_codegen_vs_prog(struct brw_context *brw,
       rzalloc_array(NULL, struct brw_image_param,
                     stage_prog_data->nr_image_params);
    stage_prog_data->nr_params = param_count;
+
+   if (prog) {
+      brw_nir_setup_glsl_uniforms(vp->program.Base.nir, prog, &vp->program.Base,
+                                  &prog_data.base.base,
+                                  compiler->scalar_stage[MESA_SHADER_VERTEX]);
+   } else {
+      brw_nir_setup_arb_uniforms(vp->program.Base.nir, &vp->program.Base,
+                                 &prog_data.base.base);
+   }
 
    GLbitfield64 outputs_written = vp->program.Base.OutputsWritten;
    prog_data.inputs_read = vp->program.Base.InputsRead;
@@ -194,11 +161,33 @@ brw_codegen_vs_prog(struct brw_context *brw,
       start_time = get_time();
    }
 
+   if (unlikely(INTEL_DEBUG & DEBUG_VS)) {
+      brw_dump_ir("vertex", prog, vs ? &vs->base : NULL, &vp->program.Base);
+
+      fprintf(stderr, "VS Output ");
+      brw_print_vue_map(stderr, &prog_data.base.vue_map);
+   }
+
+   int st_index = -1;
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME)
+      st_index = brw_get_shader_time_index(brw, prog, &vp->program.Base, ST_VS);
+
    /* Emit GEN4 code.
     */
-   program = brw_vs_emit(brw, mem_ctx, key, &prog_data,
-                         &vp->program, prog, &program_size);
+   char *error_str;
+   program = brw_compile_vs(compiler, brw, mem_ctx, key,
+                            &prog_data, vp->program.Base.nir,
+                            brw_select_clip_planes(&brw->ctx),
+                            !_mesa_is_gles3(&brw->ctx),
+                            st_index, &program_size, &error_str);
    if (program == NULL) {
+      if (prog) {
+         prog->LinkStatus = false;
+         ralloc_strcat(&prog->InfoLog, error_str);
+      }
+
+      _mesa_problem(NULL, "Failed to compile vertex shader: %s\n", error_str);
+
       ralloc_free(mem_ctx);
       return false;
    }
@@ -229,16 +218,6 @@ brw_codegen_vs_prog(struct brw_context *brw,
    ralloc_free(mem_ctx);
 
    return true;
-}
-
-static bool
-key_debug(struct brw_context *brw, const char *name, int a, int b)
-{
-   if (a != b) {
-      perf_debug("  %s %d->%d\n", name, a, b);
-      return true;
-   }
-   return false;
 }
 
 void
@@ -328,8 +307,9 @@ brw_vs_populate_key(struct brw_context *brw,
    key->program_string_id = vp->id;
 
    if (ctx->Transform.ClipPlanesEnabled != 0 &&
-       ctx->API == API_OPENGL_COMPAT &&
-       !vp->program.Base.UsesClipDistanceOut) {
+       (ctx->API == API_OPENGL_COMPAT ||
+        ctx->API == API_OPENGLES) &&
+       vp->program.Base.ClipDistanceArraySize == 0) {
       key->nr_userclip_plane_consts =
          _mesa_logbase2(ctx->Transform.ClipPlanesEnabled) + 1;
    }

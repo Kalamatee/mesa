@@ -43,7 +43,6 @@
 
 
 #include "glheader.h"
-#include "colormac.h"
 #include "enums.h"
 #include "image.h"
 #include "imports.h"
@@ -1074,6 +1073,21 @@ _mesa_pack_depth_span( struct gl_context *ctx, GLuint n, GLvoid *dest,
          }
       }
       break;
+   case GL_UNSIGNED_INT_24_8:
+      {
+         const GLdouble scale = (GLdouble) 0xffffff;
+         GLuint *dst = (GLuint *) dest;
+         GLuint i;
+         for (i = 0; i < n; i++) {
+            GLuint z = (GLuint) (depthSpan[i] * scale);
+            assert(z <= 0xffffff);
+            dst[i] = (z << 8);
+         }
+         if (dstPacking->SwapBytes) {
+            _mesa_swap4( (GLuint *) dst, n );
+         }
+         break;
+      }
    case GL_UNSIGNED_INT:
       {
          GLuint *dst = (GLuint *) dest;
@@ -1124,7 +1138,8 @@ _mesa_pack_depth_span( struct gl_context *ctx, GLuint n, GLvoid *dest,
       }
       break;
    default:
-      _mesa_problem(ctx, "bad type in _mesa_pack_depth_span");
+      _mesa_problem(ctx, "bad type in _mesa_pack_depth_span (%s)",
+                    _mesa_enum_to_string(dstType));
    }
 
    free(depthCopy);

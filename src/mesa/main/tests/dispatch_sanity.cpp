@@ -1937,7 +1937,8 @@ const struct function gles11_functions_possible[] = {
    { "glGetLightxv", 11, -1 },
    { "glGetMaterialfv", 11, _gloffset_GetMaterialfv },
    { "glGetMaterialxv", 11, -1 },
-   { "glGetPointerv", 11, _gloffset_GetPointerv },
+   // We check for the aliased -KHR version in GLES 1.1
+// { "glGetPointerv", 11, _gloffset_GetPointerv },
    { "glGetRenderbufferParameterivOES", 11, -1 },
    { "glGetString", 11, _gloffset_GetString },
    { "glGetTexEnvfv", 11, _gloffset_GetTexEnvfv },
@@ -2039,6 +2040,20 @@ const struct function gles11_functions_possible[] = {
    { "glUnmapBufferOES", 11, -1 },
    { "glVertexPointer", 11, _gloffset_VertexPointer },
    { "glViewport", 11, _gloffset_Viewport },
+
+   /* GL_KHR_debug */
+   { "glPushDebugGroupKHR", 11, -1 },
+   { "glPopDebugGroupKHR", 11, -1 },
+   { "glDebugMessageCallbackKHR", 11, -1 },
+   { "glDebugMessageControlKHR", 11, -1 },
+   { "glDebugMessageInsertKHR", 11, -1 },
+   { "glGetDebugMessageLogKHR", 11, -1 },
+   { "glGetObjectLabelKHR", 11, -1 },
+   { "glGetObjectPtrLabelKHR", 11, -1 },
+   { "glGetPointervKHR", 11, _gloffset_GetPointerv },
+   { "glObjectLabelKHR", 11, -1 },
+   { "glObjectPtrLabelKHR", 11, -1 },
+
    { NULL, 0, -1 }
 };
 
@@ -2262,6 +2277,19 @@ const struct function gles2_functions_possible[] = {
    { "glEndPerfQueryINTEL", 20, -1 },
    { "glGetPerfQueryDataINTEL", 20, -1 },
 
+   /* GL_KHR_debug */
+   { "glPushDebugGroupKHR", 20, -1 },
+   { "glPopDebugGroupKHR", 20, -1 },
+   { "glDebugMessageCallbackKHR", 20, -1 },
+   { "glDebugMessageControlKHR", 20, -1 },
+   { "glDebugMessageInsertKHR", 20, -1 },
+   { "glGetDebugMessageLogKHR", 20, -1 },
+   { "glGetObjectLabelKHR", 20, -1 },
+   { "glGetObjectPtrLabelKHR", 20, -1 },
+   { "glGetPointervKHR", 20, -1 },
+   { "glObjectLabelKHR", 20, -1 },
+   { "glObjectPtrLabelKHR", 20, -1 },
+
    { NULL, 0, -1 }
 };
 
@@ -2396,6 +2424,11 @@ const struct function gles3_functions_possible[] = {
    { "glProgramUniform4uiEXT", 30, -1 },
    { "glProgramUniform4uivEXT", 30, -1 },
 
+   /* GL_EXT_blend_func_extended */
+   { "glBindFragDataLocationIndexedEXT", 30, -1 },
+   { "glGetFragDataIndexEXT", 30, -1 },
+   { "glBindFragDataLocationEXT", 30, -1 },
+
    { NULL, 0, -1 }
 };
 
@@ -2480,6 +2513,12 @@ const struct function gles31_functions_possible[] = {
 
    /* GL_OES_texture_storage_multisample_2d_array */
    { "glTexStorage3DMultisampleOES", 31, -1 },
+
+   /* GL_EXT_buffer_storage */
+   { "glBufferStorageEXT", 31, -1 },
+
+   /* GL_EXT_blend_func_extended */
+   { "glGetProgramResourceLocationIndexEXT", 31, -1 },
 
    { NULL, 0, -1 },
  };

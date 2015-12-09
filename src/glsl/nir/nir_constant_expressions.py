@@ -29,15 +29,8 @@ template = """\
 #include <math.h>
 #include "main/core.h"
 #include "util/rounding.h" /* for _mesa_roundeven */
+#include "util/half_float.h"
 #include "nir_constant_expressions.h"
-
-#if defined(__SUNPRO_CC)
-#include <ieeefp.h>
-static int isnormal(double x)
-{
-   return fpclass(x) == FP_NORMAL;
-}
-#endif
 
 /**
  * Evaluate one component of packSnorm4x8.
@@ -212,7 +205,7 @@ unpack_half_1x16(uint16_t u)
 }
 
 /* Some typed vector structures to make things like src0.y work */
-% for type in ["float", "int", "unsigned", "bool"]:
+% for type in ["float", "int", "uint", "bool"]:
 struct ${type}_vec {
    ${type} x;
    ${type} y;

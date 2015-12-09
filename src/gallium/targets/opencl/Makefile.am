@@ -15,13 +15,12 @@ lib@OPENCL_LIBNAME@_la_LDFLAGS += \
 endif
 
 lib@OPENCL_LIBNAME@_la_LIBADD = \
-	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader.la \
+	$(top_builddir)/src/gallium/auxiliary/pipe-loader/libpipe_loader_dynamic.la \
 	$(top_builddir)/src/gallium/state_trackers/clover/libclover.la \
 	$(top_builddir)/src/gallium/auxiliary/libgallium.la \
 	$(top_builddir)/src/util/libmesautil.la \
-	$(GALLIUM_PIPE_LOADER_WINSYS_LIBS) \
 	$(ELF_LIB) \
-	-ldl \
+	$(DLOPEN_LIBS) \
 	-lclangCodeGen \
 	-lclangFrontendTool \
 	-lclangFrontend \
@@ -35,7 +34,8 @@ lib@OPENCL_LIBNAME@_la_LIBADD = \
 	-lclangEdit \
 	-lclangLex \
 	-lclangBasic \
-	$(LLVM_LIBS)
+	$(LLVM_LIBS) \
+	$(PTHREAD_LIBS)
 
 nodist_EXTRA_lib@OPENCL_LIBNAME@_la_SOURCES = dummy.cpp
 lib@OPENCL_LIBNAME@_la_SOURCES =

@@ -155,6 +155,9 @@ struct svga_shader_variant
                                 *  applied to any of the varyings.
                                 */
 
+   /** Is the color output just a constant value? (fragment shader only) */
+   boolean constant_color_output;
+
    /** For FS-based polygon stipple */
    unsigned pstipple_sampler_unit;
 
@@ -272,6 +275,9 @@ enum pipe_error
 svga_set_shader(struct svga_context *svga,
                 SVGA3dShaderType type,
                 struct svga_shader_variant *variant);
+
+struct svga_shader_variant *
+svga_new_shader_variant(struct svga_context *svga);
 
 enum pipe_error
 svga_destroy_shader_variant(struct svga_context *svga,

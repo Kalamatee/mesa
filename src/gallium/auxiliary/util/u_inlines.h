@@ -289,7 +289,7 @@ pipe_buffer_map_range(struct pipe_context *pipe,
    u_box_1d(offset, length, &box);
 
    map = pipe->transfer_map(pipe, buffer, 0, access, &box, transfer);
-   if (map == NULL) {
+   if (!map) {
       return NULL;
    }
 
@@ -648,6 +648,28 @@ util_max_layer(const struct pipe_resource *r, unsigned level)
       return r->array_size - 1;
    default:
       return 0;
+   }
+}
+
+static inline unsigned
+util_pipe_shader_from_tgsi_processor(unsigned processor)
+{
+   switch (processor) {
+   case TGSI_PROCESSOR_VERTEX:
+      return PIPE_SHADER_VERTEX;
+   case TGSI_PROCESSOR_TESS_CTRL:
+      return PIPE_SHADER_TESS_CTRL;
+   case TGSI_PROCESSOR_TESS_EVAL:
+      return PIPE_SHADER_TESS_EVAL;
+   case TGSI_PROCESSOR_GEOMETRY:
+      return PIPE_SHADER_GEOMETRY;
+   case TGSI_PROCESSOR_FRAGMENT:
+      return PIPE_SHADER_FRAGMENT;
+   case TGSI_PROCESSOR_COMPUTE:
+      return PIPE_SHADER_COMPUTE;
+   default:
+      assert(0);
+      return PIPE_SHADER_VERTEX;
    }
 }
 

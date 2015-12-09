@@ -380,6 +380,10 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
    case PIPE_CAP_TGSI_TXQS:
+   case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
+   case PIPE_CAP_SHAREABLE_SHADERS:
+   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+   case PIPE_CAP_CLEAR_TEXTURE:
       return 0;
    }
 
@@ -454,6 +458,8 @@ vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
       case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
          return 0;
+      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+         return 32;
       }
       /* If we get here, we failed to handle a cap above */
       debug_printf("Unexpected fragment shader query %u\n", param);
@@ -510,6 +516,8 @@ vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
       case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
          return 0;
+      case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+         return 32;
       }
       /* If we get here, we failed to handle a cap above */
       debug_printf("Unexpected vertex shader query %u\n", param);
@@ -599,6 +607,8 @@ vgpu10_get_shader_param(struct pipe_screen *screen, unsigned shader,
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return 0;
+   case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+      return 32;
    default:
       debug_printf("Unexpected vgpu10 shader query %u\n", param);
       return 0;
@@ -771,9 +781,24 @@ svga_get_driver_query_info(struct pipe_screen *screen,
                            struct pipe_driver_query_info *info)
 {
    static const struct pipe_driver_query_info queries[] = {
-      {"draw-calls", SVGA_QUERY_DRAW_CALLS, {0}},
-      {"fallbacks", SVGA_QUERY_FALLBACKS, {0}},
-      {"memory-used", SVGA_QUERY_MEMORY_USED, {0}, PIPE_DRIVER_QUERY_TYPE_BYTES}
+      /* per-frame counters */
+      {"num-draw-calls", SVGA_QUERY_NUM_DRAW_CALLS, {0}},
+      {"num-fallbacks", SVGA_QUERY_NUM_FALLBACKS, {0}},
+      {"num-flushes", SVGA_QUERY_NUM_FLUSHES, {0}},
+      {"num-validations", SVGA_QUERY_NUM_VALIDATIONS, {0}},
+      {"map-buffer-time", SVGA_QUERY_MAP_BUFFER_TIME, {0},
+       PIPE_DRIVER_QUERY_TYPE_MICROSECONDS},
+      {"num-resources-mapped", SVGA_QUERY_NUM_RESOURCES_MAPPED, {0}},
+      {"num-bytes-uploaded", SVGA_QUERY_NUM_BYTES_UPLOADED, {0},
+       PIPE_DRIVER_QUERY_TYPE_BYTES, PIPE_DRIVER_QUERY_RESULT_TYPE_AVERAGE},
+
+      /* running total counters */
+      {"memory-used", SVGA_QUERY_MEMORY_USED, {0},
+       PIPE_DRIVER_QUERY_TYPE_BYTES},
+      {"num-shaders", SVGA_QUERY_NUM_SHADERS, {0}},
+      {"num-resources", SVGA_QUERY_NUM_RESOURCES, {0}},
+      {"num-state-objects", SVGA_QUERY_NUM_STATE_OBJECTS, {0}},
+      {"num-surface-views", SVGA_QUERY_NUM_SURFACE_VIEWS, {0}},
    };
 
    if (!info)

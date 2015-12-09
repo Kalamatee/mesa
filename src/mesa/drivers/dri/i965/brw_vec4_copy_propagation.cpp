@@ -31,9 +31,7 @@
 
 #include "brw_vec4.h"
 #include "brw_cfg.h"
-extern "C" {
-#include "main/macros.h"
-}
+#include "brw_eu.h"
 
 namespace brw {
 
@@ -47,7 +45,7 @@ is_direct_copy(vec4_instruction *inst)
 {
    return (inst->opcode == BRW_OPCODE_MOV &&
 	   !inst->predicate &&
-	   inst->dst.file == GRF &&
+	   inst->dst.file == VGRF &&
 	   !inst->dst.reladdr &&
 	   !inst->src[0].reladdr &&
 	   (inst->dst.type == inst->src[0].type ||
@@ -70,8 +68,8 @@ is_channel_updated(vec4_instruction *inst, src_reg *values[4], int ch)
    const src_reg *src = values[ch];
 
    /* consider GRF only */
-   assert(inst->dst.file == GRF);
-   if (!src || src->file != GRF)
+   assert(inst->dst.file == VGRF);
+   if (!src || src->file != VGRF)
       return false;
 
    return (src->in_range(inst->dst, inst->regs_written) &&
@@ -134,21 +132,20 @@ try_constant_propagate(const struct brw_device_info *devinfo,
 
    if (inst->src[arg].abs) {
       if ((devinfo->gen >= 8 && is_logic_op(inst->opcode)) ||
-          !brw_abs_immediate(value.type, &value.fixed_hw_reg)) {
+          !brw_abs_immediate(value.type, &value.as_brw_reg())) {
          return false;
       }
    }
 
    if (inst->src[arg].negate) {
       if ((devinfo->gen >= 8 && is_logic_op(inst->opcode)) ||
-          !brw_negate_immediate(value.type, &value.fixed_hw_reg)) {
+          !brw_negate_immediate(value.type, &value.as_brw_reg())) {
          return false;
       }
    }
 
    if (value.type == BRW_REGISTER_TYPE_VF)
-      value.fixed_hw_reg.dw1.ud = swizzle_vf_imm(value.fixed_hw_reg.dw1.ud,
-                                                 inst->src[arg].swizzle);
+      value.ud = swizzle_vf_imm(value.ud, inst->src[arg].swizzle);
 
    switch (inst->opcode) {
    case BRW_OPCODE_MOV:
@@ -256,18 +253,6 @@ try_constant_propagate(const struct brw_device_info *devinfo,
 }
 
 static bool
-can_change_source_types(vec4_instruction *inst)
-{
-   return inst->dst.type == inst->src[0].type &&
-      !inst->src[0].abs && !inst->src[0].negate && !inst->saturate &&
-      (inst->opcode == BRW_OPCODE_MOV ||
-       (inst->opcode == BRW_OPCODE_SEL &&
-        inst->dst.type == inst->src[1].type &&
-        inst->predicate != BRW_PREDICATE_NONE &&
-        !inst->src[1].abs && !inst->src[1].negate));
-}
-
-static bool
 try_copy_propagate(const struct brw_device_info *devinfo,
                    vec4_instruction *inst,
                    int arg, struct copy_entry *entry)
@@ -284,7 +269,7 @@ try_copy_propagate(const struct brw_device_info *devinfo,
    for (int i = 1; i < 4; i++) {
       /* This is equals() except we don't care about the swizzle. */
       if (value.file != entry->value[i]->file ||
-	  value.reg != entry->value[i]->reg ||
+          value.nr != entry->value[i]->nr ||
 	  value.reg_offset != entry->value[i]->reg_offset ||
 	  value.type != entry->value[i]->type ||
 	  value.negate != entry->value[i]->negate ||
@@ -305,7 +290,7 @@ try_copy_propagate(const struct brw_device_info *devinfo,
 
    /* Check that we can propagate that value */
    if (value.file != UNIFORM &&
-       value.file != GRF &&
+       value.file != VGRF &&
        value.file != ATTR)
       return false;
 
@@ -325,7 +310,7 @@ try_copy_propagate(const struct brw_device_info *devinfo,
 
    if (has_source_modifiers &&
        value.type != inst->src[arg].type &&
-       !can_change_source_types(inst))
+       !inst->can_change_types())
       return false;
 
    if (has_source_modifiers &&
@@ -371,8 +356,8 @@ try_copy_propagate(const struct brw_device_info *devinfo,
              inst->src[0].type != BRW_REGISTER_TYPE_F ||
              inst->src[1].file != IMM ||
              inst->src[1].type != BRW_REGISTER_TYPE_F ||
-             inst->src[1].fixed_hw_reg.dw1.f < 0.0 ||
-             inst->src[1].fixed_hw_reg.dw1.f > 1.0) {
+             inst->src[1].f < 0.0 ||
+             inst->src[1].f > 1.0) {
             return false;
          }
          if (!inst->saturate)
@@ -394,7 +379,7 @@ try_copy_propagate(const struct brw_device_info *devinfo,
    value.swizzle = composed_swizzle;
    if (has_source_modifiers &&
        value.type != inst->src[arg].type) {
-      assert(can_change_source_types(inst));
+      assert(inst->can_change_types());
       for (int i = 0; i < 3; i++) {
          inst->src[i].type = value.type;
       }
@@ -429,14 +414,14 @@ vec4_visitor::opt_copy_propagation(bool do_constant_prop)
       }
 
       /* For each source arg, see if each component comes from a copy
-       * from the same type file (IMM, GRF, UNIFORM), and try
+       * from the same type file (IMM, VGRF, UNIFORM), and try
        * optimizing out access to the copy result
        */
       for (int i = 2; i >= 0; i--) {
 	 /* Copied values end up in GRFs, and we don't track reladdr
 	  * accesses.
 	  */
-	 if (inst->src[i].file != GRF ||
+	 if (inst->src[i].file != VGRF ||
 	     inst->src[i].reladdr)
 	    continue;
 
@@ -444,7 +429,7 @@ vec4_visitor::opt_copy_propagation(bool do_constant_prop)
          if (inst->regs_read(i) != 1)
             continue;
 
-	 int reg = (alloc.offsets[inst->src[i].reg] +
+         int reg = (alloc.offsets[inst->src[i].nr] +
 		    inst->src[i].reg_offset);
 
 	 /* Find the regs that each swizzle component came from.
@@ -485,9 +470,9 @@ vec4_visitor::opt_copy_propagation(bool do_constant_prop)
       }
 
       /* Track available source registers. */
-      if (inst->dst.file == GRF) {
+      if (inst->dst.file == VGRF) {
 	 const int reg =
-	    alloc.offsets[inst->dst.reg] + inst->dst.reg_offset;
+            alloc.offsets[inst->dst.nr] + inst->dst.reg_offset;
 
 	 /* Update our destination's current channel values.  For a direct copy,
 	  * the value is the newly propagated source.  Otherwise, we don't know

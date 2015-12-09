@@ -202,6 +202,9 @@ struct svga_shader_emitter_v10
    /* user clip plane constant slot indexes */
    unsigned clip_plane_const[PIPE_MAX_CLIP_PLANES];
 
+   unsigned num_output_writes;
+   boolean constant_color_output;
+
    boolean uses_flat_interp;
 
    /* For all shaders: const reg index for RECT coord scaling */
@@ -237,7 +240,7 @@ expand(struct svga_shader_emitter_v10 *emit)
    else
       new_buf = NULL;
 
-   if (new_buf == NULL) {
+   if (!new_buf) {
       emit->ptr = err_buf;
       emit->buf = err_buf;
       emit->size = sizeof(err_buf);
@@ -913,6 +916,8 @@ emit_dst_register(struct svga_shader_emitter_v10 *emit,
              */
             assert(sem_name == TGSI_SEMANTIC_COLOR);
             index = emit->info.output_semantic_index[index];
+
+            emit->num_output_writes++;
          }
       }
    }
@@ -2667,6 +2672,7 @@ emit_temporaries_declaration(struct svga_shader_emitter_v10 *emit)
    }
    else if (emit->unit == PIPE_SHADER_FRAGMENT) {
       if (emit->key.fs.alpha_func != SVGA3D_CMP_ALWAYS ||
+          emit->key.fs.white_fragments ||
           emit->key.fs.write_color0_to_n_cbufs > 1) {
          /* Allocate a temp to hold the output color */
          emit->fs.color_tmp_index = total_temps;
@@ -3097,7 +3103,7 @@ emit_clip_distance_instructions(struct svga_shader_emitter_v10 *emit)
    unsigned i;
    unsigned clip_plane_enable = emit->key.clip_plane_enable;
    unsigned clip_dist_tmp_index = emit->clip_dist_tmp_index;
-   unsigned num_written_clipdist = emit->info.num_written_clipdistance;
+   int num_written_clipdist = emit->info.num_written_clipdistance;
 
    assert(emit->clip_dist_out_index != INVALID_INDEX);
    assert(emit->clip_dist_tmp_index != INVALID_INDEX);
@@ -3109,7 +3115,7 @@ emit_clip_distance_instructions(struct svga_shader_emitter_v10 *emit)
     */
    emit->clip_dist_tmp_index = INVALID_INDEX;
 
-   for (i = 0; i < 2 && num_written_clipdist; i++, num_written_clipdist-=4) {
+   for (i = 0; i < 2 && num_written_clipdist > 0; i++, num_written_clipdist-=4) {
 
       tmp_clip_dist_src = make_src_temp_reg(clip_dist_tmp_index + i);
 
@@ -5573,6 +5579,29 @@ emit_simple(struct svga_shader_emitter_v10 *emit,
 
 
 /**
+ * We only special case the MOV instruction to try to detect constant
+ * color writes in the fragment shader.
+ */
+static boolean
+emit_mov(struct svga_shader_emitter_v10 *emit,
+         const struct tgsi_full_instruction *inst)
+{
+   const struct tgsi_full_src_register *src = &inst->Src[0];
+   const struct tgsi_full_dst_register *dst = &inst->Dst[0];
+
+   if (emit->unit == PIPE_SHADER_FRAGMENT &&
+       dst->Register.File == TGSI_FILE_OUTPUT &&
+       dst->Register.Index == 0 &&
+       src->Register.File == TGSI_FILE_CONSTANT &&
+       !src->Register.Indirect) {
+      emit->constant_color_output = TRUE;
+   }
+
+   return emit_simple(emit, inst);
+}
+
+
+/**
  * Emit a simple VGPU10 instruction which writes to multiple dest registers,
  * where TGSI only uses one dest register.
  */
@@ -5652,7 +5681,6 @@ emit_vgpu10_instruction(struct svga_shader_emitter_v10 *emit,
    case TGSI_OPCODE_MAD:
    case TGSI_OPCODE_MAX:
    case TGSI_OPCODE_MIN:
-   case TGSI_OPCODE_MOV:
    case TGSI_OPCODE_MUL:
    case TGSI_OPCODE_NOP:
    case TGSI_OPCODE_NOT:
@@ -5677,7 +5705,8 @@ emit_vgpu10_instruction(struct svga_shader_emitter_v10 *emit,
       /* simple instructions */
       return emit_simple(emit, inst);
 
-
+   case TGSI_OPCODE_MOV:
+      return emit_mov(emit, inst);
    case TGSI_OPCODE_EMIT:
       return emit_vertex(emit, inst);
    case TGSI_OPCODE_ENDPRIM:
@@ -6341,8 +6370,11 @@ emit_alpha_test_instructions(struct svga_shader_emitter_v10 *emit,
    emit_src_register(emit, &tmp_src_x);
    end_emit_instruction(emit);
 
-   /* If we don't need to broadcast the color below, emit final color here */
-   if (emit->key.fs.write_color0_to_n_cbufs <= 1) {
+   /* If we don't need to broadcast the color below or set fragments to
+    * white, emit final color here.
+    */
+   if (emit->key.fs.write_color0_to_n_cbufs <= 1 &&
+       !emit->key.fs.white_fragments) {
       /* MOV output.color, tempcolor */
       emit_instruction_op1(emit, VGPU10_OPCODE_MOV, &color_dst,
                            &color_src, FALSE);     /* XXX saturate? */
@@ -6353,9 +6385,27 @@ emit_alpha_test_instructions(struct svga_shader_emitter_v10 *emit,
 
 
 /**
+ * When we need to emit white for all fragments (for emulating XOR logicop
+ * mode), this function copies white into the temporary color output register.
+ */
+static void
+emit_set_color_white(struct svga_shader_emitter_v10 *emit,
+                     unsigned fs_color_tmp_index)
+{
+   struct tgsi_full_dst_register color_dst =
+      make_dst_temp_reg(fs_color_tmp_index);
+   struct tgsi_full_src_register white =
+      make_immediate_reg_float(emit, 1.0f);
+
+   emit_instruction_op1(emit, VGPU10_OPCODE_MOV, &color_dst, &white, FALSE);
+}
+
+
+/**
  * Emit instructions for writing a single color output to multiple
  * color buffers.
- * This is used when the TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS
+ * This is used when the TGSI_PROPERTY_FS_COLOR0_WRITES_ALL_CBUFS (or
+ * when key.fs.white_fragments is true).
  * property is set and the number of render targets is greater than one.
  * \param fs_color_tmp_index  index of the temp register that holds the
  *                            color to broadcast.
@@ -6370,7 +6420,6 @@ emit_broadcast_color_instructions(struct svga_shader_emitter_v10 *emit,
       make_src_temp_reg(fs_color_tmp_index);
 
    assert(emit->unit == PIPE_SHADER_FRAGMENT);
-   assert(n > 1);
 
    for (i = 0; i < n; i++) {
       unsigned output_reg = emit->fs.color_out_index[i];
@@ -6412,7 +6461,11 @@ emit_post_helpers(struct svga_shader_emitter_v10 *emit)
       if (emit->key.fs.alpha_func != SVGA3D_CMP_ALWAYS) {
          emit_alpha_test_instructions(emit, fs_color_tmp_index);
       }
-      if (emit->key.fs.write_color0_to_n_cbufs > 1) {
+      if (emit->key.fs.white_fragments) {
+         emit_set_color_white(emit, fs_color_tmp_index);
+      }
+      if (emit->key.fs.write_color0_to_n_cbufs > 1 ||
+          emit->key.fs.white_fragments) {
          emit_broadcast_color_instructions(emit, fs_color_tmp_index);
       }
    }
@@ -6735,7 +6788,7 @@ svga_tgsi_vgpu10_translate(struct svga_context *svga,
    /*
     * Create, initialize the 'variant' object.
     */
-   variant = CALLOC_STRUCT(svga_shader_variant);
+   variant = svga_new_shader_variant(svga);
    if (!variant)
       goto cleanup;
 
@@ -6761,6 +6814,13 @@ svga_tgsi_vgpu10_translate(struct svga_context *svga,
    }
 
    variant->pstipple_sampler_unit = emit->fs.pstipple_sampler_unit;
+
+   /* If there was exactly one write to a fragment shader output register
+    * and it came from a constant buffer, we know all fragments will have
+    * the same color (except for blending).
+    */
+   variant->constant_color_output =
+      emit->constant_color_output && emit->num_output_writes == 1;
 
    /** keep track in the variant if flat interpolation is used
     *  for any of the varyings.

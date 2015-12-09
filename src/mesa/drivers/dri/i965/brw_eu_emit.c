@@ -92,7 +92,7 @@ gen7_convert_mrf_to_grf(struct brw_codegen *p, struct brw_reg *reg)
  */
 unsigned
 brw_reg_type_to_hw_type(const struct brw_device_info *devinfo,
-                        enum brw_reg_type type, unsigned file)
+                        enum brw_reg_type type, enum brw_reg_file file)
 {
    if (file == BRW_IMMEDIATE_VALUE) {
       static const int imm_hw_types[] = {
@@ -147,7 +147,7 @@ brw_set_dest(struct brw_codegen *p, brw_inst *inst, struct brw_reg dest)
    const struct brw_device_info *devinfo = p->devinfo;
 
    if (dest.file == BRW_MESSAGE_REGISTER_FILE)
-      assert((dest.nr & ~(1 << 7)) < BRW_MAX_MRF(devinfo->gen));
+      assert((dest.nr & ~BRW_MRF_COMPR4) < BRW_MAX_MRF(devinfo->gen));
    else if (dest.file != BRW_ARCHITECTURE_REGISTER_FILE)
       assert(dest.nr < 128);
 
@@ -169,10 +169,10 @@ brw_set_dest(struct brw_codegen *p, brw_inst *inst, struct brw_reg dest)
          brw_inst_set_dst_hstride(devinfo, inst, dest.hstride);
       } else {
          brw_inst_set_dst_da16_subreg_nr(devinfo, inst, dest.subnr / 16);
-         brw_inst_set_da16_writemask(devinfo, inst, dest.dw1.bits.writemask);
+         brw_inst_set_da16_writemask(devinfo, inst, dest.writemask);
          if (dest.file == BRW_GENERAL_REGISTER_FILE ||
              dest.file == BRW_MESSAGE_REGISTER_FILE) {
-            assert(dest.dw1.bits.writemask != 0);
+            assert(dest.writemask != 0);
          }
 	 /* From the Ivybridge PRM, Vol 4, Part 3, Section 5.2.4.1:
 	  *    Although Dst.HorzStride is a don't care for Align16, HW needs
@@ -187,13 +187,13 @@ brw_set_dest(struct brw_codegen *p, brw_inst *inst, struct brw_reg dest)
        */
       if (brw_inst_access_mode(devinfo, inst) == BRW_ALIGN_1) {
          brw_inst_set_dst_ia1_addr_imm(devinfo, inst,
-                                       dest.dw1.bits.indirect_offset);
+                                       dest.indirect_offset);
 	 if (dest.hstride == BRW_HORIZONTAL_STRIDE_0)
 	    dest.hstride = BRW_HORIZONTAL_STRIDE_1;
          brw_inst_set_dst_hstride(devinfo, inst, dest.hstride);
       } else {
          brw_inst_set_dst_ia16_addr_imm(devinfo, inst,
-                                        dest.dw1.bits.indirect_offset);
+                                        dest.indirect_offset);
 	 /* even ignored in da16, still need to set as '01' */
          brw_inst_set_dst_hstride(devinfo, inst, 1);
       }
@@ -243,7 +243,7 @@ validate_reg(const struct brw_device_info *devinfo,
     */
    if (reg.file == BRW_ARCHITECTURE_REGISTER_FILE &&
        reg.nr == BRW_ARF_ACCUMULATOR)
-      assert(reg.dw1.bits.swizzle == BRW_SWIZZLE_XYZW);
+      assert(reg.swizzle == BRW_SWIZZLE_XYZW);
 
    assert(reg.hstride >= 0 && reg.hstride < ARRAY_SIZE(hstride_for_reg));
    hstride = hstride_for_reg[reg.hstride];
@@ -311,7 +311,7 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
    const struct brw_device_info *devinfo = p->devinfo;
 
    if (reg.file == BRW_MESSAGE_REGISTER_FILE)
-      assert((reg.nr & ~(1 << 7)) < BRW_MAX_MRF(devinfo->gen));
+      assert((reg.nr & ~BRW_MRF_COMPR4) < BRW_MAX_MRF(devinfo->gen));
    else if (reg.file != BRW_ARCHITECTURE_REGISTER_FILE)
       assert(reg.nr < 128);
 
@@ -338,7 +338,7 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
    brw_inst_set_src0_address_mode(devinfo, inst, reg.address_mode);
 
    if (reg.file == BRW_IMMEDIATE_VALUE) {
-      brw_inst_set_imm_ud(devinfo, inst, reg.dw1.ud);
+      brw_inst_set_imm_ud(devinfo, inst, reg.ud);
 
       /* The Bspec's section titled "Non-present Operands" claims that if src0
        * is an immediate that src1's type must be the same as that of src0.
@@ -408,9 +408,9 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
          brw_inst_set_src0_ia_subreg_nr(devinfo, inst, reg.subnr);
 
          if (brw_inst_access_mode(devinfo, inst) == BRW_ALIGN_1) {
-            brw_inst_set_src0_ia1_addr_imm(devinfo, inst, reg.dw1.bits.indirect_offset);
+            brw_inst_set_src0_ia1_addr_imm(devinfo, inst, reg.indirect_offset);
 	 } else {
-            brw_inst_set_src0_ia_subreg_nr(devinfo, inst, reg.dw1.bits.indirect_offset);
+            brw_inst_set_src0_ia16_addr_imm(devinfo, inst, reg.indirect_offset);
 	 }
       }
 
@@ -427,13 +427,13 @@ brw_set_src0(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
 	 }
       } else {
          brw_inst_set_src0_da16_swiz_x(devinfo, inst,
-            BRW_GET_SWZ(reg.dw1.bits.swizzle, BRW_CHANNEL_X));
+            BRW_GET_SWZ(reg.swizzle, BRW_CHANNEL_X));
          brw_inst_set_src0_da16_swiz_y(devinfo, inst,
-            BRW_GET_SWZ(reg.dw1.bits.swizzle, BRW_CHANNEL_Y));
+            BRW_GET_SWZ(reg.swizzle, BRW_CHANNEL_Y));
          brw_inst_set_src0_da16_swiz_z(devinfo, inst,
-            BRW_GET_SWZ(reg.dw1.bits.swizzle, BRW_CHANNEL_Z));
+            BRW_GET_SWZ(reg.swizzle, BRW_CHANNEL_Z));
          brw_inst_set_src0_da16_swiz_w(devinfo, inst,
-            BRW_GET_SWZ(reg.dw1.bits.swizzle, BRW_CHANNEL_W));
+            BRW_GET_SWZ(reg.swizzle, BRW_CHANNEL_W));
 
 	 /* This is an oddity of the fact we're using the same
 	  * descriptions for registers in align_16 as align_1:
@@ -479,7 +479,7 @@ brw_set_src1(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
    assert(brw_inst_src0_reg_file(devinfo, inst) != BRW_IMMEDIATE_VALUE);
 
    if (reg.file == BRW_IMMEDIATE_VALUE) {
-      brw_inst_set_imm_ud(devinfo, inst, reg.dw1.ud);
+      brw_inst_set_imm_ud(devinfo, inst, reg.ud);
    } else {
       /* This is a hardware restriction, which may or may not be lifted
        * in the future:
@@ -507,13 +507,13 @@ brw_set_src1(struct brw_codegen *p, brw_inst *inst, struct brw_reg reg)
 	 }
       } else {
          brw_inst_set_src1_da16_swiz_x(devinfo, inst,
-            BRW_GET_SWZ(reg.dw1.bits.swizzle, BRW_CHANNEL_X));
+            BRW_GET_SWZ(reg.swizzle, BRW_CHANNEL_X));
          brw_inst_set_src1_da16_swiz_y(devinfo, inst,
-            BRW_GET_SWZ(reg.dw1.bits.swizzle, BRW_CHANNEL_Y));
+            BRW_GET_SWZ(reg.swizzle, BRW_CHANNEL_Y));
          brw_inst_set_src1_da16_swiz_z(devinfo, inst,
-            BRW_GET_SWZ(reg.dw1.bits.swizzle, BRW_CHANNEL_Z));
+            BRW_GET_SWZ(reg.swizzle, BRW_CHANNEL_Z));
          brw_inst_set_src1_da16_swiz_w(devinfo, inst,
-            BRW_GET_SWZ(reg.dw1.bits.swizzle, BRW_CHANNEL_W));
+            BRW_GET_SWZ(reg.swizzle, BRW_CHANNEL_W));
 
 	 /* This is an oddity of the fact we're using the same
 	  * descriptions for registers in align_16 as align_1:
@@ -848,8 +848,8 @@ static int
 get_3src_subreg_nr(struct brw_reg reg)
 {
    if (reg.vstride == BRW_VERTICAL_STRIDE_0) {
-      assert(brw_is_single_value_swizzle(reg.dw1.bits.swizzle));
-      return reg.subnr / 4 + BRW_GET_SWZ(reg.dw1.bits.swizzle, 0);
+      assert(brw_is_single_value_swizzle(reg.swizzle));
+      return reg.subnr / 4 + BRW_GET_SWZ(reg.swizzle, 0);
    } else {
       return reg.subnr / 4;
    }
@@ -879,12 +879,12 @@ brw_alu3(struct brw_codegen *p, unsigned opcode, struct brw_reg dest,
    }
    brw_inst_set_3src_dst_reg_nr(devinfo, inst, dest.nr);
    brw_inst_set_3src_dst_subreg_nr(devinfo, inst, dest.subnr / 16);
-   brw_inst_set_3src_dst_writemask(devinfo, inst, dest.dw1.bits.writemask);
+   brw_inst_set_3src_dst_writemask(devinfo, inst, dest.writemask);
 
    assert(src0.file == BRW_GENERAL_REGISTER_FILE);
    assert(src0.address_mode == BRW_ADDRESS_DIRECT);
    assert(src0.nr < 128);
-   brw_inst_set_3src_src0_swizzle(devinfo, inst, src0.dw1.bits.swizzle);
+   brw_inst_set_3src_src0_swizzle(devinfo, inst, src0.swizzle);
    brw_inst_set_3src_src0_subreg_nr(devinfo, inst, get_3src_subreg_nr(src0));
    brw_inst_set_3src_src0_reg_nr(devinfo, inst, src0.nr);
    brw_inst_set_3src_src0_abs(devinfo, inst, src0.abs);
@@ -895,7 +895,7 @@ brw_alu3(struct brw_codegen *p, unsigned opcode, struct brw_reg dest,
    assert(src1.file == BRW_GENERAL_REGISTER_FILE);
    assert(src1.address_mode == BRW_ADDRESS_DIRECT);
    assert(src1.nr < 128);
-   brw_inst_set_3src_src1_swizzle(devinfo, inst, src1.dw1.bits.swizzle);
+   brw_inst_set_3src_src1_swizzle(devinfo, inst, src1.swizzle);
    brw_inst_set_3src_src1_subreg_nr(devinfo, inst, get_3src_subreg_nr(src1));
    brw_inst_set_3src_src1_reg_nr(devinfo, inst, src1.nr);
    brw_inst_set_3src_src1_abs(devinfo, inst, src1.abs);
@@ -906,7 +906,7 @@ brw_alu3(struct brw_codegen *p, unsigned opcode, struct brw_reg dest,
    assert(src2.file == BRW_GENERAL_REGISTER_FILE);
    assert(src2.address_mode == BRW_ADDRESS_DIRECT);
    assert(src2.nr < 128);
-   brw_inst_set_3src_src2_swizzle(devinfo, inst, src2.dw1.bits.swizzle);
+   brw_inst_set_3src_src2_swizzle(devinfo, inst, src2.swizzle);
    brw_inst_set_3src_src2_subreg_nr(devinfo, inst, get_3src_subreg_nr(src2));
    brw_inst_set_3src_src2_reg_nr(devinfo, inst, src2.nr);
    brw_inst_set_3src_src2_abs(devinfo, inst, src2.abs);
@@ -1997,6 +1997,19 @@ void gen6_math(struct brw_codegen *p,
    brw_set_src1(p, insn, src1);
 }
 
+/**
+ * Return the right surface index to access the thread scratch space using
+ * stateless dataport messages.
+ */
+unsigned
+brw_scratch_surface_idx(const struct brw_codegen *p)
+{
+   /* The scratch space is thread-local so IA coherency is unnecessary. */
+   if (p->devinfo->gen >= 8)
+      return GEN8_BTI_STATELESS_NON_COHERENT;
+   else
+      return BRW_BTI_STATELESS;
+}
 
 /**
  * Write a block of OWORDs (half a GRF each) from the scratch buffer,
@@ -2097,7 +2110,7 @@ void brw_oword_block_write_scratch(struct brw_codegen *p,
 
       brw_set_dp_write_message(p,
 			       insn,
-			       255, /* binding table index (255=stateless) */
+                               brw_scratch_surface_idx(p),
 			       msg_control,
 			       msg_type,
 			       mlen,
@@ -2183,7 +2196,7 @@ brw_oword_block_read_scratch(struct brw_codegen *p,
 
       brw_set_dp_read_message(p,
 			      insn,
-			      255, /* binding table index (255=stateless) */
+                              brw_scratch_surface_idx(p),
 			      msg_control,
 			      BRW_DATAPORT_READ_MESSAGE_OWORD_BLOCK_READ, /* msg_type */
 			      BRW_DATAPORT_READ_TARGET_RENDER_CACHE,
@@ -2426,7 +2439,7 @@ void brw_adjust_sampler_state_pointer(struct brw_codegen *p,
 
    if (sampler_index.file == BRW_IMMEDIATE_VALUE) {
       const int sampler_state_size = 16; /* 16 bytes */
-      uint32_t sampler = sampler_index.dw1.ud;
+      uint32_t sampler = sampler_index.ud;
 
       if (sampler >= 16) {
          assert(devinfo->is_haswell || devinfo->gen >= 8);
@@ -2511,12 +2524,20 @@ brw_send_indirect_message(struct brw_codegen *p,
                           struct brw_reg desc)
 {
    const struct brw_device_info *devinfo = p->devinfo;
-   struct brw_inst *send, *setup;
+   struct brw_inst *send;
+   int setup;
 
    assert(desc.type == BRW_REGISTER_TYPE_UD);
 
+   /* We hold on to the setup instruction (the SEND in the direct case, the OR
+    * in the indirect case) by its index in the instruction store.  The
+    * pointer returned by next_insn() may become invalid if emitting the SEND
+    * in the indirect case reallocs the store.
+    */
+
    if (desc.file == BRW_IMMEDIATE_VALUE) {
-      setup = send = next_insn(p, BRW_OPCODE_SEND);
+      setup = p->nr_insn;
+      send = next_insn(p, BRW_OPCODE_SEND);
       brw_set_src1(p, send, desc);
 
    } else {
@@ -2531,7 +2552,8 @@ brw_send_indirect_message(struct brw_codegen *p,
        * caller can specify additional descriptor bits with the usual
        * brw_set_*_message() helper functions.
        */
-      setup = brw_OR(p, addr, desc, brw_imm_ud(0));
+      setup = p->nr_insn;
+      brw_OR(p, addr, desc, brw_imm_ud(0));
 
       brw_pop_insn_state(p);
 
@@ -2543,7 +2565,7 @@ brw_send_indirect_message(struct brw_codegen *p,
    brw_set_src0(p, send, retype(payload, BRW_REGISTER_TYPE_UD));
    brw_inst_set_sfid(devinfo, send, sfid);
 
-   return setup;
+   return &p->store[setup];
 }
 
 static struct brw_inst *
@@ -2572,7 +2594,7 @@ brw_send_indirect_surface_message(struct brw_codegen *p,
        */
       insn = brw_AND(p, addr,
                      suboffset(vec1(retype(surface, BRW_REGISTER_TYPE_UD)),
-                               BRW_GET_SWZ(surface.dw1.bits.swizzle, 0)),
+                               BRW_GET_SWZ(surface.swizzle, 0)),
                      brw_imm_ud(0xff));
 
       brw_pop_insn_state(p);
@@ -2595,17 +2617,27 @@ brw_find_next_block_end(struct brw_codegen *p, int start_offset)
    void *store = p->store;
    const struct brw_device_info *devinfo = p->devinfo;
 
+   int depth = 0;
+
    for (offset = next_offset(devinfo, store, start_offset);
         offset < p->next_insn_offset;
         offset = next_offset(devinfo, store, offset)) {
       brw_inst *insn = store + offset;
 
       switch (brw_inst_opcode(devinfo, insn)) {
+      case BRW_OPCODE_IF:
+         depth++;
+         break;
       case BRW_OPCODE_ENDIF:
+         if (depth == 0)
+            return offset;
+         depth--;
+         break;
       case BRW_OPCODE_ELSE:
       case BRW_OPCODE_WHILE:
       case BRW_OPCODE_HALT:
-	 return offset;
+         if (depth == 0)
+            return offset;
       }
    }
 
@@ -2906,11 +2938,10 @@ brw_untyped_surface_read(struct brw_codegen *p,
    const unsigned sfid = (devinfo->gen >= 8 || devinfo->is_haswell ?
                           HSW_SFID_DATAPORT_DATA_CACHE_1 :
                           GEN7_SFID_DATAPORT_DATA_CACHE);
-   const bool align1 = (brw_inst_access_mode(devinfo, p->current) == BRW_ALIGN_1);
    struct brw_inst *insn = brw_send_indirect_surface_message(
       p, sfid, dst, payload, surface, msg_length,
       brw_surface_payload_size(p, num_channels, true, true),
-      align1);
+      false);
 
    brw_set_dp_untyped_surface_read_message(
       p, insn, num_channels);
@@ -3212,26 +3243,29 @@ brw_pixel_interpolator_query(struct brw_codegen *p,
                              struct brw_reg mrf,
                              bool noperspective,
                              unsigned mode,
-                             unsigned data,
+                             struct brw_reg data,
                              unsigned msg_length,
                              unsigned response_length)
 {
    const struct brw_device_info *devinfo = p->devinfo;
-   struct brw_inst *insn = next_insn(p, BRW_OPCODE_SEND);
+   struct brw_inst *insn;
+   const uint16_t exec_size = brw_inst_exec_size(devinfo, p->current);
 
-   brw_set_dest(p, insn, dest);
-   brw_set_src0(p, insn, mrf);
-   brw_set_message_descriptor(p, insn, GEN7_SFID_PIXEL_INTERPOLATOR,
-                              msg_length, response_length,
-                              false /* header is never present for PI */,
-                              false);
+   /* brw_send_indirect_message will automatically use a direct send message
+    * if data is actually immediate.
+    */
+   insn = brw_send_indirect_message(p,
+                                    GEN7_SFID_PIXEL_INTERPOLATOR,
+                                    dest,
+                                    mrf,
+                                    vec1(data));
+   brw_inst_set_mlen(devinfo, insn, msg_length);
+   brw_inst_set_rlen(devinfo, insn, response_length);
 
-   brw_inst_set_pi_simd_mode(
-         devinfo, insn, brw_inst_exec_size(devinfo, insn) == BRW_EXECUTE_16);
+   brw_inst_set_pi_simd_mode(devinfo, insn, exec_size == BRW_EXECUTE_16);
    brw_inst_set_pi_slot_group(devinfo, insn, 0); /* zero unless 32/64px dispatch */
    brw_inst_set_pi_nopersp(devinfo, insn, noperspective);
    brw_inst_set_pi_message_type(devinfo, insn, mode);
-   brw_inst_set_pi_message_data(devinfo, insn, data);
 }
 
 void
@@ -3325,7 +3359,7 @@ brw_broadcast(struct brw_codegen *p,
        * We will typically not get here if the optimizer is doing its job, but
        * asserting would be mean.
        */
-      const unsigned i = idx.file == BRW_IMMEDIATE_VALUE ? idx.dw1.ud : 0;
+      const unsigned i = idx.file == BRW_IMMEDIATE_VALUE ? idx.ud : 0;
       brw_MOV(p, dst,
               (align1 ? stride(suboffset(src, i), 0, 1, 0) :
                stride(suboffset(src, 4 * i), 0, 4, 1)));

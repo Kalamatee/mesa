@@ -34,11 +34,6 @@
 
 #define MAX_GLOBAL_BUFFERS 20
 
-/* XXX: Even though we don't pass the scratch buffer via user sgprs any more
- * LLVM still expects that we specify 4 USER_SGPRS so it can remain compatible
- * with older mesa. */
-#define NUM_USER_SGPRS 4
-
 struct si_compute {
 	struct si_context *ctx;
 
@@ -81,7 +76,7 @@ static void init_scratch_buffer(struct si_context *sctx, struct si_compute *prog
 	if (scratch_bytes == 0)
 		return;
 
-	program->shader.scratch_bo = (struct r600_resource*)
+	program->shader.scratch_bo =
 				si_resource_create_custom(sctx->b.b.screen,
 				PIPE_USAGE_DEFAULT,
 				scratch_bytes * scratch_waves);
@@ -227,7 +222,7 @@ static void si_launch_grid(
 		uint32_t pc, const void *input)
 {
 	struct si_context *sctx = (struct si_context*)ctx;
-	struct radeon_winsys_cs *cs = sctx->b.rings.gfx.cs;
+	struct radeon_winsys_cs *cs = sctx->b.gfx.cs;
 	struct si_compute *program = sctx->cs_shader_state.program;
 	struct si_pm4_state *pm4 = CALLOC_STRUCT(si_pm4_state);
 	struct r600_resource *input_buffer = program->input_buffer;
@@ -238,7 +233,6 @@ static void si_launch_grid(
 	uint64_t kernel_args_va;
 	uint64_t scratch_buffer_va = 0;
 	uint64_t shader_va;
-	unsigned arg_user_sgpr_count = NUM_USER_SGPRS;
 	unsigned i;
 	struct si_shader *shader = &program->shader;
 	unsigned lds_blocks;
@@ -253,10 +247,10 @@ static void si_launch_grid(
 	radeon_emit(cs, 0x80000000);
 	radeon_emit(cs, 0x80000000);
 
-	sctx->b.flags |= SI_CONTEXT_INV_TC_L1 |
-			 SI_CONTEXT_INV_TC_L2 |
+	sctx->b.flags |= SI_CONTEXT_INV_VMEM_L1 |
+			 SI_CONTEXT_INV_GLOBAL_L2 |
 			 SI_CONTEXT_INV_ICACHE |
-			 SI_CONTEXT_INV_KCACHE |
+			 SI_CONTEXT_INV_SMEM_L1 |
 			 SI_CONTEXT_FLUSH_WITH_INV_L2 |
 			 SI_CONTEXT_FLAG_COMPUTE;
 	si_emit_cache_flush(sctx, NULL);
@@ -274,7 +268,7 @@ static void si_launch_grid(
 	kernel_args_size = program->input_size + num_work_size_bytes + 8 /* For scratch va */;
 
 	kernel_args = sctx->b.ws->buffer_map(input_buffer->cs_buf,
-			sctx->b.rings.gfx.cs, PIPE_TRANSFER_WRITE);
+			sctx->b.gfx.cs, PIPE_TRANSFER_WRITE);
 	for (i = 0; i < 3; i++) {
 		kernel_args[i] = grid_layout[i];
 		kernel_args[i + 3] = grid_layout[i] * block_layout[i];
@@ -294,10 +288,10 @@ static void si_launch_grid(
 			    shader->scratch_bytes_per_wave *
 			    num_waves_for_scratch);
 
-		radeon_add_to_buffer_list(&sctx->b, &sctx->b.rings.gfx,
+		radeon_add_to_buffer_list(&sctx->b, &sctx->b.gfx,
 					  shader->scratch_bo,
 					  RADEON_USAGE_READWRITE,
-					  RADEON_PRIO_SHADER_RESOURCE_RW);
+					  RADEON_PRIO_SCRATCH_BUFFER);
 
 		scratch_buffer_va = shader->scratch_bo->gpu_address;
 	}
@@ -310,8 +304,8 @@ static void si_launch_grid(
 	kernel_args_va = input_buffer->gpu_address;
 	kernel_args_va += kernel_args_offset;
 
-	radeon_add_to_buffer_list(&sctx->b, &sctx->b.rings.gfx, input_buffer,
-				  RADEON_USAGE_READ, RADEON_PRIO_SHADER_DATA);
+	radeon_add_to_buffer_list(&sctx->b, &sctx->b.gfx, input_buffer,
+				  RADEON_USAGE_READ, RADEON_PRIO_CONST_BUFFER);
 
 	si_pm4_set_reg(pm4, R_00B900_COMPUTE_USER_DATA_0, kernel_args_va);
 	si_pm4_set_reg(pm4, R_00B900_COMPUTE_USER_DATA_0 + 4, S_008F04_BASE_ADDRESS_HI (kernel_args_va >> 32) | S_008F04_STRIDE(0));
@@ -338,9 +332,9 @@ static void si_launch_grid(
 		if (!buffer) {
 			continue;
 		}
-		radeon_add_to_buffer_list(&sctx->b, &sctx->b.rings.gfx, buffer,
+		radeon_add_to_buffer_list(&sctx->b, &sctx->b.gfx, buffer,
 					  RADEON_USAGE_READWRITE,
-					  RADEON_PRIO_SHADER_RESOURCE_RW);
+					  RADEON_PRIO_COMPUTE_GLOBAL);
 	}
 
 	/* This register has been moved to R_00CD20_COMPUTE_MAX_WAVE_ID
@@ -361,25 +355,12 @@ static void si_launch_grid(
 #if HAVE_LLVM >= 0x0306
 	shader_va += pc;
 #endif
-	radeon_add_to_buffer_list(&sctx->b, &sctx->b.rings.gfx, shader->bo,
-				  RADEON_USAGE_READ, RADEON_PRIO_SHADER_DATA);
+	radeon_add_to_buffer_list(&sctx->b, &sctx->b.gfx, shader->bo,
+				  RADEON_USAGE_READ, RADEON_PRIO_USER_SHADER);
 	si_pm4_set_reg(pm4, R_00B830_COMPUTE_PGM_LO, shader_va >> 8);
 	si_pm4_set_reg(pm4, R_00B834_COMPUTE_PGM_HI, shader_va >> 40);
 
-	si_pm4_set_reg(pm4, R_00B848_COMPUTE_PGM_RSRC1,
-		/* We always use at least 3 VGPRS, these come from
-		 * TIDIG_COMP_CNT.
-		 * XXX: The compiler should account for this.
-		 */
-		S_00B848_VGPRS((MAX2(3, shader->num_vgprs) - 1) / 4)
-		/* We always use at least 4 + arg_user_sgpr_count.  The 4 extra
-		 * sgprs are from TGID_X_EN, TGID_Y_EN, TGID_Z_EN, TG_SIZE_EN
-		 * XXX: The compiler should account for this.
-		 */
-		|  S_00B848_SGPRS(((MAX2(4 + arg_user_sgpr_count,
-		                        shader->num_sgprs)) - 1) / 8)
-		|  S_00B028_FLOAT_MODE(shader->float_mode))
-		;
+	si_pm4_set_reg(pm4, R_00B848_COMPUTE_PGM_RSRC1, shader->rsrc1);
 
 	lds_blocks = shader->lds_size;
 	/* XXX: We are over allocating LDS.  For SI, the shader reports LDS in
@@ -395,17 +376,10 @@ static void si_launch_grid(
 
 	assert(lds_blocks <= 0xFF);
 
-	si_pm4_set_reg(pm4, R_00B84C_COMPUTE_PGM_RSRC2,
-		S_00B84C_SCRATCH_EN(shader->scratch_bytes_per_wave > 0)
-		| S_00B84C_USER_SGPR(arg_user_sgpr_count)
-		| S_00B84C_TGID_X_EN(1)
-		| S_00B84C_TGID_Y_EN(1)
-		| S_00B84C_TGID_Z_EN(1)
-		| S_00B84C_TG_SIZE_EN(1)
-		| S_00B84C_TIDIG_COMP_CNT(2)
-		| S_00B84C_LDS_SIZE(lds_blocks)
-		| S_00B84C_EXCP_EN(0))
-		;
+	shader->rsrc2 &= C_00B84C_LDS_SIZE;
+	shader->rsrc2 |=  S_00B84C_LDS_SIZE(lds_blocks);
+
+	si_pm4_set_reg(pm4, R_00B84C_COMPUTE_PGM_RSRC2, shader->rsrc2);
 	si_pm4_set_reg(pm4, R_00B854_COMPUTE_RESOURCE_LIMITS, 0);
 
 	si_pm4_set_reg(pm4, R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0,
@@ -449,10 +423,10 @@ static void si_launch_grid(
 	si_pm4_free_state(sctx, pm4, ~0);
 
 	sctx->b.flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
-			 SI_CONTEXT_INV_TC_L1 |
-			 SI_CONTEXT_INV_TC_L2 |
+			 SI_CONTEXT_INV_VMEM_L1 |
+			 SI_CONTEXT_INV_GLOBAL_L2 |
 			 SI_CONTEXT_INV_ICACHE |
-			 SI_CONTEXT_INV_KCACHE |
+			 SI_CONTEXT_INV_SMEM_L1 |
 			 SI_CONTEXT_FLAG_COMPUTE;
 	si_emit_cache_flush(sctx, NULL);
 }
@@ -469,7 +443,7 @@ static void si_delete_compute_state(struct pipe_context *ctx, void* state){
 	if (program->kernels) {
 		for (int i = 0; i < program->num_kernels; i++){
 			if (program->kernels[i].bo){
-				si_shader_destroy(ctx, &program->kernels[i]);
+				si_shader_destroy(&program->kernels[i]);
 			}
 		}
 		FREE(program->kernels);
@@ -482,7 +456,7 @@ static void si_delete_compute_state(struct pipe_context *ctx, void* state){
 	FREE(program->shader.binary.config);
 	FREE(program->shader.binary.rodata);
 	FREE(program->shader.binary.global_symbol_offsets);
-	si_shader_destroy(ctx, &program->shader);
+	si_shader_destroy(&program->shader);
 #endif
 
 	pipe_resource_reference(

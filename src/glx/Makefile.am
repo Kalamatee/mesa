@@ -46,6 +46,7 @@ AM_CFLAGS = \
 	$(EXTRA_DEFINES_XF86VIDMODE) \
 	-D_REENTRANT \
 	-DDEFAULT_DRIVER_DIR=\"$(DRI_DRIVER_SEARCH_DIR)\" \
+	-DGL_LIB_NAME=\"lib@GL_LIB@.so.1\" \
 	$(DEFINES) \
 	$(LIBDRM_CFLAGS) \
 	$(DRI2PROTO_CFLAGS) \
@@ -132,6 +133,8 @@ if HAVE_DRI3
 libglx_la_SOURCES += \
 	dri3_glx.c \
 	dri3_priv.h
+
+libglx_la_LIBADD += $(top_builddir)/src/loader/libloader_dri3_helper.la
 endif
 
 if HAVE_APPLEDRI

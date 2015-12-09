@@ -105,13 +105,12 @@ struct gl_list_extensions
  * \param ctx GL context.
  *
  * Checks if dd_function_table::SaveNeedFlush is marked to flush
- * stored (save) vertices, and calls
- * dd_function_table::SaveFlushVertices if so.
+ * stored (save) vertices, and calls vbo_save_SaveFlushVertices if so.
  */
 #define SAVE_FLUSH_VERTICES(ctx)		\
 do {						\
    if (ctx->Driver.SaveNeedFlush)		\
-      ctx->Driver.SaveFlushVertices(ctx);	\
+      vbo_save_SaveFlushVertices(ctx);               \
 } while (0)
 
 
@@ -457,11 +456,6 @@ typedef enum
    OPCODE_SAMPLER_PARAMETERFV,
    OPCODE_SAMPLER_PARAMETERIIV,
    OPCODE_SAMPLER_PARAMETERUIV,
-
-   /* GL_ARB_geometry_shader4 */
-   OPCODE_PROGRAM_PARAMETERI,
-   OPCODE_FRAMEBUFFER_TEXTURE,
-   OPCODE_FRAMEBUFFER_TEXTURE_FACE,
 
    /* GL_ARB_sync */
    OPCODE_WAIT_SYNC,
@@ -1401,7 +1395,7 @@ save_BlendFunci(GLuint buf, GLenum sfactor, GLenum dfactor)
    GET_CURRENT_CONTEXT(ctx);
    Node *n;
    ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   n = alloc_instruction(ctx, OPCODE_BLEND_FUNC_SEPARATE_I, 3);
+   n = alloc_instruction(ctx, OPCODE_BLEND_FUNC_I, 3);
    if (n) {
       n[1].ui = buf;
       n[2].e = sfactor;
@@ -5466,7 +5460,7 @@ save_Begin(GLenum mode)
       /* Give the driver an opportunity to hook in an optimized
        * display list compiler.
        */
-      if (ctx->Driver.NotifySaveBegin(ctx, mode))
+      if (vbo_save_NotifyBegin(ctx, mode))
          return;
 
       SAVE_FLUSH_VERTICES(ctx);
@@ -7555,44 +7549,6 @@ save_SamplerParameterIuiv(GLuint sampler, GLenum pname, const GLuint *params)
    }
 }
 
-/* GL_ARB_geometry_shader4 */
-static void GLAPIENTRY
-save_ProgramParameteri(GLuint program, GLenum pname, GLint value)
-{
-   Node *n;
-   GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   n = alloc_instruction(ctx, OPCODE_PROGRAM_PARAMETERI, 3);
-   if (n) {
-      n[1].ui = program;
-      n[2].e = pname;
-      n[3].i = value;
-   }
-   if (ctx->ExecuteFlag) {
-      CALL_ProgramParameteri(ctx->Exec, (program, pname, value));
-   }
-}
-
-static void GLAPIENTRY
-save_FramebufferTexture(GLenum target, GLenum attachment,
-                        GLuint texture, GLint level)
-{
-   Node *n;
-   GET_CURRENT_CONTEXT(ctx);
-   ASSERT_OUTSIDE_SAVE_BEGIN_END_AND_FLUSH(ctx);
-   n = alloc_instruction(ctx, OPCODE_FRAMEBUFFER_TEXTURE, 4);
-   if (n) {
-      n[1].e = target;
-      n[2].e = attachment;
-      n[3].ui = texture;
-      n[4].i = level;
-   }
-   if (ctx->ExecuteFlag) {
-      CALL_FramebufferTexture(ctx->Exec, (target, attachment, texture, level));
-   }
-}
-
-
 static void GLAPIENTRY
 save_WaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout)
 {
@@ -7743,8 +7699,7 @@ execute_list(struct gl_context *ctx, GLuint list)
 
    ctx->ListState.CallDepth++;
 
-   if (ctx->Driver.BeginCallList)
-      ctx->Driver.BeginCallList(ctx, dlist);
+   vbo_save_BeginCallList(ctx, dlist);
 
    n = dlist->Head;
 
@@ -8843,14 +8798,6 @@ execute_list(struct gl_context *ctx, GLuint list)
             }
             break;
 
-         /* GL_ARB_geometry_shader4 */
-         case OPCODE_PROGRAM_PARAMETERI:
-            CALL_ProgramParameteri(ctx->Exec, (n[1].ui, n[2].e, n[3].i));
-            break;
-         case OPCODE_FRAMEBUFFER_TEXTURE:
-            CALL_FramebufferTexture(ctx->Exec, (n[1].e, n[2].e,
-                                                   n[3].ui, n[4].i));
-            break;
          /* GL_ARB_sync */
          case OPCODE_WAIT_SYNC:
             {
@@ -8900,8 +8847,7 @@ execute_list(struct gl_context *ctx, GLuint list)
       }
    }
 
-   if (ctx->Driver.EndCallList)
-      ctx->Driver.EndCallList(ctx);
+   vbo_save_EndCallList(ctx);
 
    ctx->ListState.CallDepth--;
 }
@@ -9029,7 +8975,7 @@ _mesa_NewList(GLuint name, GLenum mode)
    ctx->ListState.CurrentBlock = ctx->ListState.CurrentList->Head;
    ctx->ListState.CurrentPos = 0;
 
-   ctx->Driver.NewList(ctx, name, mode);
+   vbo_save_NewList(ctx, name, mode);
 
    ctx->CurrentDispatch = ctx->Save;
    _glapi_set_dispatch(ctx->CurrentDispatch);
@@ -9063,7 +9009,7 @@ _mesa_EndList(void)
    /* Call before emitting END_OF_LIST, in case the driver wants to
     * emit opcodes itself.
     */
-   ctx->Driver.EndList(ctx);
+   vbo_save_EndList(ctx);
 
    (void) alloc_instruction(ctx, OPCODE_END_OF_LIST, 0);
 
@@ -9617,10 +9563,6 @@ _mesa_initialize_save_table(const struct gl_context *ctx)
    SET_BlendEquationiARB(table, save_BlendEquationi);
    SET_BlendEquationSeparateiARB(table, save_BlendEquationSeparatei);
 
-   /* OpenGL 3.2 */
-   SET_ProgramParameteri(table, save_ProgramParameteri);
-   SET_FramebufferTexture(table, save_FramebufferTexture);
-
    /* GL_NV_conditional_render */
    SET_BeginConditionalRender(table, save_BeginConditionalRender);
    SET_EndConditionalRender(table, save_EndConditionalRender);
@@ -9744,6 +9686,46 @@ print_list(struct gl_context *ctx, GLuint list, const char *fname)
                    n[3].f, n[4].f, n[5].f, n[6].f,
                    get_pointer(&n[7]));
             break;
+         case OPCODE_BLEND_COLOR:
+            fprintf(f, "BlendColor %f, %f, %f, %f\n",
+                    n[1].f, n[2].f, n[3].f, n[4].f);
+            break;
+         case OPCODE_BLEND_EQUATION:
+            fprintf(f, "BlendEquation %s\n",
+                    enum_string(n[1].e));
+            break;
+         case OPCODE_BLEND_EQUATION_SEPARATE:
+            fprintf(f, "BlendEquationSeparate %s, %s\n",
+                    enum_string(n[1].e),
+                    enum_string(n[2].e));
+            break;
+         case OPCODE_BLEND_FUNC_SEPARATE:
+            fprintf(f, "BlendFuncSeparate %s, %s, %s, %s\n",
+                    enum_string(n[1].e),
+                    enum_string(n[2].e),
+                    enum_string(n[3].e),
+                    enum_string(n[4].e));
+            break;
+         case OPCODE_BLEND_EQUATION_I:
+            fprintf(f, "BlendEquationi %u, %s\n",
+                    n[1].ui, enum_string(n[2].e));
+            break;
+         case OPCODE_BLEND_EQUATION_SEPARATE_I:
+            fprintf(f, "BlendEquationSeparatei %u, %s, %s\n",
+                    n[1].ui, enum_string(n[2].e), enum_string(n[3].e));
+            break;
+         case OPCODE_BLEND_FUNC_I:
+            fprintf(f, "BlendFunci %u, %s, %s\n",
+                    n[1].ui, enum_string(n[2].e), enum_string(n[3].e));
+            break;
+         case OPCODE_BLEND_FUNC_SEPARATE_I:
+            fprintf(f, "BlendFuncSeparatei %u, %s, %s, %s, %s\n",
+                    n[1].ui,
+                    enum_string(n[2].e),
+                    enum_string(n[3].e),
+                    enum_string(n[4].e),
+                    enum_string(n[5].e));
+            break;
          case OPCODE_CALL_LIST:
             fprintf(f, "CallList %d\n", (int) n[1].ui);
             break;
@@ -9763,6 +9745,9 @@ print_list(struct gl_context *ctx, GLuint list, const char *fname)
             break;
          case OPCODE_LINE_STIPPLE:
             fprintf(f, "LineStipple %d %x\n", n[1].i, (int) n[2].us);
+            break;
+         case OPCODE_LINE_WIDTH:
+            fprintf(f, "LineWidth %f\n", n[1].f);
             break;
          case OPCODE_LOAD_IDENTITY:
             fprintf(f, "LoadIdentity\n");
@@ -9792,6 +9777,9 @@ print_list(struct gl_context *ctx, GLuint list, const char *fname)
          case OPCODE_ORTHO:
             fprintf(f, "Ortho %g %g %g %g %g %g\n",
                          n[1].f, n[2].f, n[3].f, n[4].f, n[5].f, n[6].f);
+            break;
+         case OPCODE_POINT_SIZE:
+            fprintf(f, "PointSize %f\n", n[1].f);
             break;
          case OPCODE_POP_ATTRIB:
             fprintf(f, "PopAttrib\n");

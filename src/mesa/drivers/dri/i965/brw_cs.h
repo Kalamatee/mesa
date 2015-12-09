@@ -25,34 +25,16 @@
 #ifndef BRW_CS_H
 #define BRW_CS_H
 
-#include "brw_program.h"
-
-struct brw_cs_prog_key {
-   uint32_t program_string_id;
-   struct brw_sampler_prog_key_data tex;
-};
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-bool brw_cs_prog_data_compare(const void *a, const void *b);
-
 void
 brw_upload_cs_prog(struct brw_context *brw);
 
-const unsigned *
-brw_cs_emit(struct brw_context *brw,
-            void *mem_ctx,
-            const struct brw_cs_prog_key *key,
-            struct brw_cs_prog_data *prog_data,
-            struct gl_compute_program *cp,
-            struct gl_shader_program *prog,
-            unsigned *final_assembly_size);
-
-unsigned
-brw_cs_prog_local_id_payload_dwords(const struct gl_program *prog,
-                                    unsigned dispatch_width);
+void
+brw_cs_fill_local_id_payload(const struct brw_cs_prog_data *cs_prog_data,
+                             void *buffer, uint32_t threads, uint32_t stride);
 
 #ifdef __cplusplus
 }

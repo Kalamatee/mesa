@@ -26,12 +26,14 @@
 #include "svga_cmd.h"
 
 #include "util/u_inlines.h"
+#include "util/u_prim.h"
 #include "indices/u_indices.h"
 
 #include "svga_hw_reg.h"
 #include "svga_draw.h"
 #include "svga_draw_private.h"
 #include "svga_context.h"
+#include "svga_shader.h"
 
 
 #define DBG 0
@@ -51,11 +53,11 @@ generate_indices(struct svga_hwtnl *hwtnl,
 
    dst = pipe_buffer_create(pipe->screen, PIPE_BIND_INDEX_BUFFER,
                             PIPE_USAGE_IMMUTABLE, size);
-   if (dst == NULL)
+   if (!dst)
       goto fail;
 
    dst_map = pipe_buffer_map(pipe, dst, PIPE_TRANSFER_WRITE, &transfer);
-   if (dst_map == NULL)
+   if (!dst_map)
       goto fail;
 
    generate(0, nr, dst_map);
@@ -203,9 +205,36 @@ svga_hwtnl_draw_arrays(struct svga_hwtnl *hwtnl,
                        unsigned prim, unsigned start, unsigned count,
                        unsigned start_instance, unsigned instance_count)
 {
-   unsigned gen_prim, gen_size, gen_nr, gen_type;
+   unsigned gen_prim, gen_size, gen_nr;
+   enum indices_mode gen_type;
    u_generate_func gen_func;
    enum pipe_error ret = PIPE_OK;
+   unsigned api_pv = hwtnl->api_pv;
+   struct svga_context *svga = hwtnl->svga;
+
+   if (svga->curr.rast->templ.flatshade &&
+       svga->state.hw_draw.fs->constant_color_output) {
+      /* The fragment color is a constant, not per-vertex so the whole
+       * primitive will be the same color (except for possible blending).
+       * We can ignore the current provoking vertex state and use whatever
+       * the hardware wants.
+       */
+      api_pv = hwtnl->hw_pv;
+
+      if (hwtnl->api_fillmode == PIPE_POLYGON_MODE_FILL) {
+         /* Do some simple primitive conversions to avoid index buffer
+          * generation below.  Note that polygons and quads are not directly
+          * supported by the svga device.  Also note, we can only do this
+          * for flat/constant-colored rendering because of provoking vertex.
+          */
+         if (prim == PIPE_PRIM_POLYGON) {
+            prim = PIPE_PRIM_TRIANGLE_FAN;
+         }
+         else if (prim == PIPE_PRIM_QUADS && count == 4) {
+            prim = PIPE_PRIM_TRIANGLE_FAN;
+         }
+      }
+   }
 
    if (hwtnl->api_fillmode != PIPE_POLYGON_MODE_FILL &&
        prim >= PIPE_PRIM_TRIANGLES) {
@@ -226,7 +255,7 @@ svga_hwtnl_draw_arrays(struct svga_hwtnl *hwtnl,
                                    prim,
                                    start,
                                    count,
-                                   hwtnl->api_pv,
+                                   api_pv,
                                    hwtnl->hw_pv,
                                    &gen_prim, &gen_size, &gen_nr, &gen_func);
    }
@@ -248,6 +277,10 @@ svga_hwtnl_draw_arrays(struct svga_hwtnl *hwtnl,
                                          gen_size, gen_func, &gen_buf);
       if (ret != PIPE_OK)
          goto done;
+
+      pipe_debug_message(&svga->debug.callback, PERF_INFO,
+                         "generating temporary index buffer for drawing %s",
+                         u_prim_name(prim));
 
       ret = svga_hwtnl_simple_draw_range_elements(hwtnl,
                                                   gen_buf,

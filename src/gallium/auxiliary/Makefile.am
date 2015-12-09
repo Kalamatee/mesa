@@ -1,7 +1,3 @@
-if HAVE_LOADER_GALLIUM
-SUBDIRS := pipe-loader
-endif
-
 include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
@@ -13,7 +9,7 @@ AM_CFLAGS = \
 	-I$(top_srcdir)/src/gallium/auxiliary/util \
 	$(GALLIUM_CFLAGS) \
 	$(VISIBILITY_CFLAGS) \
-	$(MSVC2008_COMPAT_CXXFLAGS)
+	$(MSVC2008_COMPAT_CFLAGS)
 
 AM_CXXFLAGS = \
 	$(VISIBILITY_CXXFLAGS) \
@@ -66,15 +62,7 @@ COMMON_VL_CFLAGS = \
 	$(AM_CFLAGS) \
 	$(VL_CFLAGS) \
 	$(DRI2PROTO_CFLAGS) \
-	$(LIBDRM_CFLAGS) \
-	$(GALLIUM_PIPE_LOADER_DEFINES) \
-	-DPIPE_SEARCH_DIR=\"$(libdir)/gallium-pipe\"
-
-if HAVE_GALLIUM_STATIC_TARGETS
-COMMON_VL_CFLAGS += \
-	-DGALLIUM_STATIC_TARGETS=1
-
-endif # HAVE_GALLIUM_STATIC_TARGETS
+	$(LIBDRM_CFLAGS)
 
 noinst_LTLIBRARIES += libgalliumvl.la
 

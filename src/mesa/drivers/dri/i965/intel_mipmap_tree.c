@@ -35,6 +35,7 @@
 
 #include "brw_blorp.h"
 #include "brw_context.h"
+#include "brw_state.h"
 
 #include "main/enums.h"
 #include "main/fbobject.h"
@@ -160,7 +161,7 @@ intel_get_non_msrt_mcs_alignment(struct intel_mipmap_tree *mt,
    }
 }
 
-bool
+static bool
 intel_tiling_supports_non_msrt_mcs(struct brw_context *brw, unsigned tiling)
 {
    /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
@@ -192,16 +193,26 @@ intel_tiling_supports_non_msrt_mcs(struct brw_context *brw, unsigned tiling)
  *
  *     - MCS buffer for non-MSRT is supported only for RT formats 32bpp,
  *       64bpp, and 128bpp.
+ *
+ * From the Skylake documentation, it is made clear that X-tiling is no longer
+ * supported:
+ *
+ *     - MCS and Lossless compression is supported for TiledY/TileYs/TileYf
+ *     non-MSRTs only.
  */
-bool
-intel_miptree_is_fast_clear_capable(struct brw_context *brw,
-                                    struct intel_mipmap_tree *mt)
+static bool
+intel_miptree_supports_non_msrt_fast_clear(struct brw_context *brw,
+                                           struct intel_mipmap_tree *mt)
 {
    /* MCS support does not exist prior to Gen7 */
    if (brw->gen < 7)
       return false;
 
    if (mt->disable_aux_buffers)
+      return false;
+
+   /* This function applies only to non-multisampled render targets. */
+   if (mt->num_samples > 1)
       return false;
 
    /* MCS is only supported for color buffers */
@@ -222,7 +233,16 @@ intel_miptree_is_fast_clear_capable(struct brw_context *brw,
 
       return false;
    }
+
+   /* Check for layered surfaces. */
    if (mt->physical_depth0 != 1) {
+       /* Multisample surfaces with the CMS layout are not layered surfaces,
+        * yet still have physical_depth0 > 1. Assert that we don't
+        * accidentally reject a multisampled surface here. We should have
+        * rejected it earlier by explicitly checking the sample count.
+        */
+      assert(mt->num_samples <= 1);
+
       if (brw->gen >= 8) {
          perf_debug("Layered fast clear - giving up. (%dx%d%d)\n",
                     mt->logical_width0, mt->logical_height0,
@@ -238,7 +258,11 @@ intel_miptree_is_fast_clear_capable(struct brw_context *brw,
    if (!brw->format_supported_as_render_target[mt->format])
       return false;
 
-   return true;
+   if (brw->gen >= 9) {
+      const uint32_t brw_format = brw_format_for_mesa_format(mt->format);
+      return brw_losslessly_compressible_format(brw, brw_format);
+   } else
+      return true;
 }
 
 
@@ -395,9 +419,13 @@ intel_miptree_create_layout(struct brw_context *brw,
             width0 = ALIGN(width0, 2) * 4;
             height0 = ALIGN(height0, 2) * 2;
             break;
+         case 16:
+            width0 = ALIGN(width0, 2) * 4;
+            height0 = ALIGN(height0, 2) * 4;
+            break;
          default:
-            /* num_samples should already have been quantized to 0, 1, 2, 4, or
-             * 8.
+            /* num_samples should already have been quantized to 0, 1, 2, 4, 8
+             * or 16.
              */
             unreachable("not reached");
          }
@@ -494,7 +522,7 @@ intel_miptree_create_layout(struct brw_context *brw,
     *  7   |      ?         |        ?
     *  6   |      ?         |        ?
     */
-   if (intel_miptree_is_fast_clear_capable(brw, mt)) {
+   if (intel_miptree_supports_non_msrt_fast_clear(brw, mt)) {
       if (brw->gen >= 9 || (brw->gen == 8 && num_samples <= 1))
          layout_flags |= MIPTREE_LAYOUT_FORCE_HALIGN16;
    } else if (brw->gen >= 9 && num_samples > 1) {
@@ -692,9 +720,9 @@ intel_miptree_create(struct brw_context *brw,
     * clear actually occurs.
     */
    if (intel_tiling_supports_non_msrt_mcs(brw, mt->tiling) &&
-       intel_miptree_is_fast_clear_capable(brw, mt)) {
+       intel_miptree_supports_non_msrt_fast_clear(brw, mt)) {
       mt->fast_clear_state = INTEL_FAST_CLEAR_STATE_RESOLVED;
-      assert(brw->gen < 8 || mt->align_w == 16 || num_samples <= 1);
+      assert(brw->gen < 8 || mt->halign == 16 || num_samples <= 1);
    }
 
    return mt;
@@ -800,8 +828,9 @@ intel_update_winsys_renderbuffer_miptree(struct brw_context *intel,
     * clear actually occurs.
     */
    if (intel_tiling_supports_non_msrt_mcs(intel, singlesample_mt->tiling) &&
-       intel_miptree_is_fast_clear_capable(intel, singlesample_mt))
+       intel_miptree_supports_non_msrt_fast_clear(intel, singlesample_mt)) {
       singlesample_mt->fast_clear_state = INTEL_FAST_CLEAR_STATE_RESOLVED;
+   }
 
    if (num_samples == 0) {
       intel_miptree_release(&irb->mt);
@@ -1401,6 +1430,12 @@ intel_miptree_alloc_mcs(struct brw_context *brw,
        */
       format = MESA_FORMAT_R_UINT32;
       break;
+   case 16:
+      /* 64 bits/pixel are required for MCS data when using 16x MSAA (4 bits
+       * for each sample).
+       */
+      format = MESA_FORMAT_RG_UINT32;
+      break;
    default:
       unreachable("Unrecognized sample count in intel_miptree_alloc_mcs");
    };
@@ -1463,6 +1498,17 @@ intel_miptree_alloc_non_msrt_mcs(struct brw_context *brw,
    intel_get_non_msrt_mcs_alignment(mt, &block_width_px, &block_height);
    unsigned width_divisor = block_width_px * 4;
    unsigned height_divisor = block_height * 8;
+
+   /* The Skylake MCS is twice as tall as the Broadwell MCS.
+    *
+    * In pre-Skylake, each bit in the MCS contained the state of 2 cachelines
+    * in the main surface. In Skylake, it's two bits.  The extra bit
+    * doubles the MCS height, not width, because in Skylake the MCS is always
+    * Y-tiled.
+    */
+   if (brw->gen >= 9)
+      height_divisor /= 2;
+
    unsigned mcs_width =
       ALIGN(mt->logical_width0, width_divisor) / width_divisor;
    unsigned mcs_height =
@@ -2168,16 +2214,18 @@ intel_miptree_map_blit(struct brw_context *brw,
 		       struct intel_miptree_map *map,
 		       unsigned int level, unsigned int slice)
 {
-   map->mt = intel_miptree_create(brw, GL_TEXTURE_2D, mt->format,
-                                  0, 0,
-                                  map->w, map->h, 1,
-                                  0, MIPTREE_LAYOUT_TILING_NONE);
+   map->linear_mt = intel_miptree_create(brw, GL_TEXTURE_2D, mt->format,
+                                         /* first_level */ 0,
+                                         /* last_level */ 0,
+                                         map->w, map->h, 1,
+                                         /* samples */ 0,
+                                         MIPTREE_LAYOUT_TILING_NONE);
 
-   if (!map->mt) {
+   if (!map->linear_mt) {
       fprintf(stderr, "Failed to allocate blit temporary\n");
       goto fail;
    }
-   map->stride = map->mt->pitch;
+   map->stride = map->linear_mt->pitch;
 
    /* One of either READ_BIT or WRITE_BIT or both is set.  READ_BIT implies no
     * INVALIDATE_RANGE_BIT.  WRITE_BIT needs the original values read in unless
@@ -2188,7 +2236,7 @@ intel_miptree_map_blit(struct brw_context *brw,
       if (!intel_miptree_blit(brw,
                               mt, level, slice,
                               map->x, map->y, false,
-                              map->mt, 0, 0,
+                              map->linear_mt, 0, 0,
                               0, 0, false,
                               map->w, map->h, GL_COPY)) {
          fprintf(stderr, "Failed to blit\n");
@@ -2196,7 +2244,7 @@ intel_miptree_map_blit(struct brw_context *brw,
       }
    }
 
-   map->ptr = intel_miptree_map_raw(brw, map->mt);
+   map->ptr = intel_miptree_map_raw(brw, map->linear_mt);
 
    DBG("%s: %d,%d %dx%d from mt %p (%s) %d,%d = %p/%d\n", __func__,
        map->x, map->y, map->w, map->h,
@@ -2206,7 +2254,7 @@ intel_miptree_map_blit(struct brw_context *brw,
    return;
 
 fail:
-   intel_miptree_release(&map->mt);
+   intel_miptree_release(&map->linear_mt);
    map->ptr = NULL;
    map->stride = 0;
 }
@@ -2220,11 +2268,11 @@ intel_miptree_unmap_blit(struct brw_context *brw,
 {
    struct gl_context *ctx = &brw->ctx;
 
-   intel_miptree_unmap_raw(map->mt);
+   intel_miptree_unmap_raw(map->linear_mt);
 
    if (map->mode & GL_MAP_WRITE_BIT) {
       bool ok = intel_miptree_blit(brw,
-                                   map->mt, 0, 0,
+                                   map->linear_mt, 0, 0,
                                    0, 0, false,
                                    mt, level, slice,
                                    map->x, map->y, false,
@@ -2232,7 +2280,7 @@ intel_miptree_unmap_blit(struct brw_context *brw,
       WARN_ONCE(!ok, "Failed to blit from linear temporary mapping");
    }
 
-   intel_miptree_release(&map->mt);
+   intel_miptree_release(&map->linear_mt);
 }
 
 /**
@@ -2756,7 +2804,7 @@ intel_miptree_unmap(struct brw_context *brw,
       intel_miptree_unmap_etc(brw, mt, map, level, slice);
    } else if (mt->stencil_mt && !(map->mode & BRW_MAP_DIRECT_BIT)) {
       intel_miptree_unmap_depthstencil(brw, mt, map, level, slice);
-   } else if (map->mt) {
+   } else if (map->linear_mt) {
       intel_miptree_unmap_blit(brw, mt, map, level, slice);
 #if defined(USE_SSE41)
    } else if (map->buffer && cpu_has_sse4_1) {
