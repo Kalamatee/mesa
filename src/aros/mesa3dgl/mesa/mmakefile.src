@@ -28,6 +28,7 @@ USER_INCLUDES := \
             -iquote $(top_srcdir)/src/mapi \
             -iquote $(top_srcdir)/src/glsl \
             -iquote $(top_builddir)/src/glsl/nir \
+            -iquote $(top_srcdir)/src/glsl/nir \
             -iquote $(top_srcdir)/src/gallium/include \
             -iquote $(top_srcdir)/src/gallium/auxiliary
 
