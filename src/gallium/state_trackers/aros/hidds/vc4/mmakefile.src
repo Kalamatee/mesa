@@ -22,6 +22,7 @@ VC4_HIDD_SOURCES := \
 USER_INCLUDES := \
             $(USER_INCLUDES) \
             -iquote $(GALLIUM_PATH)/drivers \
+            -iquote $(GALLIUM_PATH)/drivers/vc4 \
             -iquote $(GALLIUM_PATH)/include \
             -iquote $(GALLIUM_PATH)/auxiliary
 
