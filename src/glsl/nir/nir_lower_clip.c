@@ -74,6 +74,7 @@ store_clipdist_output(nir_builder *b, nir_variable *out, nir_ssa_def **val)
    store->const_index[0] = out->data.driver_location;
    store->src[0].ssa = nir_vec4(b, val[0], val[1], val[2], val[3]);
    store->src[0].is_ssa = true;
+   store->src[1] = nir_src_for_ssa(nir_imm_int(b, 0));
    nir_builder_instr_insert(b, &store->instr);
 }
 
@@ -85,6 +86,7 @@ load_clipdist_input(nir_builder *b, nir_variable *in, nir_ssa_def **val)
    load = nir_intrinsic_instr_create(b->shader, nir_intrinsic_load_input);
    load->num_components = 4;
    load->const_index[0] = in->data.driver_location;
+   load->src[0] = nir_src_for_ssa(nir_imm_int(b, 0));
    nir_ssa_dest_init(&load->instr, &load->dest, 4, NULL);
    nir_builder_instr_insert(b, &load->instr);
 
@@ -112,6 +114,7 @@ find_output_in_block(nir_block *block, void *void_state)
              intr->const_index[0] == state->drvloc) {
             assert(state->def == NULL);
             assert(intr->src[0].is_ssa);
+            assert(nir_src_as_const_value(intr->src[1]));
             state->def = intr->src[0].ssa;
 
 #if !defined(DEBUG)
@@ -177,18 +180,11 @@ lower_clip_vs(nir_function_impl *impl, unsigned ucp_enables,
 
    for (int plane = 0; plane < MAX_CLIP_PLANES; plane++) {
       if (ucp_enables & (1 << plane)) {
-         nir_intrinsic_instr *ucp;
-
-         /* insert intrinsic to fetch ucp[plane]: */
-         ucp = nir_intrinsic_instr_create(b.shader,
-                                          nir_intrinsic_load_user_clip_plane);
-         ucp->num_components = 4;
-         ucp->const_index[0] = plane;
-         nir_ssa_dest_init(&ucp->instr, &ucp->dest, 4, NULL);
-         nir_builder_instr_insert(&b, &ucp->instr);
+         nir_ssa_def *ucp =
+            nir_load_system_value(&b, nir_intrinsic_load_user_clip_plane, plane);
 
          /* calculate clipdist[plane] - dot(ucp, cv): */
-         clipdist[plane] = nir_fdot4(&b, &ucp->dest.ssa, cv);
+         clipdist[plane] = nir_fdot4(&b, ucp, cv);
       }
       else {
          /* 0.0 == don't-clip == disabled: */
@@ -214,7 +210,7 @@ nir_lower_clip_vs(nir_shader *shader, unsigned ucp_enables)
    int position = -1;
    int maxloc = -1;
    nir_ssa_def *cv;
-   nir_variable *out[2];
+   nir_variable *out[2] = { NULL };
 
    if (!ucp_enables)
       return;

@@ -444,7 +444,7 @@ struct vc4_compile {
 /* Special offset for nir_load_uniform values to get a QUNIFORM_*
  * state-dependent value.
  */
-#define VC4_NIR_STATE_UNIFORM_OFFSET		2000000000
+#define VC4_NIR_STATE_UNIFORM_OFFSET		1000000000
 
 struct vc4_compile *qir_compile_init(void);
 void qir_compile_destroy(struct vc4_compile *c);
@@ -459,6 +459,7 @@ void qir_remove_instruction(struct vc4_compile *c, struct qinst *qinst);
 struct qreg qir_uniform(struct vc4_compile *c,
                         enum quniform_contents contents,
                         uint32_t data);
+void qir_schedule_instructions(struct vc4_compile *c);
 void qir_reorder_uniforms(struct vc4_compile *c);
 
 void qir_emit(struct vc4_compile *c, struct qinst *inst);
@@ -502,7 +503,7 @@ nir_ssa_def *vc4_nir_get_swizzled_channel(struct nir_builder *b,
 void vc4_nir_lower_txf_ms(struct vc4_compile *c);
 void qir_lower_uniforms(struct vc4_compile *c);
 
-void qpu_schedule_instructions(struct vc4_compile *c);
+uint32_t qpu_schedule_instructions(struct vc4_compile *c);
 
 void qir_SF(struct vc4_compile *c, struct qreg src);
 

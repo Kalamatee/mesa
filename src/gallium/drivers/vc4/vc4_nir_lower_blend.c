@@ -61,6 +61,7 @@ vc4_nir_get_dst_color(nir_builder *b, int sample)
                                            nir_intrinsic_load_input);
         load->num_components = 1;
         load->const_index[0] = VC4_NIR_TLB_COLOR_READ_INPUT + sample;
+        load->src[0] = nir_src_for_ssa(nir_imm_int(b, 0));
         nir_ssa_dest_init(&load->instr, &load->dest, 1, NULL);
         nir_builder_instr_insert(b, &load->instr);
         return &load->dest.ssa;
@@ -588,10 +589,10 @@ vc4_nir_next_output_driver_location(nir_shader *s)
 {
         int maxloc = -1;
 
-        nir_foreach_variable(var, &s->inputs)
-                maxloc = MAX2(maxloc, var->data.driver_location);
+        nir_foreach_variable(var, &s->outputs)
+                maxloc = MAX2(maxloc, (int)var->data.driver_location);
 
-        return maxloc;
+        return maxloc + 1;
 }
 
 static void
@@ -604,14 +605,14 @@ vc4_nir_store_sample_mask(struct vc4_compile *c, nir_builder *b,
         sample_mask->data.driver_location =
                 vc4_nir_next_output_driver_location(c->s);
         sample_mask->data.location = FRAG_RESULT_SAMPLE_MASK;
-        exec_list_push_tail(&c->s->outputs, &sample_mask->node);
 
         nir_intrinsic_instr *intr =
                 nir_intrinsic_instr_create(c->s, nir_intrinsic_store_output);
         intr->num_components = 1;
-        intr->const_index[0] = sample_mask->data.location;
+        intr->const_index[0] = sample_mask->data.driver_location;
 
         intr->src[0] = nir_src_for_ssa(val);
+        intr->src[1] = nir_src_for_ssa(nir_imm_int(b, 0));
         nir_builder_instr_insert(b, &intr->instr);
 }
 

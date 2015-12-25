@@ -41,6 +41,8 @@
 #include "main/api_validate.h"
 #include "main/state.h"
 
+#include "util/format_srgb.h"
+
 #include "vbo/vbo_context.h"
 
 #include "drivers/common/meta.h"
@@ -48,6 +50,7 @@
 #include "brw_defines.h"
 #include "brw_context.h"
 #include "brw_draw.h"
+#include "brw_state.h"
 #include "intel_fbo.h"
 #include "intel_batchbuffer.h"
 
@@ -424,6 +427,15 @@ set_fast_clear_color(struct brw_context *brw,
          override_color.f[3] = 1.0f;
    }
 
+   /* Handle linear→SRGB conversion */
+   if (brw->ctx.Color.sRGBEnabled &&
+       _mesa_get_srgb_format_linear(mt->format) != mt->format) {
+      for (int i = 0; i < 3; i++) {
+         override_color.f[i] =
+            util_format_linear_to_srgb_float(override_color.f[i]);
+      }
+   }
+
    if (brw->gen >= 9) {
       mt->gen9_fast_clear_color = override_color;
    } else {
@@ -493,7 +505,20 @@ fast_clear_attachments(struct brw_context *brw,
                        uint32_t fast_clear_buffers,
                        struct rect fast_clear_rect)
 {
+   struct gl_context *ctx = &brw->ctx;
+   const bool srgb_enabled = ctx->Color.sRGBEnabled;
+
    assert(brw->gen >= 9);
+
+   /* Make sure the GL_FRAMEBUFFER_SRGB is disabled during fast clear so that
+    * the surface state will always be uploaded with a linear buffer. SRGB
+    * buffers are not supported on Gen9 because they are not marked as
+    * losslessly compressible. This shouldn't matter for the fast clear
+    * because the color is not written to the framebuffer yet so the hardware
+    * doesn't need to do any SRGB conversion.
+    */
+   if (srgb_enabled)
+      _mesa_set_framebuffer_srgb(ctx, GL_FALSE);
 
    brw_bind_rep_write_shader(brw, (float *) fast_clear_color);
 
@@ -521,6 +546,9 @@ fast_clear_attachments(struct brw_context *brw,
    }
 
    set_fast_clear_op(brw, 0);
+
+   if (srgb_enabled)
+      _mesa_set_framebuffer_srgb(ctx, GL_TRUE);
 }
 
 bool
@@ -562,11 +590,28 @@ brw_meta_fast_clear(struct brw_context *brw, struct gl_framebuffer *fb,
       if (brw->gen < 7)
          clear_type = REP_CLEAR;
 
-      /* Certain formats have unresolved issues with sampling from the MCS
-       * buffer on Gen9. This disables fast clears altogether for MSRTs until
-       * we can figure out what's going on.
+      /* If we're mapping the render format to a different format than the
+       * format we use for texturing then it is a bit questionable whether it
+       * should be possible to use a fast clear. Although we only actually
+       * render using a renderable format, without the override workaround it
+       * wouldn't be possible to have a non-renderable surface in a fast clear
+       * state so the hardware probably legitimately doesn't need to support
+       * this case. At least on Gen9 this really does seem to cause problems.
        */
-      if (brw->gen >= 9 && irb->mt->num_samples > 1)
+      if (brw->gen >= 9 &&
+          brw_format_for_mesa_format(irb->mt->format) !=
+          brw->render_target_format[irb->mt->format])
+         clear_type = REP_CLEAR;
+
+      /* Gen9 doesn't support fast clear on single-sampled SRGB buffers. When
+       * GL_FRAMEBUFFER_SRGB is enabled any color renderbuffers will be
+       * resolved in intel_update_state. In that case it's pointless to do a
+       * fast clear because it's very likely to be immediately resolved.
+       */
+      if (brw->gen >= 9 &&
+          irb->mt->num_samples <= 1 &&
+          brw->ctx.Color.sRGBEnabled &&
+          _mesa_get_srgb_format_linear(irb->mt->format) != irb->mt->format)
          clear_type = REP_CLEAR;
 
       if (irb->mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_NO_MCS)

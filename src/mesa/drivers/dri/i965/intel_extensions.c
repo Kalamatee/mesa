@@ -38,8 +38,11 @@
 static bool
 can_do_pipelined_register_writes(struct brw_context *brw)
 {
-   /* Supposedly, Broadwell just works. */
-   if (brw->gen >= 8)
+   /**
+    * gen >= 8 specifically allows these writes. gen <= 6 also
+    * doesn't block them.
+    */
+   if (brw->gen != 7)
       return true;
 
    static int result = -1;
@@ -317,6 +320,8 @@ intelInitExtensions(struct gl_context *ctx)
    }
 
    brw->predicate.supported = false;
+   brw->can_do_pipelined_register_writes =
+      can_do_pipelined_register_writes(brw);
 
    if (brw->gen >= 7) {
       ctx->Extensions.ARB_conservative_depth = true;
@@ -333,7 +338,7 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.ARB_shader_storage_buffer_object = true;
       ctx->Extensions.EXT_shader_samples_identical = true;
 
-      if (can_do_pipelined_register_writes(brw)) {
+      if (brw->can_do_pipelined_register_writes) {
          ctx->Extensions.ARB_draw_indirect = true;
          ctx->Extensions.ARB_transform_feedback2 = true;
          ctx->Extensions.ARB_transform_feedback3 = true;
@@ -350,11 +355,14 @@ intelInitExtensions(struct gl_context *ctx)
          ctx->Extensions.ARB_viewport_array = true;
          ctx->Extensions.AMD_vertex_shader_viewport_index = true;
          ctx->Extensions.ARB_shader_subroutine = true;
+         if (ctx->Const.MaxComputeWorkGroupSize[0] >= 1024)
+            ctx->Extensions.ARB_compute_shader = true;
       }
    }
 
    if (brw->gen >= 8) {
       ctx->Extensions.ARB_stencil_texturing = true;
+      ctx->Extensions.ARB_tessellation_shader = true;
    }
 
    if (brw->gen >= 9) {

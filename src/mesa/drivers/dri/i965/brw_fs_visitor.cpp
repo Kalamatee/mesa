@@ -698,6 +698,12 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
    const struct brw_vue_map *vue_map = &vue_prog_data->vue_map;
    bool flush;
    fs_reg sources[8];
+   fs_reg urb_handle;
+
+   if (stage == MESA_SHADER_TESS_EVAL)
+      urb_handle = fs_reg(retype(brw_vec8_grf(4, 0), BRW_REGISTER_TYPE_UD));
+   else
+      urb_handle = fs_reg(retype(brw_vec8_grf(1, 0), BRW_REGISTER_TYPE_UD));
 
    /* If we don't have any valid slots to write, just do a minimal urb write
     * send to terminate the shader.  This includes 1 slot of undefined data,
@@ -711,8 +717,7 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
     */
    if (vue_map->slots_valid == 0) {
       fs_reg payload = fs_reg(VGRF, alloc.allocate(2), BRW_REGISTER_TYPE_UD);
-      bld.exec_all().MOV(payload, fs_reg(retype(brw_vec8_grf(1, 0),
-                                                BRW_REGISTER_TYPE_UD)));
+      bld.exec_all().MOV(payload, urb_handle);
 
       fs_inst *inst = bld.emit(SHADER_OPCODE_URB_WRITE_SIMD8, reg_undef, payload);
       inst->eot = true;
@@ -856,8 +861,7 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
             ralloc_array(mem_ctx, fs_reg, length + header_size);
          fs_reg payload = fs_reg(VGRF, alloc.allocate(length + header_size),
                                  BRW_REGISTER_TYPE_F);
-         payload_sources[0] =
-            fs_reg(retype(brw_vec8_grf(1, 0), BRW_REGISTER_TYPE_UD));
+         payload_sources[0] = urb_handle;
 
          if (opcode == SHADER_OPCODE_URB_WRITE_SIMD8_PER_SLOT)
             payload_sources[1] = per_slot_offsets;
@@ -869,7 +873,7 @@ fs_visitor::emit_urb_writes(const fs_reg &gs_vertex_count)
                            header_size);
 
          fs_inst *inst = abld.emit(opcode, reg_undef, payload);
-         inst->eot = last && stage == MESA_SHADER_VERTEX;
+         inst->eot = last && stage != MESA_SHADER_GEOMETRY;
          inst->mlen = length + header_size;
          inst->offset = urb_offset;
          urb_offset = starting_urb_offset + slot + 1;
@@ -933,9 +937,11 @@ fs_visitor::fs_visitor(const struct brw_compiler *compiler, void *log_data,
                        struct gl_program *prog,
                        const nir_shader *shader,
                        unsigned dispatch_width,
-                       int shader_time_index)
+                       int shader_time_index,
+                       const struct brw_vue_map *input_vue_map)
    : backend_shader(compiler, log_data, mem_ctx, shader, prog_data),
      key(key), gs_compile(NULL), prog_data(prog_data), prog(prog),
+     input_vue_map(input_vue_map),
      dispatch_width(dispatch_width),
      shader_time_index(shader_time_index),
      bld(fs_builder(this, dispatch_width).at_end())
@@ -970,6 +976,9 @@ fs_visitor::init()
       break;
    case MESA_SHADER_VERTEX:
       key_tex = &((const brw_vs_prog_key *) key)->tex;
+      break;
+   case MESA_SHADER_TESS_EVAL:
+      key_tex = &((const brw_tes_prog_key *) key)->tex;
       break;
    case MESA_SHADER_GEOMETRY:
       key_tex = &((const brw_gs_prog_key *) key)->tex;

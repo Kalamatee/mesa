@@ -81,7 +81,8 @@ public:
               struct gl_program *prog,
               const nir_shader *shader,
               unsigned dispatch_width,
-              int shader_time_index);
+              int shader_time_index,
+              const struct brw_vue_map *input_vue_map = NULL);
    fs_visitor(const struct brw_compiler *compiler, void *log_data,
               void *mem_ctx,
               struct brw_gs_compile *gs_compile,
@@ -109,6 +110,7 @@ public:
 
    bool run_fs(bool do_rep_send);
    bool run_vs(gl_clip_plane *clip_planes);
+   bool run_tes();
    bool run_gs();
    bool run_cs();
    void optimize();
@@ -124,6 +126,7 @@ public:
    void assign_urb_setup();
    void convert_attr_sources_to_hw_regs(fs_inst *inst);
    void assign_vs_urb_setup();
+   void assign_tes_urb_setup();
    void assign_gs_urb_setup();
    bool assign_regs(bool allow_spilling);
    void assign_regs_trivial();
@@ -249,8 +252,12 @@ public:
                               nir_intrinsic_instr *instr);
    void nir_emit_intrinsic(const brw::fs_builder &bld,
                            nir_intrinsic_instr *instr);
+   void nir_emit_tes_intrinsic(const brw::fs_builder &bld,
+                               nir_intrinsic_instr *instr);
    void nir_emit_ssbo_atomic(const brw::fs_builder &bld,
                              int op, nir_intrinsic_instr *instr);
+   void nir_emit_shared_atomic(const brw::fs_builder &bld,
+                               int op, nir_intrinsic_instr *instr);
    void nir_emit_texture(const brw::fs_builder &bld,
                          nir_tex_instr *instr);
    void nir_emit_jump(const brw::fs_builder &bld,
@@ -258,6 +265,7 @@ public:
    fs_reg get_nir_src(nir_src src);
    fs_reg get_nir_dest(nir_dest dest);
    fs_reg get_nir_image_deref(const nir_deref_var *deref);
+   fs_reg get_indirect_offset(nir_intrinsic_instr *instr);
    void emit_percomp(const brw::fs_builder &bld, const fs_inst &inst,
                      unsigned wr_mask);
 
@@ -278,7 +286,7 @@ public:
                        unsigned stream_id);
    void emit_gs_thread_end();
    void emit_gs_input_load(const fs_reg &dst, const nir_src &vertex_src,
-                           const fs_reg &indirect_offset, unsigned imm_offset,
+                           unsigned base_offset, const nir_src &offset_src,
                            unsigned num_components);
    void emit_cs_terminate();
    fs_reg *emit_cs_local_invocation_id_setup();
@@ -310,6 +318,8 @@ public:
 
    struct brw_stage_prog_data *prog_data;
    struct gl_program *prog;
+
+   const struct brw_vue_map *input_vue_map;
 
    int *param_size;
 

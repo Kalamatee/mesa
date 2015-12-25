@@ -1582,12 +1582,17 @@ static void evergreen_emit_msaa_state(struct r600_context *rctx, int nr_samples,
 				     S_028C00_EXPAND_LINE_WIDTH(1)); /* R_028C00_PA_SC_LINE_CNTL */
 		radeon_emit(cs, S_028C04_MSAA_NUM_SAMPLES(util_logbase2(nr_samples)) |
 				     S_028C04_MAX_SAMPLE_DIST(max_dist)); /* R_028C04_PA_SC_AA_CONFIG */
-		radeon_set_context_reg(cs, EG_R_028A4C_PA_SC_MODE_CNTL_1, EG_S_028A4C_PS_ITER_SAMPLE(ps_iter_samples > 1));
+		radeon_set_context_reg(cs, EG_R_028A4C_PA_SC_MODE_CNTL_1,
+				       EG_S_028A4C_PS_ITER_SAMPLE(ps_iter_samples > 1) |
+				       EG_S_028A4C_FORCE_EOV_CNTDWN_ENABLE(1) |
+				       EG_S_028A4C_FORCE_EOV_REZ_ENABLE(1));
 	} else {
 		radeon_set_context_reg_seq(cs, R_028C00_PA_SC_LINE_CNTL, 2);
 		radeon_emit(cs, S_028C00_LAST_PIXEL(1)); /* R_028C00_PA_SC_LINE_CNTL */
 		radeon_emit(cs, 0); /* R_028C04_PA_SC_AA_CONFIG */
-		radeon_set_context_reg(cs, EG_R_028A4C_PA_SC_MODE_CNTL_1, 0);
+		radeon_set_context_reg(cs, EG_R_028A4C_PA_SC_MODE_CNTL_1,
+				       EG_S_028A4C_FORCE_EOV_CNTDWN_ENABLE(1) |
+				       EG_S_028A4C_FORCE_EOV_REZ_ENABLE(1));
 	}
 }
 
@@ -1828,10 +1833,7 @@ static void evergreen_emit_db_misc_state(struct r600_context *rctx, struct r600_
 	unsigned db_count_control = 0;
 	unsigned db_render_override =
 		S_02800C_FORCE_HIS_ENABLE0(V_02800C_FORCE_DISABLE) |
-		S_02800C_FORCE_HIS_ENABLE1(V_02800C_FORCE_DISABLE) |
-		/* There is a hang with HTILE if stencil is used and
-		 * fast stencil is enabled. */
-		S_02800C_FAST_STENCIL_DISABLE(1);
+		S_02800C_FORCE_HIS_ENABLE1(V_02800C_FORCE_DISABLE);
 
 	if (a->occlusion_query_enabled) {
 		db_count_control |= S_028004_PERFECT_ZPASS_COUNTS(1);
@@ -1840,26 +1842,14 @@ static void evergreen_emit_db_misc_state(struct r600_context *rctx, struct r600_
 		}
 		db_render_override |= S_02800C_NOOP_CULL_DISABLE(1);
 	}
-	/* FIXME we should be able to use hyperz even if we are not writing to
-	 * zbuffer but somehow this trigger GPU lockup. See :
-	 *
-	 * https://bugs.freedesktop.org/show_bug.cgi?id=60848
-	 *
-	 * Disable hyperz for now if not writing to zbuffer.
+
+	/* This is to fix a lockup when hyperz and alpha test are enabled at
+	 * the same time somehow GPU get confuse on which order to pick for
+	 * z test
 	 */
-	if (rctx->db_state.rsurf && rctx->db_state.rsurf->db_htile_surface && rctx->zwritemask) {
-		/* FORCE_OFF means HiZ/HiS are determined by DB_SHADER_CONTROL */
-		db_render_override |= S_02800C_FORCE_HIZ_ENABLE(V_02800C_FORCE_OFF);
-		/* This is to fix a lockup when hyperz and alpha test are enabled at
-		 * the same time somehow GPU get confuse on which order to pick for
-		 * z test
-		 */
-		if (rctx->alphatest_state.sx_alpha_test_control) {
-			db_render_override |= S_02800C_FORCE_SHADER_Z_ORDER(1);
-		}
-	} else {
-		db_render_override |= S_02800C_FORCE_HIZ_ENABLE(V_02800C_FORCE_DISABLE);
-	}
+	if (rctx->alphatest_state.sx_alpha_test_control)
+		db_render_override |= S_02800C_FORCE_SHADER_Z_ORDER(1);
+
 	if (a->flush_depthstencil_through_cb) {
 		assert(a->copy_depth || a->copy_stencil);
 
@@ -2424,7 +2414,7 @@ static void cayman_init_atom_start_cs(struct r600_context *rctx)
 	struct r600_command_buffer *cb = &rctx->start_cs_cmd;
 	int tmp, i;
 
-	r600_init_command_buffer(cb, 342);
+	r600_init_command_buffer(cb, 338);
 
 	/* This must be first. */
 	r600_store_value(cb, PKT3(PKT3_CONTEXT_CONTROL, 1, 0));
@@ -2477,10 +2467,6 @@ static void cayman_init_atom_start_cs(struct r600_context *rctx)
 	r600_store_value(cb, 0); /* R_028A40_VGT_GS_MODE */
 
 	r600_store_context_reg(cb, R_028B98_VGT_STRMOUT_BUFFER_CONFIG, 0);
-
-	r600_store_context_reg_seq(cb, R_028AB4_VGT_REUSE_OFF, 2);
-	r600_store_value(cb, 0); /* R_028AB4_VGT_REUSE_OFF */
-	r600_store_value(cb, 0); /* R_028AB8_VGT_VTX_CNT_EN */
 
 	r600_store_config_reg(cb, R_008A14_PA_CL_ENHANCE, (3 << 1) | 1);
 
@@ -2681,7 +2667,7 @@ void evergreen_init_atom_start_cs(struct r600_context *rctx)
 		return;
 	}
 
-	r600_init_command_buffer(cb, 342);
+	r600_init_command_buffer(cb, 338);
 
 	/* This must be first. */
 	r600_store_value(cb, PKT3(PKT3_CONTEXT_CONTROL, 1, 0));
@@ -2905,10 +2891,6 @@ void evergreen_init_atom_start_cs(struct r600_context *rctx)
 	r600_store_value(cb, 0); /* R_028A38_VGT_GROUP_VECT_0_FMT_CNTL */
 	r600_store_value(cb, 0); /* R_028A3C_VGT_GROUP_VECT_1_FMT_CNTL */
 	r600_store_value(cb, 0); /* R_028A40_VGT_GS_MODE */
-
-	r600_store_context_reg_seq(cb, R_028AB4_VGT_REUSE_OFF, 2);
-	r600_store_value(cb, 0); /* R_028AB4_VGT_REUSE_OFF */
-	r600_store_value(cb, 0); /* R_028AB8_VGT_VTX_CNT_EN */
 
 	r600_store_config_reg(cb, R_008A14_PA_CL_ENHANCE, (3 << 1) | 1);
 
@@ -3741,7 +3723,7 @@ void evergreen_init_state_functions(struct r600_context *rctx)
 	r600_init_atom(rctx, &rctx->blend_color.atom, id++, r600_emit_blend_color, 6);
 	r600_init_atom(rctx, &rctx->blend_state.atom, id++, r600_emit_cso_state, 0);
 	r600_init_atom(rctx, &rctx->cb_misc_state.atom, id++, evergreen_emit_cb_misc_state, 4);
-	r600_init_atom(rctx, &rctx->clip_misc_state.atom, id++, r600_emit_clip_misc_state, 6);
+	r600_init_atom(rctx, &rctx->clip_misc_state.atom, id++, r600_emit_clip_misc_state, 9);
 	r600_init_atom(rctx, &rctx->clip_state.atom, id++, evergreen_emit_clip_state, 26);
 	r600_init_atom(rctx, &rctx->db_misc_state.atom, id++, evergreen_emit_db_misc_state, 10);
 	r600_init_atom(rctx, &rctx->db_state.atom, id++, evergreen_emit_db_state, 14);

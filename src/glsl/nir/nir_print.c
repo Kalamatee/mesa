@@ -220,6 +220,53 @@ print_alu_instr(nir_alu_instr *instr, print_state *state)
 }
 
 static void
+print_constant(nir_constant *c, const struct glsl_type *type, print_state *state)
+{
+   FILE *fp = state->fp;
+   unsigned total_elems = glsl_get_components(type);
+   unsigned i;
+
+   switch (glsl_get_base_type(type)) {
+   case GLSL_TYPE_UINT:
+   case GLSL_TYPE_INT:
+   case GLSL_TYPE_BOOL:
+      for (i = 0; i < total_elems; i++) {
+         if (i > 0) fprintf(fp, ", ");
+         fprintf(fp, "0x%08x", c->value.u[i]);
+      }
+      break;
+
+   case GLSL_TYPE_FLOAT:
+      for (i = 0; i < total_elems; i++) {
+         if (i > 0) fprintf(fp, ", ");
+         fprintf(fp, "%f", c->value.f[i]);
+      }
+      break;
+
+   case GLSL_TYPE_STRUCT:
+      for (i = 0; i < c->num_elements; i++) {
+         if (i > 0) fprintf(fp, ", ");
+         fprintf(fp, "{ ");
+         print_constant(c->elements[i], glsl_get_struct_field(type, i), state);
+         fprintf(fp, " }");
+      }
+      break;
+
+   case GLSL_TYPE_ARRAY:
+      for (i = 0; i < c->num_elements; i++) {
+         if (i > 0) fprintf(fp, ", ");
+         fprintf(fp, "{ ");
+         print_constant(c->elements[i], glsl_get_array_element(type), state);
+         fprintf(fp, " }");
+      }
+      break;
+
+   default:
+      unreachable("not reached");
+   }
+}
+
+static void
 print_var_decl(nir_variable *var, print_state *state)
 {
    FILE *fp = state->fp;
@@ -293,6 +340,12 @@ print_var_decl(nir_variable *var, print_state *state)
       }
 
       fprintf(fp, " (%s, %u)", loc, var->data.driver_location);
+   }
+
+   if (var->constant_initializer) {
+      fprintf(fp, " = { ");
+      print_constant(var->constant_initializer, var->type, state);
+      fprintf(fp, " }");
    }
 
    fprintf(fp, "\n");
@@ -439,21 +492,15 @@ print_intrinsic_instr(nir_intrinsic_instr *instr, print_state *state)
 
    switch (instr->intrinsic) {
    case nir_intrinsic_load_uniform:
-   case nir_intrinsic_load_uniform_indirect:
       var_list = &state->shader->uniforms;
       break;
    case nir_intrinsic_load_input:
-   case nir_intrinsic_load_input_indirect:
    case nir_intrinsic_load_per_vertex_input:
-   case nir_intrinsic_load_per_vertex_input_indirect:
       var_list = &state->shader->inputs;
       break;
    case nir_intrinsic_load_output:
-   case nir_intrinsic_load_output_indirect:
    case nir_intrinsic_store_output:
-   case nir_intrinsic_store_output_indirect:
    case nir_intrinsic_store_per_vertex_output:
-   case nir_intrinsic_store_per_vertex_output_indirect:
       var_list = &state->shader->outputs;
       break;
    default:

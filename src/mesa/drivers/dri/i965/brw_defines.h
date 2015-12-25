@@ -41,6 +41,12 @@
 #define GET_BITS(data, high, low) ((data & INTEL_MASK((high), (low))) >> (low))
 #define GET_FIELD(word, field) (((word)  & field ## _MASK) >> field ## _SHIFT)
 
+/**
+ * For use with masked MMIO registers where the upper 16 bits control which
+ * of the lower bits are committed to the register.
+ */
+#define REG_MASK(value) ((value) << 16)
+
 #ifndef BRW_DEFINES_H
 #define BRW_DEFINES_H
 
@@ -1299,6 +1305,14 @@ enum opcode {
     *           UD immediate).
     */
    SHADER_OPCODE_MOV_INDIRECT,
+
+   VEC4_OPCODE_URB_READ,
+   TCS_OPCODE_GET_INSTANCE_ID,
+   TCS_OPCODE_URB_WRITE,
+   TCS_OPCODE_SET_INPUT_URB_OFFSETS,
+   TCS_OPCODE_SET_OUTPUT_URB_OFFSETS,
+   TCS_OPCODE_GET_PRIMITIVE_ID,
+   TCS_OPCODE_CREATE_BARRIER_HEADER,
 };
 
 enum brw_urb_write_flags {
@@ -2878,6 +2892,8 @@ enum brw_wm_barycentric_interp_mode {
 /* GEN7 DW5, GEN8+ DW6 */
 # define MEDIA_BARRIER_ENABLE_SHIFT             21
 # define MEDIA_BARRIER_ENABLE_MASK              INTEL_MASK(21, 21)
+# define MEDIA_SHARED_LOCAL_MEMORY_SIZE_SHIFT   16
+# define MEDIA_SHARED_LOCAL_MEMORY_SIZE_MASK    INTEL_MASK(20, 16)
 # define MEDIA_GPGPU_THREAD_COUNT_SHIFT         0
 # define MEDIA_GPGPU_THREAD_COUNT_MASK          INTEL_MASK(7, 0)
 # define GEN8_MEDIA_GPGPU_THREAD_COUNT_SHIFT    0

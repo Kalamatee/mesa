@@ -159,8 +159,10 @@ intel_viewport(struct gl_context *ctx)
    __DRIcontext *driContext = brw->driContext;
 
    if (_mesa_is_winsys_fbo(ctx->DrawBuffer)) {
-      dri2InvalidateDrawable(driContext->driDrawablePriv);
-      dri2InvalidateDrawable(driContext->driReadablePriv);
+      if (driContext->driDrawablePriv)
+         dri2InvalidateDrawable(driContext->driDrawablePriv);
+      if (driContext->driReadablePriv)
+         dri2InvalidateDrawable(driContext->driReadablePriv);
    }
 }
 
@@ -195,6 +197,51 @@ intel_update_state(struct gl_context * ctx, GLuint new_state)
       intel_miptree_all_slices_resolve_depth(brw, tex_obj->mt);
       intel_miptree_resolve_color(brw, tex_obj->mt);
       brw_render_cache_set_check_flush(brw, tex_obj->mt->bo);
+   }
+
+   /* Resolve color for each active shader image. */
+   for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
+      const struct gl_shader *shader = ctx->_Shader->CurrentProgram[i] ?
+         ctx->_Shader->CurrentProgram[i]->_LinkedShaders[i] : NULL;
+
+      if (unlikely(shader && shader->NumImages)) {
+         for (unsigned j = 0; j < shader->NumImages; j++) {
+            struct gl_image_unit *u = &ctx->ImageUnits[shader->ImageUnits[j]];
+            tex_obj = intel_texture_object(u->TexObj);
+
+            if (tex_obj && tex_obj->mt) {
+               intel_miptree_resolve_color(brw, tex_obj->mt);
+               brw_render_cache_set_check_flush(brw, tex_obj->mt->bo);
+            }
+         }
+      }
+   }
+
+   /* If FRAMEBUFFER_SRGB is used on Gen9+ then we need to resolve any of the
+    * single-sampled color renderbuffers because the CCS buffer isn't
+    * supported for SRGB formats. This only matters if FRAMEBUFFER_SRGB is
+    * enabled because otherwise the surface state will be programmed with the
+    * linear equivalent format anyway.
+    */
+   if (brw->gen >= 9 && ctx->Color.sRGBEnabled) {
+      struct gl_framebuffer *fb = ctx->DrawBuffer;
+      for (int i = 0; i < fb->_NumColorDrawBuffers; i++) {
+         struct gl_renderbuffer *rb = fb->_ColorDrawBuffers[i];
+
+         if (rb == NULL)
+            continue;
+
+         struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+         struct intel_mipmap_tree *mt = irb->mt;
+
+         if (mt == NULL ||
+             mt->num_samples > 1 ||
+             _mesa_get_srgb_format_linear(mt->format) == mt->format)
+               continue;
+
+         intel_miptree_resolve_color(brw, mt);
+         brw_render_cache_set_check_flush(brw, mt->bo);
+      }
    }
 
    _mesa_lock_context_textures(ctx);
@@ -331,7 +378,12 @@ brw_initialize_context_constants(struct brw_context *brw)
       [MESA_SHADER_TESS_EVAL] = brw->gen >= 8,
       [MESA_SHADER_GEOMETRY] = brw->gen >= 6,
       [MESA_SHADER_FRAGMENT] = true,
-      [MESA_SHADER_COMPUTE] = _mesa_extension_override_enables.ARB_compute_shader,
+      [MESA_SHADER_COMPUTE] =
+         (ctx->API == API_OPENGL_CORE &&
+          ctx->Const.MaxComputeWorkGroupSize[0] >= 1024) ||
+         (ctx->API == API_OPENGLES2 &&
+          ctx->Const.MaxComputeWorkGroupSize[0] >= 128) ||
+         _mesa_extension_override_enables.ARB_compute_shader,
    };
 
    unsigned num_stages = 0;
@@ -620,7 +672,7 @@ brw_initialize_context_constants(struct brw_context *brw)
 }
 
 static void
-brw_adjust_cs_context_constants(struct brw_context *brw)
+brw_initialize_cs_context_constants(struct brw_context *brw, unsigned max_threads)
 {
    struct gl_context *ctx = &brw->ctx;
 
@@ -634,7 +686,7 @@ brw_adjust_cs_context_constants(struct brw_context *brw)
     */
    const int simd_size = ctx->API == API_OPENGL_CORE ? 16 : 8;
 
-   const uint32_t max_invocations = simd_size * brw->max_cs_threads;
+   const uint32_t max_invocations = simd_size * max_threads;
    ctx->Const.MaxComputeWorkGroupSize[0] = max_invocations;
    ctx->Const.MaxComputeWorkGroupSize[1] = max_invocations;
    ctx->Const.MaxComputeWorkGroupSize[2] = max_invocations;
@@ -826,6 +878,7 @@ brwCreateContext(gl_api api,
    if (INTEL_DEBUG & DEBUG_PERF)
       brw->perf_debug = true;
 
+   brw_initialize_cs_context_constants(brw, devinfo->max_cs_threads);
    brw_initialize_context_constants(brw);
 
    ctx->Const.ResetStrategy = notify_reset
@@ -879,8 +932,6 @@ brwCreateContext(gl_api api,
    brw->urb.max_hs_entries = devinfo->urb.max_hs_entries;
    brw->urb.max_ds_entries = devinfo->urb.max_ds_entries;
    brw->urb.max_gs_entries = devinfo->urb.max_gs_entries;
-
-   brw_adjust_cs_context_constants(brw);
 
    /* Estimate the size of the mappable aperture into the GTT.  There's an
     * ioctl to get the whole GTT size, but not one to get the mappable subset.

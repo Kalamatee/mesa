@@ -1275,6 +1275,10 @@ struct gl_buffer_object
    GLboolean Immutable; /**< GL_ARB_buffer_storage */
    gl_buffer_usage UsageHistory; /**< How has this buffer been used so far? */
 
+   /** Counters used for buffer usage warnings */
+   GLuint NumSubDataCalls;
+   GLuint NumMapBufferWriteCalls;
+
    struct gl_buffer_mapping Mappings[MAP_COUNT];
 };
 
@@ -2151,8 +2155,6 @@ struct gl_compute_program_state
 /**
  * ATI_fragment_shader runtime state
  */
-#define ATI_FS_INPUT_PRIMARY 0
-#define ATI_FS_INPUT_SECONDARY 1
 
 struct atifs_instruction;
 struct atifs_setupinst;
@@ -2670,6 +2672,10 @@ struct gl_shader_program
        * local_size_{x,y,z}.  Otherwise undefined.
        */
       unsigned LocalSize[3];
+      /**
+       * Size of shared variables accessed by the compute shader.
+       */
+      unsigned SharedSize;
    } Comp;
 
    /* post-link info: */
@@ -2880,6 +2886,9 @@ struct gl_shader_compiler_options
    GLboolean OptimizeForAOS;
 
    GLboolean LowerBufferInterfaceBlocks; /**< Lower UBO and SSBO access to intrinsics. */
+
+   GLboolean LowerShaderSharedVariables; /**< Lower compute shader shared
+                                          *   variable access to intrinsics. */
 
    const struct nir_shader_compiler_options *NirOptions;
 };
@@ -4526,11 +4535,22 @@ enum _debug
    DEBUG_INCOMPLETE_FBO         = (1 << 3)
 };
 
+/**
+ * Checks if the active fragment shader program can have side effects due
+ * to use of things like atomic buffers or images
+ */
 static inline bool
-_mesa_active_fragment_shader_has_atomic_ops(const struct gl_context *ctx)
+_mesa_active_fragment_shader_has_side_effects(const struct gl_context *ctx)
 {
-   return ctx->Shader._CurrentFragmentProgram != NULL &&
-      ctx->Shader._CurrentFragmentProgram->_LinkedShaders[MESA_SHADER_FRAGMENT]->NumAtomicBuffers > 0;
+   const struct gl_shader *sh;
+
+   if (!ctx->_Shader->_CurrentFragmentProgram)
+      return false;
+
+   sh = ctx->_Shader->_CurrentFragmentProgram->_LinkedShaders[MESA_SHADER_FRAGMENT];
+   return sh->NumAtomicBuffers > 0 ||
+          sh->NumImages > 0 ||
+          sh->NumShaderStorageBlocks > 0;
 }
 
 #ifdef __cplusplus
