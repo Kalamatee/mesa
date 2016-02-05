@@ -1618,6 +1618,12 @@ draw_llvm_generate(struct draw_llvm *llvm, struct draw_llvm_variant *variant,
    context_ptr               = LLVMGetParam(variant_func, 0);
    io_ptr                    = LLVMGetParam(variant_func, 1);
    vbuffers_ptr              = LLVMGetParam(variant_func, 2);
+   /*
+    * XXX: stride is actually unused. The stride we use is strictly calculated
+    * from the number of outputs (including the draw_extra outputs).
+    * Should probably fix some day (we need a new vs just because of extra
+    * outputs which the generated vs won't touch).
+    */
    stride                    = LLVMGetParam(variant_func, 5 + (elts ? 1 : 0));
    vb_ptr                    = LLVMGetParam(variant_func, 6 + (elts ? 1 : 0));
    system_values.instance_id = LLVMGetParam(variant_func, 7 + (elts ? 1 : 0));
@@ -1861,6 +1867,8 @@ draw_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
 
    key = (struct draw_llvm_variant_key *)store;
 
+   memset(key, 0, offsetof(struct draw_llvm_variant_key, vertex_element[0]));
+
    key->clamp_vertex_color = llvm->draw->rasterizer->clamp_vertex_color; /**/
 
    /* Presumably all variants of the shader should have the same
@@ -1883,7 +1891,6 @@ draw_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
    key->ucp_enable = llvm->draw->rasterizer->clip_plane_enable;
    key->has_gs = llvm->draw->gs.geometry_shader != NULL;
    key->num_outputs = draw_total_vs_outputs(llvm->draw);
-   key->pad1 = 0;
 
    /* All variants of this shader will have the same value for
     * nr_samplers.  Not yet trying to compact away holes in the
@@ -2314,6 +2321,8 @@ draw_gs_llvm_make_variant_key(struct draw_llvm *llvm, char *store)
    struct draw_sampler_static_state *draw_sampler;
 
    key = (struct draw_gs_llvm_variant_key *)store;
+
+   memset(key, 0, offsetof(struct draw_gs_llvm_variant_key, samplers[0]));
 
    key->num_outputs = draw_total_gs_outputs(llvm->draw);
 

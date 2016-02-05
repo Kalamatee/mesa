@@ -26,8 +26,7 @@
 #include "brw_fs.h"
 #include "brw_nir.h"
 #include "brw_program.h"
-#include "glsl/ir_optimization.h"
-#include "glsl/glsl_parser_extras.h"
+#include "compiler/glsl/ir_optimization.h"
 #include "program/program.h"
 #include "main/shaderapi.h"
 #include "main/uniforms.h"
@@ -74,36 +73,13 @@ brw_lower_packing_builtins(struct brw_context *brw,
                            gl_shader_stage shader_type,
                            exec_list *ir)
 {
-   const struct brw_compiler *compiler = brw->intelScreen->compiler;
+   /* Gens < 7 don't have instructions to convert to or from half-precision,
+    * and Gens < 6 don't expose that functionality.
+    */
+   if (brw->gen != 6)
+      return;
 
-   int ops = LOWER_PACK_SNORM_2x16
-           | LOWER_UNPACK_SNORM_2x16
-           | LOWER_PACK_UNORM_2x16
-           | LOWER_UNPACK_UNORM_2x16;
-
-   if (compiler->scalar_stage[shader_type]) {
-      ops |= LOWER_UNPACK_UNORM_4x8
-           | LOWER_UNPACK_SNORM_4x8
-           | LOWER_PACK_UNORM_4x8
-           | LOWER_PACK_SNORM_4x8;
-   }
-
-   if (brw->gen >= 7) {
-      /* Gen7 introduced the f32to16 and f16to32 instructions, which can be
-       * used to execute packHalf2x16 and unpackHalf2x16. For AOS code, no
-       * lowering is needed. For SOA code, the Half2x16 ops must be
-       * scalarized.
-       */
-      if (compiler->scalar_stage[shader_type]) {
-         ops |= LOWER_PACK_HALF_2x16_TO_SPLIT
-             |  LOWER_UNPACK_HALF_2x16_TO_SPLIT;
-      }
-   } else {
-      ops |= LOWER_PACK_HALF_2x16
-          |  LOWER_UNPACK_HALF_2x16;
-   }
-
-   lower_packing_builtins(ir, ops);
+   lower_packing_builtins(ir, LOWER_PACK_HALF_2x16 | LOWER_UNPACK_HALF_2x16);
 }
 
 static void
@@ -127,14 +103,12 @@ process_glsl_ir(gl_shader_stage stage,
     */
    brw_lower_packing_builtins(brw, shader->Stage, shader->ir);
    do_mat_op_to_vec(shader->ir);
-   const int bitfield_insert = brw->gen >= 7 ? BITFIELD_INSERT_TO_BFM_BFI : 0;
    lower_instructions(shader->ir,
                       MOD_TO_FLOOR |
                       DIV_TO_MUL_RCP |
                       SUB_TO_ADD_NEG |
                       EXP_TO_EXP2 |
                       LOG_TO_LOG2 |
-                      bitfield_insert |
                       LDEXP_TO_ARITH |
                       CARRY_TO_ARITH |
                       BORROW_TO_ARITH);

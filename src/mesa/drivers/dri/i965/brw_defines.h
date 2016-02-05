@@ -1085,6 +1085,18 @@ enum opcode {
     */
    SHADER_OPCODE_BROADCAST,
 
+   /**
+    * Pick the byte from its first source register given by the index
+    * specified as second source.
+    */
+   SHADER_OPCODE_EXTRACT_BYTE,
+
+   /**
+    * Pick the word from its first source register given by the index
+    * specified as second source.
+    */
+   SHADER_OPCODE_EXTRACT_WORD,
+
    VEC4_OPCODE_MOV_BYTES,
    VEC4_OPCODE_PACK_BYTES,
    VEC4_OPCODE_UNPACK_UNIFORM,
@@ -1313,6 +1325,13 @@ enum opcode {
    TCS_OPCODE_SET_OUTPUT_URB_OFFSETS,
    TCS_OPCODE_GET_PRIMITIVE_ID,
    TCS_OPCODE_CREATE_BARRIER_HEADER,
+   TCS_OPCODE_SRC0_010_IS_ZERO,
+   TCS_OPCODE_RELEASE_INPUT,
+   TCS_OPCODE_THREAD_END,
+
+   TES_OPCODE_GET_PRIMITIVE_ID,
+   TES_OPCODE_CREATE_INPUT_READ_HEADER,
+   TES_OPCODE_ADD_INDIRECT_URB_OFFSET,
 };
 
 enum brw_urb_write_flags {

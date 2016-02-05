@@ -49,10 +49,10 @@
 #include "main/shaderobj.h"
 #include "main/transformfeedback.h"
 #include "main/uniforms.h"
-#include "glsl/glsl_parser_extras.h"
-#include "glsl/ir.h"
-#include "glsl/ir_uniform.h"
-#include "glsl/program.h"
+#include "compiler/glsl/glsl_parser_extras.h"
+#include "compiler/glsl/ir.h"
+#include "compiler/glsl/ir_uniform.h"
+#include "compiler/glsl/program.h"
 #include "program/program.h"
 #include "program/prog_print.h"
 #include "program/prog_parameter.h"
@@ -300,7 +300,8 @@ create_shader(struct gl_context *ctx, GLenum type)
    GLuint name;
 
    if (!_mesa_validate_shader_target(ctx, type)) {
-      _mesa_error(ctx, GL_INVALID_ENUM, "CreateShader(type)");
+      _mesa_error(ctx, GL_INVALID_ENUM, "CreateShader(%s)",
+                  _mesa_enum_to_string(type));
       return 0;
    }
 
@@ -1264,7 +1265,7 @@ _mesa_AttachShader(GLuint program, GLuint shader)
 
 
 void GLAPIENTRY
-_mesa_CompileShader(GLhandleARB shaderObj)
+_mesa_CompileShader(GLuint shaderObj)
 {
    GET_CURRENT_CONTEXT(ctx);
    if (MESA_VERBOSE & VERBOSE_API)
@@ -1314,7 +1315,7 @@ _mesa_DeleteObjectARB(GLhandleARB obj)
 {
    if (MESA_VERBOSE & VERBOSE_API) {
       GET_CURRENT_CONTEXT(ctx);
-      _mesa_debug(ctx, "glDeleteObjectARB(%u)\n", obj);
+      _mesa_debug(ctx, "glDeleteObjectARB(%lu)\n", (unsigned long)obj);
    }
 
    if (obj) {
@@ -1478,8 +1479,8 @@ _mesa_GetShaderInfoLog(GLuint shader, GLsizei bufSize,
 
 
 void GLAPIENTRY
-_mesa_GetShaderSource(GLhandleARB shader, GLsizei maxLength,
-                         GLsizei *length, GLcharARB *sourceOut)
+_mesa_GetShaderSource(GLuint shader, GLsizei maxLength,
+                      GLsizei *length, GLchar *sourceOut)
 {
    GET_CURRENT_CONTEXT(ctx);
    get_shader_source(ctx, shader, maxLength, length, sourceOut);
@@ -1511,7 +1512,7 @@ _mesa_IsShader(GLuint name)
 
 
 void GLAPIENTRY
-_mesa_LinkProgram(GLhandleARB programObj)
+_mesa_LinkProgram(GLuint programObj)
 {
    GET_CURRENT_CONTEXT(ctx);
    if (MESA_VERBOSE & VERBOSE_API)
@@ -1640,8 +1641,8 @@ read_shader(const gl_shader_stage stage, const char *source)
  * and pass it to _mesa_shader_source().
  */
 void GLAPIENTRY
-_mesa_ShaderSource(GLhandleARB shaderObj, GLsizei count,
-                   const GLcharARB * const * string, const GLint * length)
+_mesa_ShaderSource(GLuint shaderObj, GLsizei count,
+                   const GLchar * const * string, const GLint * length)
 {
    GET_CURRENT_CONTEXT(ctx);
    GLint *offsets;
@@ -1728,7 +1729,7 @@ _mesa_ShaderSource(GLhandleARB shaderObj, GLsizei count,
 
 
 void GLAPIENTRY
-_mesa_UseProgram(GLhandleARB program)
+_mesa_UseProgram(GLuint program)
 {
    GET_CURRENT_CONTEXT(ctx);
    struct gl_shader_program *shProg;
@@ -1790,7 +1791,7 @@ _mesa_UseProgram(GLhandleARB program)
 
 
 void GLAPIENTRY
-_mesa_ValidateProgram(GLhandleARB program)
+_mesa_ValidateProgram(GLuint program)
 {
    GET_CURRENT_CONTEXT(ctx);
    validate_program(ctx, program);
@@ -2529,6 +2530,11 @@ _mesa_UniformSubroutinesuiv(GLenum shadertype, GLsizei count,
    i = 0;
    do {
       struct gl_uniform_storage *uni = sh->SubroutineUniformRemapTable[i];
+      if (uni == NULL) {
+         i++;
+         continue;
+      }
+
       int uni_count = uni->array_elements ? uni->array_elements : 1;
       int j, k;
 
@@ -2556,6 +2562,11 @@ _mesa_UniformSubroutinesuiv(GLenum shadertype, GLsizei count,
    i = 0;
    do {
       struct gl_uniform_storage *uni = sh->SubroutineUniformRemapTable[i];
+      if (uni == NULL) {
+         i++;
+         continue;
+      }
+
       int uni_count = uni->array_elements ? uni->array_elements : 1;
 
       memcpy(&uni->storage[0], &indices[i],

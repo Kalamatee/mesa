@@ -246,6 +246,7 @@ struct brw_wm_prog_key {
    bool compute_sample_id:1;
    unsigned line_aa:2;
    bool high_quality_derivatives:1;
+   bool force_dual_color_blend:1;
 
    uint16_t drawable_height;
    uint64_t input_slots_valid;
@@ -595,6 +596,9 @@ struct brw_vs_prog_data {
 
    bool uses_vertexid;
    bool uses_instanceid;
+   bool uses_basevertex;
+   bool uses_baseinstance;
+   bool uses_drawid;
 };
 
 struct brw_tcs_prog_data
@@ -682,6 +686,9 @@ struct brw_gs_prog_data
 
 
 /** @} */
+
+struct brw_compiler *
+brw_compiler_create(void *mem_ctx, const struct brw_device_info *devinfo);
 
 /**
  * Compile a vertex shader.

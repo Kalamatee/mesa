@@ -111,6 +111,8 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return 256;
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
       return 1; /* 256 for binding as RT, but that's not possible in GL */
+   case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
+      return 16;
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return NOUVEAU_MIN_BUFFER_MAP_ALIGN;
    case PIPE_CAP_MAX_VIEWPORTS:
@@ -184,6 +186,12 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_SHAREABLE_SHADERS:
    case PIPE_CAP_CLEAR_TEXTURE:
+   case PIPE_CAP_DRAW_PARAMETERS:
+   case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT:
+   case PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS:
+   case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
+   case PIPE_CAP_QUERY_BUFFER_OBJECT:
       return 1;
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
       return (class_3d >= NVE4_3D_CLASS) ? 1 : 0;
@@ -206,6 +214,12 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_VERTEXID_NOBASE:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
    case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
+   case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
+   case PIPE_CAP_INVALIDATE_BUFFER:
+   case PIPE_CAP_GENERATE_MIPMAP:
+   case PIPE_CAP_STRING_MARKER:
+   case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
+   case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -286,9 +300,10 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
       if (shader == PIPE_SHADER_COMPUTE && class_3d >= NVE4_3D_CLASS)
          return NVE4_MAX_PIPE_CONSTBUFS_COMPUTE;
       return NVC0_MAX_PIPE_CONSTBUFS;
-   case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
       return shader != PIPE_SHADER_FRAGMENT;
+   case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+      return shader != PIPE_SHADER_FRAGMENT || class_3d < GM107_3D_CLASS;
    case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
    case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
       return 1;
@@ -312,6 +327,8 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       return 0;
+   case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
+      return NVC0_MAX_BUFFERS;
    case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
       return 16; /* would be 32 in linked (OpenGL-style) mode */
    case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
@@ -664,8 +681,9 @@ nvc0_screen_create(struct nouveau_device *dev)
    push->rsvd_kick = 5;
 
    screen->base.vidmem_bindings |= PIPE_BIND_CONSTANT_BUFFER |
+      PIPE_BIND_SHADER_BUFFER |
       PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER |
-      PIPE_BIND_COMMAND_ARGS_BUFFER;
+      PIPE_BIND_COMMAND_ARGS_BUFFER | PIPE_BIND_QUERY_BUFFER;
    screen->base.sysmem_bindings |=
       PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER;
 
@@ -879,9 +897,9 @@ nvc0_screen_create(struct nouveau_device *dev)
       /* TIC and TSC entries for each unit (nve4+ only) */
       /* auxiliary constants (6 user clip planes, base instance id) */
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
-      PUSH_DATA (push, 512);
-      PUSH_DATAh(push, screen->uniform_bo->offset + (5 << 16) + (i << 9));
-      PUSH_DATA (push, screen->uniform_bo->offset + (5 << 16) + (i << 9));
+      PUSH_DATA (push, 1024);
+      PUSH_DATAh(push, screen->uniform_bo->offset + (5 << 16) + (i << 10));
+      PUSH_DATA (push, screen->uniform_bo->offset + (5 << 16) + (i << 10));
       BEGIN_NVC0(push, NVC0_3D(CB_BIND(i)), 1);
       PUSH_DATA (push, (15 << 4) | 1);
       if (screen->eng3d->oclass >= NVE4_3D_CLASS) {
@@ -901,8 +919,8 @@ nvc0_screen_create(struct nouveau_device *dev)
    /* return { 0.0, 0.0, 0.0, 0.0 } for out-of-bounds vtxbuf access */
    BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
    PUSH_DATA (push, 256);
-   PUSH_DATAh(push, screen->uniform_bo->offset + (5 << 16) + (6 << 9));
-   PUSH_DATA (push, screen->uniform_bo->offset + (5 << 16) + (6 << 9));
+   PUSH_DATAh(push, screen->uniform_bo->offset + (5 << 16) + (6 << 10));
+   PUSH_DATA (push, screen->uniform_bo->offset + (5 << 16) + (6 << 10));
    BEGIN_1IC0(push, NVC0_3D(CB_POS), 5);
    PUSH_DATA (push, 0);
    PUSH_DATAf(push, 0.0f);
@@ -910,8 +928,8 @@ nvc0_screen_create(struct nouveau_device *dev)
    PUSH_DATAf(push, 0.0f);
    PUSH_DATAf(push, 0.0f);
    BEGIN_NVC0(push, NVC0_3D(VERTEX_RUNOUT_ADDRESS_HIGH), 2);
-   PUSH_DATAh(push, screen->uniform_bo->offset + (5 << 16) + (6 << 9));
-   PUSH_DATA (push, screen->uniform_bo->offset + (5 << 16) + (6 << 9));
+   PUSH_DATAh(push, screen->uniform_bo->offset + (5 << 16) + (6 << 10));
+   PUSH_DATA (push, screen->uniform_bo->offset + (5 << 16) + (6 << 10));
 
    if (screen->base.drm->version >= 0x01000101) {
       ret = nouveau_getparam(dev, NOUVEAU_GETPARAM_GRAPH_UNITS, &value);
@@ -941,8 +959,12 @@ nvc0_screen_create(struct nouveau_device *dev)
    PUSH_DATA (push, screen->tls->size);
    BEGIN_NVC0(push, NVC0_3D(WARP_TEMP_ALLOC), 1);
    PUSH_DATA (push, 0);
+   /* Reduce likelihood of collision with real buffers by placing the hole at
+    * the top of the 4G area. This will have to be dealt with for real
+    * eventually by blocking off that area from the VM.
+    */
    BEGIN_NVC0(push, NVC0_3D(LOCAL_BASE), 1);
-   PUSH_DATA (push, 0);
+   PUSH_DATA (push, 0xff << 24);
 
    if (screen->eng3d->oclass < GM107_3D_CLASS) {
       ret = nouveau_bo_new(dev, NV_VRAM_DOMAIN(&screen->base), 1 << 17, 1 << 20, NULL,
@@ -1025,6 +1047,9 @@ nvc0_screen_create(struct nouveau_device *dev)
    MK_MACRO(NVC0_3D_MACRO_POLYGON_MODE_BACK, mme9097_poly_mode_back);
    MK_MACRO(NVC0_3D_MACRO_DRAW_ARRAYS_INDIRECT, mme9097_draw_arrays_indirect);
    MK_MACRO(NVC0_3D_MACRO_DRAW_ELEMENTS_INDIRECT, mme9097_draw_elts_indirect);
+   MK_MACRO(NVC0_3D_MACRO_DRAW_ARRAYS_INDIRECT_COUNT, mme9097_draw_arrays_indirect_count);
+   MK_MACRO(NVC0_3D_MACRO_DRAW_ELEMENTS_INDIRECT_COUNT, mme9097_draw_elts_indirect_count);
+   MK_MACRO(NVC0_3D_MACRO_QUERY_BUFFER_WRITE, mme9097_query_buffer_write);
 
    BEGIN_NVC0(push, NVC0_3D(RASTERIZE_ENABLE), 1);
    PUSH_DATA (push, 1);

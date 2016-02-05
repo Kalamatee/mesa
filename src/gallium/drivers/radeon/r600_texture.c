@@ -533,6 +533,10 @@ static unsigned r600_texture_get_htile_size(struct r600_common_screen *rscreen,
 	    rscreen->info.drm_major == 2 && rscreen->info.drm_minor < 38)
 		return 0;
 
+	/* Overalign HTILE on Stoney to fix piglit/depthstencil-render-miplevels 585. */
+	if (rscreen->family == CHIP_STONEY)
+		num_pipes = 4;
+
 	switch (num_pipes) {
 	case 1:
 		cl_width = 32;
@@ -1212,10 +1216,30 @@ static struct pipe_surface *r600_create_surface(struct pipe_context *pipe,
 						const struct pipe_surface *templ)
 {
 	unsigned level = templ->u.tex.level;
+	unsigned width = u_minify(tex->width0, level);
+	unsigned height = u_minify(tex->height0, level);
 
-	return r600_create_surface_custom(pipe, tex, templ,
-					  u_minify(tex->width0, level),
-					  u_minify(tex->height0, level));
+	if (templ->format != tex->format) {
+		const struct util_format_description *tex_desc
+			= util_format_description(tex->format);
+		const struct util_format_description *templ_desc
+			= util_format_description(templ->format);
+
+		assert(tex_desc->block.bits == templ_desc->block.bits);
+
+		/* Adjust size of surface if and only if the block width or
+		 * height is changed. */
+		if (tex_desc->block.width != templ_desc->block.width ||
+		    tex_desc->block.height != templ_desc->block.height) {
+			unsigned nblks_x = util_format_get_nblocksx(tex->format, width);
+			unsigned nblks_y = util_format_get_nblocksy(tex->format, height);
+
+			width = nblks_x * templ_desc->block.width;
+			height = nblks_y * templ_desc->block.height;
+		}
+	}
+
+	return r600_create_surface_custom(pipe, tex, templ, width, height);
 }
 
 static void r600_surface_destroy(struct pipe_context *pipe,
@@ -1388,7 +1412,6 @@ void evergreen_do_fast_color_clear(struct r600_common_context *rctx,
 		return;
 
 	for (i = 0; i < fb->nr_cbufs; i++) {
-		struct r600_surface *surf;
 		struct r600_texture *tex;
 		unsigned clear_bit = PIPE_CLEAR_COLOR0 << i;
 
@@ -1399,7 +1422,6 @@ void evergreen_do_fast_color_clear(struct r600_common_context *rctx,
 		if (!(*buffers & clear_bit))
 			continue;
 
-		surf = (struct r600_surface *)fb->cbufs[i];
 		tex = (struct r600_texture *)fb->cbufs[i]->texture;
 
 		/* 128-bit formats are unusupported */
@@ -1446,8 +1468,8 @@ void evergreen_do_fast_color_clear(struct r600_common_context *rctx,
 			if (clear_words_needed)
 				tex->dirty_level_mask |= 1 << fb->cbufs[i]->u.tex.level;
 		} else {
-			/* RB+ doesn't work with CMASK fast clear. */
-			if (surf->sx_ps_downconvert)
+			/* Stoney/RB+ doesn't work with CMASK fast clear. */
+			if (rctx->family == CHIP_STONEY)
 				continue;
 
 			/* ensure CMASK is enabled */

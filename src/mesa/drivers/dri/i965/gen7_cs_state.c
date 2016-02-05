@@ -31,7 +31,7 @@
 #include "intel_batchbuffer.h"
 #include "brw_state.h"
 #include "program/prog_statevars.h"
-#include "glsl/ir_uniform.h"
+#include "compiler/glsl/ir_uniform.h"
 
 static unsigned
 get_cs_thread_count(const struct brw_cs_prog_data *cs_prog_data)
@@ -196,6 +196,7 @@ const struct brw_tracked_state brw_cs_state = {
       .brw = BRW_NEW_BATCH |
              BRW_NEW_CS_PROG_DATA |
              BRW_NEW_PUSH_CONSTANT_ALLOCATION |
+             BRW_NEW_SAMPLER_STATE_TABLE |
              BRW_NEW_SURFACES,
    },
    .emit = brw_upload_cs_state

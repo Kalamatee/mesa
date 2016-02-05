@@ -41,10 +41,10 @@ vec4_visitor::emit_nir_code()
    nir_setup_system_values();
 
    /* get the main function and emit it */
-   nir_foreach_overload(nir, overload) {
-      assert(strcmp(overload->function->name, "main") == 0);
-      assert(overload->impl);
-      nir_emit_impl(overload->impl);
+   nir_foreach_function(nir, function) {
+      assert(strcmp(function->name, "main") == 0);
+      assert(function->impl);
+      nir_emit_impl(function->impl);
    }
 }
 
@@ -78,6 +78,20 @@ vec4_visitor::nir_setup_system_value_intrinsic(nir_intrinsic_instr *instr)
                                            glsl_type::int_type);
       break;
 
+   case nir_intrinsic_load_base_instance:
+      reg = &nir_system_values[SYSTEM_VALUE_BASE_INSTANCE];
+      if (reg->file == BAD_FILE)
+         *reg = *make_reg_for_system_value(SYSTEM_VALUE_BASE_INSTANCE,
+                                           glsl_type::int_type);
+      break;
+
+   case nir_intrinsic_load_draw_id:
+      reg = &nir_system_values[SYSTEM_VALUE_DRAW_ID];
+      if (reg->file == BAD_FILE)
+         *reg = *make_reg_for_system_value(SYSTEM_VALUE_DRAW_ID,
+                                           glsl_type::int_type);
+      break;
+
    default:
       break;
    }
@@ -107,10 +121,10 @@ vec4_visitor::nir_setup_system_values()
       nir_system_values[i] = dst_reg();
    }
 
-   nir_foreach_overload(nir, overload) {
-      assert(strcmp(overload->function->name, "main") == 0);
-      assert(overload->impl);
-      nir_foreach_block(overload->impl, setup_system_values_block, this);
+   nir_foreach_function(nir, function) {
+      assert(strcmp(function->name, "main") == 0);
+      assert(function->impl);
+      nir_foreach_block(function->impl, setup_system_values_block, this);
    }
 }
 
@@ -669,6 +683,8 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
    case nir_intrinsic_load_vertex_id_zero_base:
    case nir_intrinsic_load_base_vertex:
    case nir_intrinsic_load_instance_id:
+   case nir_intrinsic_load_base_instance:
+   case nir_intrinsic_load_draw_id:
    case nir_intrinsic_load_invocation_id:
    case nir_intrinsic_load_tess_level_inner:
    case nir_intrinsic_load_tess_level_outer: {
@@ -1053,7 +1069,11 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
    case nir_op_umul_high: {
       struct brw_reg acc = retype(brw_acc_reg(8), dst.type);
 
-      emit(MUL(acc, op[0], op[1]));
+      if (devinfo->gen >= 8)
+         emit(MUL(acc, op[0], retype(op[1], BRW_REGISTER_TYPE_UW)));
+      else
+         emit(MUL(acc, op[0], op[1]));
+
       emit(MACH(dst, op[0], op[1]));
       break;
    }
@@ -1305,6 +1325,24 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
    case nir_op_pack_unorm_2x16:
       unreachable("not reached: should be handled by lower_packing_builtins");
 
+   case nir_op_pack_uvec4_to_uint:
+      unreachable("not reached");
+
+   case nir_op_pack_uvec2_to_uint: {
+      dst_reg tmp1 = dst_reg(this, glsl_type::uint_type);
+      tmp1.writemask = WRITEMASK_X;
+      op[0].swizzle = BRW_SWIZZLE_YYYY;
+      emit(SHL(tmp1, op[0], src_reg(brw_imm_ud(16u))));
+
+      dst_reg tmp2 = dst_reg(this, glsl_type::uint_type);
+      tmp2.writemask = WRITEMASK_X;
+      op[0].swizzle = BRW_SWIZZLE_XXXX;
+      emit(AND(tmp2, op[0], src_reg(brw_imm_ud(0xffffu))));
+
+      emit(OR(dst, src_reg(tmp1), src_reg(tmp2)));
+      break;
+   }
+
    case nir_op_unpack_half_2x16:
       /* As NIR does not guarantee that we have a correct swizzle outside the
        * boundaries of a vector, and the implementation of emit_unpack_half_2x16
@@ -1369,6 +1407,9 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
 
    case nir_op_ubitfield_extract:
    case nir_op_ibitfield_extract:
+      unreachable("should have been lowered");
+   case nir_op_ubfe:
+   case nir_op_ibfe:
       op[0] = fix_3src_operand(op[0]);
       op[1] = fix_3src_operand(op[1]);
       op[2] = fix_3src_operand(op[2]);
@@ -1389,8 +1430,7 @@ vec4_visitor::nir_emit_alu(nir_alu_instr *instr)
       break;
 
    case nir_op_bitfield_insert:
-      unreachable("not reached: should be handled by "
-                  "lower_instructions::bitfield_insert_to_bfm_bfi");
+      unreachable("not reached: should have been lowered");
 
    case nir_op_fsign:
       /* AND(val, 0x80000000) gives the sign bit.

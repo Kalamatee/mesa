@@ -23,8 +23,8 @@
 
 #include "brw_nir.h"
 #include "brw_shader.h"
-#include "glsl/nir/glsl_to_nir.h"
-#include "glsl/nir/nir_builder.h"
+#include "compiler/nir/glsl_to_nir.h"
+#include "compiler/nir/nir_builder.h"
 #include "program/prog_to_nir.h"
 
 static bool
@@ -60,7 +60,7 @@ struct add_const_offset_to_base_params {
 };
 
 static bool
-add_const_offset_to_base(nir_block *block, void *closure)
+add_const_offset_to_base_block(nir_block *block, void *closure)
 {
    struct add_const_offset_to_base_params *params = closure;
    nir_builder *b = &params->b;
@@ -85,7 +85,19 @@ add_const_offset_to_base(nir_block *block, void *closure)
       }
    }
    return true;
+}
 
+static void
+add_const_offset_to_base(nir_shader *nir, nir_variable_mode mode)
+{
+   struct add_const_offset_to_base_params params = { .mode = mode };
+
+   nir_foreach_function(nir, f) {
+      if (f->impl) {
+         nir_builder_init(&params.b, f->impl);
+         nir_foreach_block(f->impl, add_const_offset_to_base_block, &params);
+      }
+   }
 }
 
 static bool
@@ -195,10 +207,6 @@ brw_nir_lower_inputs(nir_shader *nir,
                      const struct brw_device_info *devinfo,
                      bool is_scalar)
 {
-   struct add_const_offset_to_base_params params = {
-      .mode = nir_var_shader_in
-   };
-
    switch (nir->stage) {
    case MESA_SHADER_VERTEX:
       /* Start with the location of the variable's base. */
@@ -212,6 +220,11 @@ brw_nir_lower_inputs(nir_shader *nir,
        */
       nir_lower_io(nir, nir_var_shader_in, type_size_vec4);
 
+      /* This pass needs actual constants */
+      nir_opt_constant_folding(nir);
+
+      add_const_offset_to_base(nir, nir_var_shader_in);
+
       if (is_scalar) {
          /* Finally, translate VERT_ATTRIB_* values into the actual registers.
           *
@@ -221,14 +234,9 @@ brw_nir_lower_inputs(nir_shader *nir,
           */
          GLbitfield64 inputs_read = nir->info.inputs_read;
 
-         /* This pass needs actual constants */
-         nir_opt_constant_folding(nir);
-
-         nir_foreach_overload(nir, overload) {
-            if (overload->impl) {
-               nir_builder_init(&params.b, overload->impl);
-               nir_foreach_block(overload->impl, add_const_offset_to_base, &params);
-               nir_foreach_block(overload->impl, remap_vs_attrs, &inputs_read);
+         nir_foreach_function(nir, function) {
+            if (function->impl) {
+               nir_foreach_block(function->impl, remap_vs_attrs, &inputs_read);
             }
          }
       }
@@ -270,11 +278,11 @@ brw_nir_lower_inputs(nir_shader *nir,
          /* This pass needs actual constants */
          nir_opt_constant_folding(nir);
 
-         nir_foreach_overload(nir, overload) {
-            if (overload->impl) {
-               nir_builder_init(&params.b, overload->impl);
-               nir_foreach_block(overload->impl, add_const_offset_to_base, &params);
-               nir_foreach_block(overload->impl, remap_inputs_with_vue_map,
+         add_const_offset_to_base(nir, nir_var_shader_in);
+
+         nir_foreach_function(nir, function) {
+            if (function->impl) {
+               nir_foreach_block(function->impl, remap_inputs_with_vue_map,
                                  &input_vue_map);
             }
          }
@@ -296,12 +304,12 @@ brw_nir_lower_inputs(nir_shader *nir,
       /* This pass needs actual constants */
       nir_opt_constant_folding(nir);
 
-      nir_foreach_overload(nir, overload) {
-         if (overload->impl) {
-            nir_builder_init(&params.b, overload->impl);
-            nir_foreach_block(overload->impl, add_const_offset_to_base, &params);
-            nir_builder_init(&state.b, overload->impl);
-            nir_foreach_block(overload->impl, remap_patch_urb_offsets, &state);
+      add_const_offset_to_base(nir, nir_var_shader_in);
+
+      nir_foreach_function(nir, function) {
+         if (function->impl) {
+            nir_builder_init(&state.b, function->impl);
+            nir_foreach_block(function->impl, remap_patch_urb_offsets, &state);
          }
       }
       break;
@@ -339,10 +347,6 @@ brw_nir_lower_outputs(nir_shader *nir,
       }
       break;
    case MESA_SHADER_TESS_CTRL: {
-      struct add_const_offset_to_base_params params = {
-         .mode = nir_var_shader_out
-      };
-
       struct remap_patch_urb_offsets_state state;
       brw_compute_tess_vue_map(&state.vue_map, nir->info.outputs_written,
                                nir->info.patch_outputs_written);
@@ -356,12 +360,12 @@ brw_nir_lower_outputs(nir_shader *nir,
       /* This pass needs actual constants */
       nir_opt_constant_folding(nir);
 
-      nir_foreach_overload(nir, overload) {
-         if (overload->impl) {
-            nir_builder_init(&params.b, overload->impl);
-            nir_foreach_block(overload->impl, add_const_offset_to_base, &params);
-            nir_builder_init(&state.b, overload->impl);
-            nir_foreach_block(overload->impl, remap_patch_urb_offsets, &state);
+      add_const_offset_to_base(nir, nir_var_shader_out);
+
+      nir_foreach_function(nir, function) {
+         if (function->impl) {
+            nir_builder_init(&state.b, function->impl);
+            nir_foreach_block(function->impl, remap_patch_urb_offsets, &state);
          }
       }
       break;
@@ -405,42 +409,15 @@ brw_nir_lower_uniforms(nir_shader *nir, bool is_scalar)
    }
 }
 
-#include "util/debug.h"
+#define OPT(pass, ...) ({                                  \
+   bool this_progress = false;                             \
+   NIR_PASS(this_progress, nir, pass, ##__VA_ARGS__);      \
+   if (this_progress)                                      \
+      progress = true;                                     \
+   this_progress;                                          \
+})
 
-static bool
-should_clone_nir()
-{
-   static int should_clone = -1;
-   if (should_clone < 1)
-      should_clone = env_var_as_boolean("NIR_TEST_CLONE", false);
-
-   return should_clone;
-}
-
-#define _OPT(do_pass) (({                                            \
-   bool this_progress = true;                                        \
-   do_pass                                                           \
-   nir_validate_shader(nir);                                         \
-   if (should_clone_nir()) {                                         \
-      nir_shader *clone = nir_shader_clone(ralloc_parent(nir), nir); \
-      ralloc_free(nir);                                              \
-      nir = clone;                                                   \
-   }                                                                 \
-   this_progress;                                                    \
-}))
-
-#define OPT(pass, ...) _OPT(                   \
-   nir_metadata_set_validation_flag(nir);      \
-   this_progress = pass(nir ,##__VA_ARGS__);   \
-   if (this_progress) {                        \
-      progress = true;                         \
-      nir_metadata_check_validation_flag(nir); \
-   }                                           \
-)
-
-#define OPT_V(pass, ...) _OPT( \
-   pass(nir, ##__VA_ARGS__);   \
-)
+#define OPT_V(pass, ...) NIR_PASS_V(nir, pass, ##__VA_ARGS__)
 
 static nir_shader *
 nir_optimize(nir_shader *nir, bool is_scalar)
@@ -565,9 +542,9 @@ brw_postprocess_nir(nir_shader *nir,
 
    if (unlikely(debug_enabled)) {
       /* Re-index SSA defs so we print more sensible numbers. */
-      nir_foreach_overload(nir, overload) {
-         if (overload->impl)
-            nir_index_ssa_defs(overload->impl);
+      nir_foreach_function(nir, function) {
+         if (function->impl)
+            nir_index_ssa_defs(function->impl);
       }
 
       fprintf(stderr, "NIR (SSA form) for %s shader:\n",

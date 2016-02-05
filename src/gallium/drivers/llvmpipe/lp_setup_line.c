@@ -336,13 +336,6 @@ try_setup_line( struct lp_setup_context *setup,
       layer = MIN2(layer, scene->fb_max_layer);
    }
 
-   if (setup->scissor_test) {
-      nr_planes = 8;
-   }
-   else {
-      nr_planes = 4;
-   }
-
    dx = v1[0][0] - v2[0][0];
    dy = v1[0][1] - v2[0][1];
    area = (dx * dx  + dy * dy);
@@ -591,6 +584,18 @@ try_setup_line( struct lp_setup_context *setup,
    bbox.x0 = MAX2(bbox.x0, 0);
    bbox.y0 = MAX2(bbox.y0, 0);
 
+   nr_planes = 4;
+   /*
+    * Determine how many scissor planes we need, that is drop scissor
+    * edges if the bounding box of the tri is fully inside that edge.
+    */
+   if (setup->scissor_test) {
+      /* why not just use draw_regions */
+      boolean s_planes[4];
+      scissor_planes_needed(s_planes, &bbox, &setup->scissors[viewport_index]);
+      nr_planes += s_planes[0] + s_planes[1] + s_planes[2] + s_planes[3];
+   }
+
    line = lp_setup_alloc_triangle(scene,
                                   key->num_inputs,
                                   nr_planes,
@@ -644,19 +649,25 @@ try_setup_line( struct lp_setup_context *setup,
    line->inputs.layer = layer;
    line->inputs.viewport_index = viewport_index;
 
+   /*
+    * XXX: this code is mostly identical to the one in lp_setup_tri, except it
+    * uses 4 planes instead of 3. Could share the code (including the sse
+    * assembly, in fact we'd get the 4th plane for free).
+    * The only difference apart from storing the 4th plane would be some
+    * different shuffle for calculating dcdx/dcdy.
+    */
    for (i = 0; i < 4; i++) {
 
-      /* half-edge constants, will be interated over the whole render
+      /* half-edge constants, will be iterated over the whole render
        * target.
        */
       plane[i].c = IMUL64(plane[i].dcdx, x[i]) - IMUL64(plane[i].dcdy, y[i]);
 
-      
-      /* correct for top-left vs. bottom-left fill convention.  
-       */         
+      /* correct for top-left vs. bottom-left fill convention.
+       */
       if (plane[i].dcdx < 0) {
          /* both fill conventions want this - adjust for left edges */
-         plane[i].c++;            
+         plane[i].c++;
       }
       else if (plane[i].dcdx == 0) {
          if (setup->pixel_offset == 0) {
@@ -702,30 +713,46 @@ try_setup_line( struct lp_setup_context *setup,
     * Note that otherwise, the scissor planes only vary in 'C' value,
     * and even then only on state-changes.  Could alternatively store
     * these planes elsewhere.
+    * (Or only store the c value together with a bit indicating which
+    * scissor edge this is, so rasterization would treat them differently
+    * (easier to evaluate) to ordinary planes.)
     */
-   if (nr_planes == 8) {
-      const struct u_rect *scissor =
-         &setup->scissors[viewport_index];
+   if (nr_planes > 4) {
+      /* why not just use draw_regions */
+      struct u_rect *scissor = &setup->scissors[viewport_index];
+      struct lp_rast_plane *plane_s = &plane[4];
+      boolean s_planes[4];
+      scissor_planes_needed(s_planes, &bbox, scissor);
 
-      plane[4].dcdx = -1;
-      plane[4].dcdy = 0;
-      plane[4].c = 1-scissor->x0;
-      plane[4].eo = 1;
-
-      plane[5].dcdx = 1;
-      plane[5].dcdy = 0;
-      plane[5].c = scissor->x1+1;
-      plane[5].eo = 0;
-
-      plane[6].dcdx = 0;
-      plane[6].dcdy = 1;
-      plane[6].c = 1-scissor->y0;
-      plane[6].eo = 1;
-
-      plane[7].dcdx = 0;
-      plane[7].dcdy = -1;
-      plane[7].c = scissor->y1+1;
-      plane[7].eo = 0;
+      if (s_planes[0]) {
+         plane_s->dcdx = -1 << 8;
+         plane_s->dcdy = 0;
+         plane_s->c = (1-scissor->x0) << 8;
+         plane_s->eo = 1 << 8;
+         plane_s++;
+      }
+      if (s_planes[1]) {
+         plane_s->dcdx = 1 << 8;
+         plane_s->dcdy = 0;
+         plane_s->c = (scissor->x1+1) << 8;
+         plane_s->eo = 0 << 8;
+         plane_s++;
+      }
+      if (s_planes[2]) {
+         plane_s->dcdx = 0;
+         plane_s->dcdy = 1 << 8;
+         plane_s->c = (1-scissor->y0) << 8;
+         plane_s->eo = 1 << 8;
+         plane_s++;
+      }
+      if (s_planes[3]) {
+         plane_s->dcdx = 0;
+         plane_s->dcdy = -1 << 8;
+         plane_s->c = (scissor->y1+1) << 8;
+         plane_s->eo = 0;
+         plane_s++;
+      }
+      assert(plane_s == &plane[nr_planes]);
    }
 
    return lp_setup_bin_triangle(setup, line, &bbox, nr_planes, viewport_index);

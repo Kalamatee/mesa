@@ -49,6 +49,26 @@ struct r600_multi_fence {
 };
 
 /*
+ * shader binary helpers.
+ */
+void radeon_shader_binary_init(struct radeon_shader_binary *b)
+{
+	memset(b, 0, sizeof(*b));
+}
+
+void radeon_shader_binary_clean(struct radeon_shader_binary *b)
+{
+	if (!b)
+		return;
+	FREE(b->code);
+	FREE(b->config);
+	FREE(b->rodata);
+	FREE(b->global_symbol_offsets);
+	FREE(b->relocs);
+	FREE(b->disasm_string);
+}
+
+/*
  * pipe_context
  */
 
@@ -85,7 +105,7 @@ void r600_draw_rectangle(struct blitter_context *blitter,
 	/* Upload vertices. The hw rectangle has only 3 vertices,
 	 * I guess the 4th one is derived from the first 3.
 	 * The vertex specification should match u_blitter's vertex element state. */
-	u_upload_alloc(rctx->uploader, 0, sizeof(float) * 24, &offset, &buf, (void**)&vb);
+	u_upload_alloc(rctx->uploader, 0, sizeof(float) * 24, 256, &offset, &buf, (void**)&vb);
 	if (!buf)
 		return;
 
@@ -227,6 +247,17 @@ static enum pipe_reset_status r600_get_reset_status(struct pipe_context *ctx)
 	return PIPE_UNKNOWN_CONTEXT_RESET;
 }
 
+static void r600_set_debug_callback(struct pipe_context *ctx,
+				    const struct pipe_debug_callback *cb)
+{
+	struct r600_common_context *rctx = (struct r600_common_context *)ctx;
+
+	if (cb)
+		rctx->debug = *cb;
+	else
+		memset(&rctx->debug, 0, sizeof(rctx->debug));
+}
+
 bool r600_common_context_init(struct r600_common_context *rctx,
 			      struct r600_common_screen *rscreen)
 {
@@ -246,12 +277,14 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	else
 		rctx->max_db = 4;
 
+	rctx->b.invalidate_resource = r600_invalidate_resource;
 	rctx->b.transfer_map = u_transfer_map_vtbl;
 	rctx->b.transfer_flush_region = u_transfer_flush_region_vtbl;
 	rctx->b.transfer_unmap = u_transfer_unmap_vtbl;
 	rctx->b.transfer_inline_write = u_default_transfer_inline_write;
         rctx->b.memory_barrier = r600_memory_barrier;
 	rctx->b.flush = r600_flush_from_st;
+	rctx->b.set_debug_callback = r600_set_debug_callback;
 
 	if (rscreen->info.drm_major == 2 && rscreen->info.drm_minor >= 43) {
 		rctx->b.get_device_reset_status = r600_get_reset_status;
@@ -272,9 +305,9 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	if (!rctx->allocator_so_filled_size)
 		return false;
 
-	rctx->uploader = u_upload_create(&rctx->b, 1024 * 1024, 256,
+	rctx->uploader = u_upload_create(&rctx->b, 1024 * 1024,
 					PIPE_BIND_INDEX_BUFFER |
-					PIPE_BIND_CONSTANT_BUFFER);
+					PIPE_BIND_CONSTANT_BUFFER, PIPE_USAGE_STREAM);
 	if (!rctx->uploader)
 		return false;
 
@@ -360,6 +393,7 @@ static const struct debug_named_value common_debug_options[] = {
 	{ "noir", DBG_NO_IR, "Don't print the LLVM IR"},
 	{ "notgsi", DBG_NO_TGSI, "Don't print the TGSI"},
 	{ "noasm", DBG_NO_ASM, "Don't print disassembled shaders"},
+	{ "preoptir", DBG_PREOPT_IR, "Print the LLVM IR before initial optimizations" },
 
 	/* features */
 	{ "nodma", DBG_NO_ASYNC_DMA, "Disable asynchronous DMA" },
@@ -376,6 +410,7 @@ static const struct debug_named_value common_debug_options[] = {
 	{ "nodcc", DBG_NO_DCC, "Disable DCC." },
 	{ "nodccclear", DBG_NO_DCC_CLEAR, "Disable DCC fast clear." },
 	{ "norbplus", DBG_NO_RB_PLUS, "Disable RB+ on Stoney." },
+	{ "sisched", DBG_SI_SCHED, "Enable LLVM SI Machine Instruction Scheduler." },
 
 	DEBUG_NAMED_VALUE_END /* must be last */
 };
@@ -692,7 +727,7 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 	case PIPE_COMPUTE_CAP_MAX_COMPUTE_UNITS:
 		if (ret) {
 			uint32_t *max_compute_units = ret;
-			*max_compute_units = rscreen->info.max_compute_units;
+			*max_compute_units = rscreen->info.num_good_compute_units;
 		}
 		return sizeof(uint32_t);
 
@@ -960,7 +995,7 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("gart_size = %i MB\n", (int)(rscreen->info.gart_size >> 20));
 		printf("vram_size = %i MB\n", (int)(rscreen->info.vram_size >> 20));
 		printf("max_sclk = %i\n", rscreen->info.max_sclk);
-		printf("max_compute_units = %i\n", rscreen->info.max_compute_units);
+		printf("num_good_compute_units = %i\n", rscreen->info.num_good_compute_units);
 		printf("max_se = %i\n", rscreen->info.max_se);
 		printf("max_sh_per_se = %i\n", rscreen->info.max_sh_per_se);
 		printf("drm = %i.%i.%i\n", rscreen->info.drm_major,
@@ -999,13 +1034,9 @@ void r600_destroy_common_screen(struct r600_common_screen *rscreen)
 }
 
 bool r600_can_dump_shader(struct r600_common_screen *rscreen,
-			  const struct tgsi_token *tokens)
+			  unsigned processor)
 {
-	/* Compute shader don't have tgsi_tokens */
-	if (!tokens)
-		return (rscreen->debug_flags & DBG_CS) != 0;
-
-	switch (tgsi_get_processor_type(tokens)) {
+	switch (processor) {
 	case TGSI_PROCESSOR_VERTEX:
 		return (rscreen->debug_flags & DBG_VS) != 0;
 	case TGSI_PROCESSOR_TESS_CTRL:

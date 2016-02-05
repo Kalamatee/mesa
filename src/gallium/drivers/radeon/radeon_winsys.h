@@ -251,7 +251,7 @@ struct radeon_info {
     uint64_t                    gart_size;
     uint64_t                    vram_size;
     uint32_t                    max_sclk;
-    uint32_t                    max_compute_units;
+    uint32_t                    num_good_compute_units;
     uint32_t                    max_se;
     uint32_t                    max_sh_per_se;
 
@@ -528,6 +528,14 @@ struct radeon_winsys {
      */
     struct pb_buffer *(*buffer_from_ptr)(struct radeon_winsys *ws,
                                          void *pointer, unsigned size);
+
+    /**
+     * Whether the buffer was created from a user pointer.
+     *
+     * \param buf       A winsys buffer object
+     * \return          whether \p buf was created via buffer_from_ptr
+     */
+    bool (*buffer_is_user_ptr)(struct pb_buffer *buf);
 
     /**
      * Get a winsys handle from a winsys buffer. The internal structure

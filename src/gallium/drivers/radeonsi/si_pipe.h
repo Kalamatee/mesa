@@ -125,7 +125,11 @@ struct si_framebuffer {
 	unsigned			log_samples;
 	unsigned			cb0_is_integer;
 	unsigned			compressed_cb_mask;
-	unsigned			export_16bpc;
+	unsigned			spi_shader_col_format;
+	unsigned			spi_shader_col_format_alpha;
+	unsigned			spi_shader_col_format_blend;
+	unsigned			spi_shader_col_format_blend_alpha;
+	unsigned			color_is_int8; /* bitmask */
 	unsigned			dirty_cbufs;
 	bool				dirty_zsbuf;
 };
@@ -189,7 +193,7 @@ struct si_context {
 	struct r600_atom		db_render_state;
 	struct r600_atom		msaa_config;
 	struct si_sample_mask		sample_mask;
-	struct r600_atom		cb_target_mask;
+	struct r600_atom		cb_render_state;
 	struct si_blend_color		blend_color;
 	struct r600_atom		clip_regs;
 	struct si_clip_state		clip_state;
@@ -329,6 +333,7 @@ void si_init_cp_dma_functions(struct si_context *sctx);
 /* si_debug.c */
 void si_init_debug_functions(struct si_context *sctx);
 void si_check_vm_faults(struct si_context *sctx);
+bool si_replace_shader(unsigned num, struct radeon_shader_binary *binary);
 
 /* si_dma.c */
 void si_dma_copy(struct pipe_context *ctx,

@@ -157,6 +157,7 @@ vec4_instruction::is_send_from_grf()
    case SHADER_OPCODE_TYPED_SURFACE_WRITE:
    case VEC4_OPCODE_URB_READ:
    case TCS_OPCODE_URB_WRITE:
+   case TCS_OPCODE_RELEASE_INPUT:
    case SHADER_OPCODE_BARRIER:
       return true;
    default:
@@ -189,6 +190,7 @@ vec4_instruction::has_source_and_destination_hazard() const
    switch (opcode) {
    case TCS_OPCODE_SET_INPUT_URB_OFFSETS:
    case TCS_OPCODE_SET_OUTPUT_URB_OFFSETS:
+   case TES_OPCODE_ADD_INDIRECT_URB_OFFSET:
       return true;
    default:
       return false;
@@ -274,6 +276,7 @@ vec4_visitor::implied_mrf_writes(vec4_instruction *inst)
    case SHADER_OPCODE_POW:
       return 2;
    case VS_OPCODE_URB_WRITE:
+   case TCS_OPCODE_THREAD_END:
       return 1;
    case VS_OPCODE_PULL_CONSTANT_LOAD:
       return 2;
@@ -1563,7 +1566,7 @@ int
 vec4_vs_visitor::setup_attributes(int payload_reg)
 {
    int nr_attributes;
-   int attribute_map[VERT_ATTRIB_MAX + 1];
+   int attribute_map[VERT_ATTRIB_MAX + 2];
    memset(attribute_map, 0, sizeof(attribute_map));
 
    nr_attributes = 0;
@@ -1574,12 +1577,19 @@ vec4_vs_visitor::setup_attributes(int payload_reg)
       }
    }
 
+   if (vs_prog_data->uses_drawid) {
+      attribute_map[VERT_ATTRIB_MAX + 1] = payload_reg + nr_attributes;
+      nr_attributes++;
+   }
+
    /* VertexID is stored by the VF as the last vertex element, but we
     * don't represent it with a flag in inputs_read, so we call it
     * VERT_ATTRIB_MAX.
     */
-   if (vs_prog_data->uses_vertexid || vs_prog_data->uses_instanceid) {
+   if (vs_prog_data->uses_vertexid || vs_prog_data->uses_instanceid ||
+       vs_prog_data->uses_basevertex || vs_prog_data->uses_baseinstance) {
       attribute_map[VERT_ATTRIB_MAX] = payload_reg + nr_attributes;
+      nr_attributes++;
    }
 
    lower_attributes_to_hw_regs(attribute_map, false /* interleaved */);
@@ -1774,7 +1784,20 @@ vec4_visitor::convert_to_hw_regs()
          case ATTR:
             unreachable("not reached");
          }
+
          src = reg;
+      }
+
+      if (inst->is_3src()) {
+         /* 3-src instructions with scalar sources support arbitrary subnr,
+          * but don't actually use swizzles.  Convert swizzle into subnr.
+          */
+         for (int i = 0; i < 3; i++) {
+            if (inst->src[i].vstride == BRW_VERTICAL_STRIDE_0) {
+               assert(brw_is_single_value_swizzle(inst->src[i].swizzle));
+               inst->src[i].subnr += 4 * BRW_GET_SWZ(inst->src[i].swizzle, 0);
+            }
+         }
       }
 
       dst_reg &dst = inst->dst;
@@ -1965,11 +1988,11 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
                unsigned *final_assembly_size,
                char **error_str)
 {
+   const bool is_scalar = compiler->scalar_stage[MESA_SHADER_VERTEX];
    nir_shader *shader = nir_shader_clone(mem_ctx, src_shader);
    shader = brw_nir_apply_sampler_key(shader, compiler->devinfo, &key->tex,
-                                      compiler->scalar_stage[MESA_SHADER_VERTEX]);
-   shader = brw_postprocess_nir(shader, compiler->devinfo,
-                                compiler->scalar_stage[MESA_SHADER_VERTEX]);
+                                      is_scalar);
+   shader = brw_postprocess_nir(shader, compiler->devinfo, is_scalar);
 
    const unsigned *assembly = NULL;
 
@@ -1979,8 +2002,15 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
     * incoming vertex attribute.  So, add an extra slot.
     */
    if (shader->info.system_values_read &
-       (BITFIELD64_BIT(SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) |
+       (BITFIELD64_BIT(SYSTEM_VALUE_BASE_VERTEX) |
+        BITFIELD64_BIT(SYSTEM_VALUE_BASE_INSTANCE) |
+        BITFIELD64_BIT(SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) |
         BITFIELD64_BIT(SYSTEM_VALUE_INSTANCE_ID))) {
+      nr_attributes++;
+   }
+
+   /* gl_DrawID has its very own vec4 */
+   if (shader->info.system_values_read & BITFIELD64_BIT(SYSTEM_VALUE_DRAW_ID)) {
       nr_attributes++;
    }
 
@@ -1988,7 +2018,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
     * Read Length" as 1 in vec4 mode, and 0 in SIMD8 mode.  Empirically, in
     * vec4 mode, the hardware appears to wedge unless we read something.
     */
-   if (compiler->scalar_stage[MESA_SHADER_VERTEX])
+   if (is_scalar)
       prog_data->base.urb_read_length = DIV_ROUND_UP(nr_attributes, 2);
    else
       prog_data->base.urb_read_length = DIV_ROUND_UP(MAX2(nr_attributes, 1), 2);
@@ -2007,7 +2037,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
    else
       prog_data->base.urb_entry_size = DIV_ROUND_UP(vue_entries, 4);
 
-   if (compiler->scalar_stage[MESA_SHADER_VERTEX]) {
+   if (is_scalar) {
       prog_data->base.dispatch_mode = DISPATCH_MODE_SIMD8;
 
       fs_visitor v(compiler, log_data, mem_ctx, key, &prog_data->base.base,
@@ -2022,7 +2052,7 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
 
       fs_generator g(compiler, log_data, mem_ctx, (void *) key,
                      &prog_data->base.base, v.promoted_constants,
-                     v.runtime_check_aads_emit, "VS");
+                     v.runtime_check_aads_emit, MESA_SHADER_VERTEX);
       if (INTEL_DEBUG & DEBUG_VS) {
          const char *debug_name =
             ralloc_asprintf(mem_ctx, "%s vertex shader %s",

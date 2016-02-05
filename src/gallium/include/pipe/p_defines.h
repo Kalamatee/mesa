@@ -352,6 +352,8 @@ enum pipe_flush_flags
  * Flags for pipe_context::memory_barrier.
  */
 #define PIPE_BARRIER_MAPPED_BUFFER     (1 << 0)
+#define PIPE_BARRIER_SHADER_BUFFER     (1 << 1)
+#define PIPE_BARRIER_QUERY_BUFFER      (1 << 2)
 
 /**
  * Resource binding flags -- state tracker must specify in advance all
@@ -375,6 +377,7 @@ enum pipe_flush_flags
 #define PIPE_BIND_SHADER_IMAGE         (1 << 15) /* set_shader_images */
 #define PIPE_BIND_COMPUTE_RESOURCE     (1 << 16) /* set_compute_resources */
 #define PIPE_BIND_COMMAND_ARGS_BUFFER  (1 << 17) /* pipe_draw_info.indirect */
+#define PIPE_BIND_QUERY_BUFFER         (1 << 18) /* get_query_result_resource */
 
 /**
  * The first two flags above were previously part of the amorphous
@@ -588,6 +591,7 @@ enum pipe_cap
    PIPE_CAP_CUBE_MAP_ARRAY,
    PIPE_CAP_TEXTURE_BUFFER_OBJECTS,
    PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT,
+   PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY,
    PIPE_CAP_TGSI_TEXCOORD,
    PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER,
    PIPE_CAP_QUERY_PIPELINE_STATISTICS,
@@ -635,6 +639,18 @@ enum pipe_cap
    PIPE_CAP_SHAREABLE_SHADERS,
    PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS,
    PIPE_CAP_CLEAR_TEXTURE,
+   PIPE_CAP_DRAW_PARAMETERS,
+   PIPE_CAP_TGSI_PACK_HALF_FLOAT,
+   PIPE_CAP_MULTI_DRAW_INDIRECT,
+   PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS,
+   PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL,
+   PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL,
+   PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT,
+   PIPE_CAP_INVALIDATE_BUFFER,
+   PIPE_CAP_GENERATE_MIPMAP,
+   PIPE_CAP_STRING_MARKER,
+   PIPE_CAP_SURFACE_REINTERPRET_BLOCKS,
+   PIPE_CAP_QUERY_BUFFER_OBJECT,
 };
 
 #define PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_NV50 (1 << 0)
@@ -701,6 +717,7 @@ enum pipe_shader_cap
    PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED,
    PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE,
    PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT,
+   PIPE_SHADER_CAP_MAX_SHADER_BUFFERS,
 };
 
 /**
@@ -824,6 +841,14 @@ union pipe_query_result
 
    /* batch queries (variable length) */
    union pipe_numeric_type_union batch[1];
+};
+
+enum pipe_query_value_type
+{
+   PIPE_QUERY_TYPE_I32,
+   PIPE_QUERY_TYPE_U32,
+   PIPE_QUERY_TYPE_I64,
+   PIPE_QUERY_TYPE_U64,
 };
 
 union pipe_color_union

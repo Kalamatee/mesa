@@ -44,6 +44,7 @@
 #include "vl/vl_csc.h"
 
 #include "util/u_dynarray.h"
+#include "os/os_thread.h"
 
 #define VL_VA_DRIVER(ctx) ((vlVaDriver *)ctx->pDriverData)
 #define VL_VA_PSCREEN(ctx) (VL_VA_DRIVER(ctx)->vscreen->pscreen)
@@ -203,6 +204,7 @@ typedef struct {
    struct vl_compositor compositor;
    struct vl_compositor_state cstate;
    vl_csc_matrix csc;
+   pipe_mutex mutex;
 } vlVaDriver;
 
 typedef struct {
@@ -234,6 +236,8 @@ typedef struct {
       VAPictureParameterBufferMPEG4 pps;
       uint8_t start_code[32];
    } mpeg4;
+
+   struct vl_deint_filter *deint;
 } vlVaContext;
 
 typedef struct {
@@ -351,10 +355,12 @@ VAStatus vlVaHandleVAProcPipelineParameterBufferType(vlVaDriver *drv, vlVaContex
 void vlVaGetReferenceFrame(vlVaDriver *drv, VASurfaceID surface_id, struct pipe_video_buffer **ref_frame);
 void vlVaHandlePictureParameterBufferMPEG12(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandleIQMatrixBufferMPEG12(vlVaContext *context, vlVaBuffer *buf);
+void vlVaHandleSliceParameterBufferMPEG12(vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandlePictureParameterBufferH264(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandleIQMatrixBufferH264(vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandleSliceParameterBufferH264(vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandlePictureParameterBufferVC1(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
+void vlVaHandleSliceParameterBufferVC1(vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandlePictureParameterBufferMPEG4(vlVaDriver *drv, vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandleIQMatrixBufferMPEG4(vlVaContext *context, vlVaBuffer *buf);
 void vlVaHandleSliceParameterBufferMPEG4(vlVaContext *context, vlVaBuffer *buf);

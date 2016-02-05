@@ -390,7 +390,7 @@ static const struct brw_device_info brw_device_info_bxt = {
    .max_hs_threads = 56,
    .max_ds_threads = 56,
    .max_gs_threads = 56,
-   .max_wm_threads = 32,
+   .max_wm_threads = 64 * 3,
    .max_cs_threads = 28,
    .urb = {
       .size = 64,
@@ -400,6 +400,71 @@ static const struct brw_device_info brw_device_info_bxt = {
       .max_ds_entries = 80,
       .max_gs_entries = 256,
    }
+};
+
+/*
+ * Note: for all KBL SKUs, the PRM says SKL for GS entries, not SKL+.
+ * There's no KBL entry. Using the default SKL (GEN9) GS entries value.
+ */
+
+/*
+ * Both SKL and KBL support a maximum of 64 threads per
+ * Pixel Shader Dispatch (PSD) unit.
+ */
+#define  KBL_MAX_THREADS_PER_PSD 64
+
+static const struct brw_device_info brw_device_info_kbl_gt1 = {
+   GEN9_FEATURES,
+   .gt = 1,
+
+   .max_cs_threads = 7 * 6,
+   .max_wm_threads = KBL_MAX_THREADS_PER_PSD * 2,
+   .urb.size = 192,
+   .num_slices = 1,
+};
+
+static const struct brw_device_info brw_device_info_kbl_gt1_5 = {
+   GEN9_FEATURES,
+   .gt = 1,
+
+   .max_cs_threads = 7 * 6,
+   .max_wm_threads = KBL_MAX_THREADS_PER_PSD * 3,
+   .num_slices = 1,
+};
+
+static const struct brw_device_info brw_device_info_kbl_gt2 = {
+   GEN9_FEATURES,
+   .gt = 2,
+
+   .max_wm_threads = KBL_MAX_THREADS_PER_PSD * 3,
+   .num_slices = 1,
+};
+
+static const struct brw_device_info brw_device_info_kbl_gt3 = {
+   GEN9_FEATURES,
+   .gt = 3,
+
+   .max_wm_threads = KBL_MAX_THREADS_PER_PSD * 6,
+   .num_slices = 2,
+};
+
+static const struct brw_device_info brw_device_info_kbl_gt4 = {
+   GEN9_FEATURES,
+   .gt = 4,
+
+   .max_wm_threads = KBL_MAX_THREADS_PER_PSD * 9,
+   /*
+    * From the "L3 Allocation and Programming" documentation:
+    *
+    * "URB is limited to 1008KB due to programming restrictions.  This
+    *  is not a restriction of the L3 implementation, but of the FF and
+    *  other clients.  Therefore, in a GT4 implementation it is
+    *  possible for the programmed allocation of the L3 data array to
+    *  provide 3*384KB=1152KB for URB, but only 1008KB of this
+    *  will be used."
+    */
+   .urb.size = 1008 / 3,
+   .num_slices = 3,
 };
 
 const struct brw_device_info *

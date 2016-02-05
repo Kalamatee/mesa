@@ -295,6 +295,9 @@ TargetNVC0::getSVAddress(DataFile shaderFile, const Symbol *sym) const
    case SV_SAMPLE_INDEX:   return 0;
    case SV_SAMPLE_POS:     return 0;
    case SV_SAMPLE_MASK:    return 0;
+   case SV_BASEVERTEX:     return 0;
+   case SV_BASEINSTANCE:   return 0;
+   case SV_DRAWID:         return 0;
    default:
       return 0xffffffff;
    }
@@ -377,6 +380,16 @@ TargetNVC0::insnCanLoad(const Instruction *i, int s,
       }
    }
 
+   return true;
+}
+
+bool
+TargetNVC0::insnCanLoadOffset(const Instruction *insn, int s, int offset) const
+{
+   const ValueRef& ref = insn->src(s);
+   if (ref.getFile() == FILE_MEMORY_CONST &&
+       (insn->op != OP_LOAD || insn->subOp != NV50_IR_SUBOP_LDC_IS))
+      return offset >= -0x8000 && offset < 0x8000;
    return true;
 }
 

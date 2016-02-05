@@ -203,6 +203,7 @@ intelInitExtensions(struct gl_context *ctx)
    ctx->Extensions.ARB_point_sprite = true;
    ctx->Extensions.ARB_seamless_cube_map = true;
    ctx->Extensions.ARB_shader_bit_encoding = true;
+   ctx->Extensions.ARB_shader_draw_parameters = true;
    ctx->Extensions.ARB_shader_texture_lod = true;
    ctx->Extensions.ARB_shadow = true;
    ctx->Extensions.ARB_sync = true;
@@ -333,6 +334,7 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.ARB_shader_image_load_store = true;
       ctx->Extensions.ARB_shader_image_size = true;
       ctx->Extensions.ARB_shader_texture_image_samples = true;
+      ctx->Extensions.ARB_tessellation_shader = true;
       ctx->Extensions.ARB_texture_compression_bptc = true;
       ctx->Extensions.ARB_texture_view = true;
       ctx->Extensions.ARB_shader_storage_buffer_object = true;
@@ -343,6 +345,9 @@ intelInitExtensions(struct gl_context *ctx)
          ctx->Extensions.ARB_transform_feedback2 = true;
          ctx->Extensions.ARB_transform_feedback3 = true;
          ctx->Extensions.ARB_transform_feedback_instanced = true;
+
+         if (ctx->Const.MaxComputeWorkGroupSize[0] >= 1024)
+            ctx->Extensions.ARB_compute_shader = true;
 
          if (brw->intelScreen->cmd_parser_version >= 2)
             brw->predicate.supported = true;
@@ -355,14 +360,11 @@ intelInitExtensions(struct gl_context *ctx)
          ctx->Extensions.ARB_viewport_array = true;
          ctx->Extensions.AMD_vertex_shader_viewport_index = true;
          ctx->Extensions.ARB_shader_subroutine = true;
-         if (ctx->Const.MaxComputeWorkGroupSize[0] >= 1024)
-            ctx->Extensions.ARB_compute_shader = true;
       }
    }
 
    if (brw->gen >= 8) {
       ctx->Extensions.ARB_stencil_texturing = true;
-      ctx->Extensions.ARB_tessellation_shader = true;
    }
 
    if (brw->gen >= 9) {

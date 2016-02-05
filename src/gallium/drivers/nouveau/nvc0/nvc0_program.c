@@ -55,7 +55,6 @@ nvc0_shader_input_address(unsigned sn, unsigned si)
    case TGSI_SEMANTIC_INSTANCEID:   return 0x2f8;
    case TGSI_SEMANTIC_VERTEXID:     return 0x2fc;
    case TGSI_SEMANTIC_TEXCOORD:     return 0x300 + si * 0x10;
-   case TGSI_SEMANTIC_FACE:         return 0x3fc;
    default:
       assert(!"invalid TGSI input semantic");
       return ~0;
@@ -285,8 +284,6 @@ nvc0_tp_get_tess_mode(struct nvc0_program *tp, struct nv50_ir_prog_info *info)
       break;
    case PIPE_PRIM_TRIANGLES:
       tp->tp.tess_mode = NVC0_3D_TESS_MODE_PRIM_TRIANGLES;
-      if (info->prop.tp.winding > 0)
-         tp->tp.tess_mode |= NVC0_3D_TESS_MODE_CW;
       break;
    case PIPE_PRIM_QUADS:
       tp->tp.tess_mode = NVC0_3D_TESS_MODE_PRIM_QUADS;
@@ -295,6 +292,10 @@ nvc0_tp_get_tess_mode(struct nvc0_program *tp, struct nv50_ir_prog_info *info)
       tp->tp.tess_mode = ~0;
       return;
    }
+
+   if (info->prop.tp.winding > 0)
+      tp->tp.tess_mode |= NVC0_3D_TESS_MODE_CW;
+
    if (info->prop.tp.outputPrim != PIPE_PRIM_POINTS)
       tp->tp.tess_mode |= NVC0_3D_TESS_MODE_CONNECTED;
 
@@ -533,8 +534,9 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
    info->bin.source = (void *)prog->pipe.tokens;
 
    info->io.genUserClip = prog->vp.num_ucps;
+   info->io.auxCBSlot = 15;
    info->io.ucpBase = 256;
-   info->io.ucpCBSlot = 15;
+   info->io.drawInfoBase = 256 + 128;
 
    if (prog->type == PIPE_SHADER_COMPUTE) {
       if (chipset >= NVISA_GK104_CHIPSET) {
@@ -552,6 +554,7 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
       }
       info->io.resInfoCBSlot = 15;
       info->io.sampleInfoBase = 256 + 128;
+      info->io.suInfoBase = 512;
       info->io.msInfoCBSlot = 15;
       info->io.msInfoBase = 0; /* TODO */
    }
@@ -583,6 +586,7 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
    prog->num_barriers = info->numBarriers;
 
    prog->vp.need_vertex_id = info->io.vertexId < PIPE_MAX_SHADER_INPUTS;
+   prog->vp.need_draw_parameters = info->prop.vp.usesDrawParameters;
 
    if (info->io.edgeFlagOut < PIPE_MAX_ATTRIBS)
       info->out[info->io.edgeFlagOut].mask = 0; /* for headergen */
@@ -632,6 +636,8 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
    }
    */
    if (info->io.globalAccess)
+      prog->hdr[0] |= 1 << 26;
+   if (info->io.globalAccess & 0x2)
       prog->hdr[0] |= 1 << 16;
    if (info->io.fp64)
       prog->hdr[0] |= 1 << 27;

@@ -171,7 +171,10 @@ LoadPropagation::isImmdLoad(Instruction *ld)
    if (!ld || (ld->op != OP_MOV) ||
        ((typeSizeof(ld->dType) != 4) && (typeSizeof(ld->dType) != 8)))
       return false;
-   return ld->src(0).getFile() == FILE_IMMEDIATE;
+
+   // A 0 can be replaced with a register, so it doesn't count as an immediate.
+   ImmediateValue val;
+   return ld->src(0).getImmediate(val) && !val.isInteger(0);
 }
 
 bool
@@ -187,7 +190,8 @@ LoadPropagation::isAttribOrSharedLoad(Instruction *ld)
 void
 LoadPropagation::checkSwapSrc01(Instruction *insn)
 {
-   if (!prog->getTarget()->getOpInfo(insn).commutative)
+   const Target *targ = prog->getTarget();
+   if (!targ->getOpInfo(insn).commutative)
       if (insn->op != OP_SET && insn->op != OP_SLCT)
          return;
    if (insn->src(1).getFile() != FILE_GPR)
@@ -196,14 +200,15 @@ LoadPropagation::checkSwapSrc01(Instruction *insn)
    Instruction *i0 = insn->getSrc(0)->getInsn();
    Instruction *i1 = insn->getSrc(1)->getInsn();
 
-   if (isCSpaceLoad(i0)) {
-      if (!isCSpaceLoad(i1))
-         insn->swapSources(0, 1);
-      else
-         return;
-   } else
-   if (isImmdLoad(i0)) {
-      if (!isCSpaceLoad(i1) && !isImmdLoad(i1))
+   // Swap sources to inline the less frequently used source. That way,
+   // optimistically, it will eventually be able to remove the instruction.
+   int i0refs = insn->getSrc(0)->refCount();
+   int i1refs = insn->getSrc(1)->refCount();
+
+   if ((isCSpaceLoad(i0) || isImmdLoad(i0)) && targ->insnCanLoad(insn, 1, i0)) {
+      if ((!isImmdLoad(i1) && !isCSpaceLoad(i1)) ||
+          !targ->insnCanLoad(insn, 1, i1) ||
+          i0refs < i1refs)
          insn->swapSources(0, 1);
       else
          return;
@@ -331,6 +336,7 @@ private:
    void expr(Instruction *, ImmediateValue&, ImmediateValue&);
    void expr(Instruction *, ImmediateValue&, ImmediateValue&, ImmediateValue&);
    void opnd(Instruction *, ImmediateValue&, int s);
+   void opnd3(Instruction *, ImmediateValue&);
 
    void unary(Instruction *, const ImmediateValue&);
 
@@ -383,6 +389,8 @@ ConstantFolding::visit(BasicBlock *bb)
       else
       if (i->srcExists(1) && i->src(1).getImmediate(src1))
          opnd(i, src1, 1);
+      if (i->srcExists(2) && i->src(2).getImmediate(src2))
+         opnd3(i, src2);
    }
    return true;
 }
@@ -676,23 +684,22 @@ ConstantFolding::expr(Instruction *i,
    switch (i->op) {
    case OP_MAD:
    case OP_FMA: {
-      i->op = OP_ADD;
+      ImmediateValue src0, src1 = *i->getSrc(0)->asImm();
 
-      /* Move the immediate to the second arg, otherwise the ADD operation
-       * won't be emittable
-       */
-      i->setSrc(1, i->getSrc(0));
+      // Move the immediate into position 1, where we know it might be
+      // emittable. However it might not be anyways, as there may be other
+      // restrictions, so move it into a separate LValue.
+      bld.setPosition(i, false);
+      i->op = OP_ADD;
+      i->setSrc(1, bld.mkMov(bld.getSSA(type), i->getSrc(0), type)->getDef(0));
       i->setSrc(0, i->getSrc(2));
       i->src(0).mod = i->src(2).mod;
       i->setSrc(2, NULL);
 
-      ImmediateValue src0;
       if (i->src(0).getImmediate(src0))
-         expr(i, src0, *i->getSrc(1)->asImm());
-      if (i->saturate && !prog->getTarget()->isSatSupported(i)) {
-         bld.setPosition(i, false);
-         i->setSrc(1, bld.loadImm(NULL, res.data.u32));
-      }
+         expr(i, src0, src1);
+      else
+         opnd(i, src1, 1);
       break;
    }
    case OP_PFETCH:
@@ -865,6 +872,24 @@ ConstantFolding::tryCollapseChainedMULs(Instruction *mul2,
          if (f < 0)
             mul2->src(s2).mod *= Modifier(NV50_IR_MOD_NEG);
       }
+   }
+}
+
+void
+ConstantFolding::opnd3(Instruction *i, ImmediateValue &imm2)
+{
+   switch (i->op) {
+   case OP_MAD:
+   case OP_FMA:
+      if (imm2.isInteger(0)) {
+         i->op = OP_MUL;
+         i->setSrc(2, NULL);
+         foldCount++;
+         return;
+      }
+      break;
+   default:
+      return;
    }
 }
 
@@ -1198,6 +1223,14 @@ ConstantFolding::opnd(Instruction *i, ImmediateValue &imm0, int s)
             i->setSrc(1, bld.loadImm(NULL, imm0.reg.data.u32 + imm1.reg.data.u32));
          }
          break;
+      case OP_SHR:
+         if (si->src(1).getImmediate(imm1) && imm0.reg.data.u32 == imm1.reg.data.u32) {
+            bld.setPosition(i, false);
+            i->op = OP_AND;
+            i->setSrc(0, si->getSrc(0));
+            i->setSrc(1, bld.loadImm(NULL, ~((1 << imm0.reg.data.u32) - 1)));
+         }
+         break;
       case OP_MUL:
          int muls;
          if (isFloatType(si->dType))
@@ -1224,6 +1257,8 @@ ConstantFolding::opnd(Instruction *i, ImmediateValue &imm0, int s)
          else if (si->src(1).getImmediate(imm1))
             adds = 1;
          else
+            return;
+         if (si->src(!adds).mod != Modifier(0))
             return;
          // SHL(ADD(x, y), z) = ADD(SHL(x, z), SHL(y, z))
 
@@ -1889,6 +1924,9 @@ AlgebraicOpt::handleCVT_EXTBF(Instruction *cvt)
          arg = shift->getSrc(0);
          offset = imm.reg.data.u32;
       }
+      // We just AND'd the high bits away, which means this is effectively an
+      // unsigned value.
+      cvt->sType = TYPE_U32;
    } else if (insn->op == OP_SHR &&
               insn->sType == cvt->sType &&
               insn->src(1).getImmediate(imm)) {
@@ -2495,6 +2533,12 @@ MemoryOpt::runOpt(BasicBlock *bb)
          }
       } else
       if (ldst->op == OP_STORE || ldst->op == OP_EXPORT) {
+         if (typeSizeof(ldst->dType) == 4 &&
+             ldst->src(1).getFile() == FILE_GPR &&
+             ldst->getSrc(1)->getInsn()->op == OP_NOP) {
+            delete_Instruction(prog, ldst);
+            continue;
+         }
          isLoad = false;
       } else {
          // TODO: maybe have all fixed ops act as barrier ?
@@ -3006,7 +3050,7 @@ Instruction::isResultEqual(const Instruction *that) const
    if (that->srcExists(s))
       return false;
 
-   if (op == OP_LOAD || op == OP_VFETCH) {
+   if (op == OP_LOAD || op == OP_VFETCH || op == OP_ATOM) {
       switch (src(0).getFile()) {
       case FILE_MEMORY_CONST:
       case FILE_SHADER_INPUT:
@@ -3037,6 +3081,8 @@ GlobalCSE::visit(BasicBlock *bb)
       ik = phi->getSrc(0)->getInsn();
       if (!ik)
          continue; // probably a function input
+      if (ik->defCount(0xff) > 1)
+         continue; // too painful to check if we can really push this forward
       for (s = 1; phi->srcExists(s); ++s) {
          if (phi->getSrc(s)->refCount() > 1)
             break;
@@ -3170,10 +3216,10 @@ DeadCodeElim::buryAll(Program *prog)
 bool
 DeadCodeElim::visit(BasicBlock *bb)
 {
-   Instruction *next;
+   Instruction *prev;
 
-   for (Instruction *i = bb->getFirst(); i; i = next) {
-      next = i->next;
+   for (Instruction *i = bb->getExit(); i; i = prev) {
+      prev = i->prev;
       if (i->isDead()) {
          ++deadCount;
          delete_Instruction(prog, i);

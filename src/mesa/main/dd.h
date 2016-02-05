@@ -634,6 +634,11 @@ struct dd_function_table {
                               GLintptr readOffset, GLintptr writeOffset,
                               GLsizeiptr size );
 
+   void (*InvalidateBufferSubData)( struct gl_context *ctx,
+                                    struct gl_buffer_object *obj,
+                                    GLintptr offset,
+                                    GLsizeiptr length );
+
    /* Returns pointer to the start of the mapped range.
     * May return NULL if MESA_MAP_NOWAIT_BIT is set in access:
     */
@@ -721,6 +726,15 @@ struct dd_function_table {
    void (*EndQuery)(struct gl_context *ctx, struct gl_query_object *q);
    void (*CheckQuery)(struct gl_context *ctx, struct gl_query_object *q);
    void (*WaitQuery)(struct gl_context *ctx, struct gl_query_object *q);
+   /*
+    * \pname the value requested to be written (GL_QUERY_RESULT, etc)
+    * \ptype the type of the value requested to be written:
+    *    GL_UNSIGNED_INT, GL_UNSIGNED_INT64_ARB,
+    *    GL_INT, GL_INT64_ARB
+    */
+   void (*StoreQueryResult)(struct gl_context *ctx, struct gl_query_object *q,
+                            struct gl_buffer_object *buf, intptr_t offset,
+                            GLenum pname, GLenum ptype);
    /*@}*/
 
    /**
@@ -757,6 +771,12 @@ struct dd_function_table {
    void (*UseProgram)(struct gl_context *ctx, struct gl_shader_program *shProg);
    /*@}*/
 
+   /**
+    * \name GREMEDY debug/marker functions
+    */
+   /*@{*/
+   void (*EmitStringMarker)(struct gl_context *ctx, const GLchar *string, GLsizei len);
+   /*@}*/
 
    /**
     * \name Support for multiple T&L engines

@@ -167,6 +167,19 @@ intel_viewport(struct gl_context *ctx)
 }
 
 static void
+intel_update_framebuffer(struct gl_context *ctx,
+                         struct gl_framebuffer *fb)
+{
+   struct brw_context *brw = brw_context(ctx);
+
+   /* Quantize the derived default number of samples
+    */
+   fb->DefaultGeometry._NumSamples =
+      intel_quantize_num_samples(brw->intelScreen,
+                                 fb->DefaultGeometry.NumSamples);
+}
+
+static void
 intel_update_state(struct gl_context * ctx, GLuint new_state)
 {
    struct brw_context *brw = brw_context(ctx);
@@ -245,6 +258,12 @@ intel_update_state(struct gl_context * ctx, GLuint new_state)
    }
 
    _mesa_lock_context_textures(ctx);
+
+   if (new_state & _NEW_BUFFERS) {
+      intel_update_framebuffer(ctx, ctx->DrawBuffer);
+      if (ctx->DrawBuffer != ctx->ReadBuffer)
+         intel_update_framebuffer(ctx, ctx->ReadBuffer);
+   }
 }
 
 #define flushFront(screen)      ((screen)->image.loader ? (screen)->image.loader->flushFrontBuffer : (screen)->dri2.loader->flushFrontBuffer)
@@ -374,8 +393,8 @@ brw_initialize_context_constants(struct brw_context *brw)
 
    const bool stage_exists[MESA_SHADER_STAGES] = {
       [MESA_SHADER_VERTEX] = true,
-      [MESA_SHADER_TESS_CTRL] = brw->gen >= 8,
-      [MESA_SHADER_TESS_EVAL] = brw->gen >= 8,
+      [MESA_SHADER_TESS_CTRL] = brw->gen >= 7,
+      [MESA_SHADER_TESS_EVAL] = brw->gen >= 7,
       [MESA_SHADER_GEOMETRY] = brw->gen >= 6,
       [MESA_SHADER_FRAGMENT] = true,
       [MESA_SHADER_COMPUTE] =
@@ -750,6 +769,9 @@ brw_process_driconf_options(struct brw_context *brw)
 
    ctx->Const.AllowGLSLExtensionDirectiveMidShader =
       driQueryOptionb(options, "allow_glsl_extension_directive_midshader");
+
+   brw->dual_color_blend_by_location =
+      driQueryOptionb(options, "dual_color_blend_by_location");
 }
 
 GLboolean
@@ -812,7 +834,7 @@ brwCreateContext(gl_api api,
    brw->needs_unlit_centroid_workaround =
       devinfo->needs_unlit_centroid_workaround;
 
-   brw->must_use_separate_stencil = screen->hw_must_use_separate_stencil;
+   brw->must_use_separate_stencil = devinfo->must_use_separate_stencil;
    brw->has_swizzling = screen->hw_has_swizzling;
 
    brw->vs.base.stage = MESA_SHADER_VERTEX;

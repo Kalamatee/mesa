@@ -132,6 +132,7 @@ enum operation
    OP_SUBFM,   // surface bitfield manipulation
    OP_SUCLAMP, // clamp surface coordinates
    OP_SUEAU,   // surface effective address
+   OP_SUQ,     // surface query
    OP_MADSP,   // special integer multiply-add
    OP_TEXBAR, // texture dependency barrier
    OP_DFDX,
@@ -390,6 +391,9 @@ enum SVSemantic
    SV_VERTEX_STRIDE,
    SV_INVOCATION_INFO,
    SV_THREAD_KILL,
+   SV_BASEVERTEX,
+   SV_BASEINSTANCE,
+   SV_DRAWID,
    SV_UNDEFINED,
    SV_LAST
 };

@@ -36,7 +36,7 @@
 #include "swrast/s_renderbuffer.h"
 #include "util/ralloc.h"
 #include "brw_shader.h"
-#include "glsl/nir/nir.h"
+#include "compiler/nir/nir.h"
 
 #include "utils.h"
 #include "xmlpool.h"
@@ -79,6 +79,7 @@ DRI_CONF_BEGIN
       DRI_CONF_FORCE_GLSL_EXTENSIONS_WARN("false")
       DRI_CONF_DISABLE_GLSL_LINE_CONTINUATIONS("false")
       DRI_CONF_DISABLE_BLEND_FUNC_EXTENDED("false")
+      DRI_CONF_DUAL_COLOR_BLEND_BY_LOCATION("false")
       DRI_CONF_ALLOW_GLSL_EXTENSION_DIRECTIVE_MIDSHADER("false")
 
       DRI_CONF_OPT_BEGIN_B(shader_precompile, "true")
@@ -1448,8 +1449,6 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
 
    if (INTEL_DEBUG & DEBUG_AUB)
       drm_intel_bufmgr_gem_set_aub_dump(intelScreen->bufmgr, true);
-
-   intelScreen->hw_must_use_separate_stencil = intelScreen->devinfo->gen >= 7;
 
    intelScreen->hw_has_swizzling = intel_detect_swizzling(intelScreen);
    intelScreen->hw_has_timestamp = intel_detect_timestamp(intelScreen);

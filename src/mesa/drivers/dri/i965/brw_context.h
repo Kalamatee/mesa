@@ -221,6 +221,7 @@ enum brw_state_id {
    BRW_STATE_COMPUTE_PROGRAM,
    BRW_STATE_CS_WORK_GROUPS,
    BRW_STATE_URB_SIZE,
+   BRW_STATE_CC_STATE,
    BRW_NUM_STATE_BITS
 };
 
@@ -309,6 +310,7 @@ enum brw_state_id {
 #define BRW_NEW_COMPUTE_PROGRAM         (1ull << BRW_STATE_COMPUTE_PROGRAM)
 #define BRW_NEW_CS_WORK_GROUPS          (1ull << BRW_STATE_CS_WORK_GROUPS)
 #define BRW_NEW_URB_SIZE                (1ull << BRW_STATE_URB_SIZE)
+#define BRW_NEW_CC_STATE                (1ull << BRW_STATE_CC_STATE)
 
 struct brw_state_flags {
    /** State update flags signalled by mesa internals */
@@ -834,6 +836,7 @@ struct brw_context
    bool always_flush_cache;
    bool disable_throttling;
    bool precompile;
+   bool dual_color_blend_by_location;
 
    driOptionCache optionCache;
    /** @} */
@@ -909,8 +912,13 @@ struct brw_context
    uint32_t pma_stall_bits;
 
    struct {
-      /** The value of gl_BaseVertex for the current _mesa_prim. */
-      int gl_basevertex;
+      struct {
+         /** The value of gl_BaseVertex for the current _mesa_prim. */
+         int gl_basevertex;
+
+         /** The value of gl_BaseInstance for the current _mesa_prim. */
+         int gl_baseinstance;
+      } params;
 
       /**
        * Buffer and offset used for GL_ARB_shader_draw_parameters
@@ -918,6 +926,15 @@ struct brw_context
        */
       drm_intel_bo *draw_params_bo;
       uint32_t draw_params_offset;
+
+      /**
+       * The value of gl_DrawID for the current _mesa_prim. This always comes
+       * in from it's own vertex buffer since it's not part of the indirect
+       * draw parameters.
+       */
+      int gl_drawid;
+      drm_intel_bo *draw_id_bo;
+      uint32_t draw_id_offset;
    } draw;
 
    struct {
@@ -1248,7 +1265,7 @@ struct brw_context
 
    int num_atoms[BRW_NUM_PIPELINES];
    const struct brw_tracked_state render_atoms[76];
-   const struct brw_tracked_state compute_atoms[10];
+   const struct brw_tracked_state compute_atoms[11];
 
    /* If (INTEL_DEBUG & DEBUG_BATCH) */
    struct {

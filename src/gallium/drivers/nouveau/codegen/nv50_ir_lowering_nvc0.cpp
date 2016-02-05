@@ -540,6 +540,12 @@ NVC0LegalizePostRA::visit(BasicBlock *bb)
          // It seems like barriers are never required for tessellation since
          // the warp size is 32, and there are always at most 32 tcs threads.
          bb->remove(i);
+      } else
+      if (i->op == OP_LOAD && i->subOp == NV50_IR_SUBOP_LDC_IS) {
+         int offset = i->src(0).get()->reg.data.offset;
+         if (abs(offset) > 0x10000)
+            i->src(0).get()->reg.fileIndex += offset >> 16;
+         i->src(0).get()->reg.data.offset = (int)(short)offset;
       } else {
          // TODO: Move this to before register allocation for operations that
          // need the $c register !
@@ -1016,11 +1022,22 @@ NVC0LoweringPass::handleTXLQ(TexInstruction *i)
    return true;
 }
 
+bool
+NVC0LoweringPass::handleSUQ(Instruction *suq)
+{
+   suq->op = OP_MOV;
+   suq->setSrc(0, loadResLength32(suq->getIndirect(0, 1),
+                                  suq->getSrc(0)->reg.fileIndex * 16));
+   suq->setIndirect(0, 0, NULL);
+   suq->setIndirect(0, 1, NULL);
+   return true;
+}
 
 bool
 NVC0LoweringPass::handleATOM(Instruction *atom)
 {
    SVSemantic sv;
+   Value *ptr = atom->getIndirect(0, 0), *ind = atom->getIndirect(0, 1), *base;
 
    switch (atom->src(0).getFile()) {
    case FILE_MEMORY_LOCAL:
@@ -1031,16 +1048,22 @@ NVC0LoweringPass::handleATOM(Instruction *atom)
       break;
    default:
       assert(atom->src(0).getFile() == FILE_MEMORY_GLOBAL);
+      base = loadResInfo64(ind, atom->getSrc(0)->reg.fileIndex * 16);
+      assert(base->reg.size == 8);
+      if (ptr)
+         base = bld.mkOp2v(OP_ADD, TYPE_U64, base, base, ptr);
+      assert(base->reg.size == 8);
+      atom->setIndirect(0, 0, base);
       return true;
    }
-   Value *base =
+   base =
       bld.mkOp1v(OP_RDSV, TYPE_U32, bld.getScratch(), bld.mkSysVal(sv, 0));
-   Value *ptr = atom->getIndirect(0, 0);
 
    atom->setSrc(0, cloneShallow(func, atom->getSrc(0)));
    atom->getSrc(0)->reg.file = FILE_MEMORY_GLOBAL;
    if (ptr)
       base = bld.mkOp2v(OP_ADD, TYPE_U32, base, base, ptr);
+   atom->setIndirect(0, 1, NULL);
    atom->setIndirect(0, 0, base);
 
    return true;
@@ -1063,7 +1086,7 @@ NVC0LoweringPass::handleCasExch(Instruction *cas, bool needCctl)
          cctl->setPredicate(cas->cc, cas->getPredicate());
    }
 
-   if (cas->defExists(0) && cas->subOp == NV50_IR_SUBOP_ATOM_CAS) {
+   if (cas->subOp == NV50_IR_SUBOP_ATOM_CAS) {
       // CAS is crazy. It's 2nd source is a double reg, and the 3rd source
       // should be set to the high part of the double reg or bad things will
       // happen elsewhere in the universe.
@@ -1073,6 +1096,7 @@ NVC0LoweringPass::handleCasExch(Instruction *cas, bool needCctl)
       bld.setPosition(cas, false);
       bld.mkOp2(OP_MERGE, TYPE_U64, dreg, cas->getSrc(1), cas->getSrc(2));
       cas->setSrc(1, dreg);
+      cas->setSrc(2, dreg);
    }
 
    return true;
@@ -1085,6 +1109,32 @@ NVC0LoweringPass::loadResInfo32(Value *ptr, uint32_t off)
    off += prog->driver->io.suInfoBase;
    return bld.
       mkLoadv(TYPE_U32, bld.mkSymbol(FILE_MEMORY_CONST, b, TYPE_U32, off), ptr);
+}
+
+inline Value *
+NVC0LoweringPass::loadResInfo64(Value *ptr, uint32_t off)
+{
+   uint8_t b = prog->driver->io.resInfoCBSlot;
+   off += prog->driver->io.suInfoBase;
+
+   if (ptr)
+      ptr = bld.mkOp2v(OP_SHL, TYPE_U32, bld.getScratch(), ptr, bld.mkImm(4));
+
+   return bld.
+      mkLoadv(TYPE_U64, bld.mkSymbol(FILE_MEMORY_CONST, b, TYPE_U64, off), ptr);
+}
+
+inline Value *
+NVC0LoweringPass::loadResLength32(Value *ptr, uint32_t off)
+{
+   uint8_t b = prog->driver->io.resInfoCBSlot;
+   off += prog->driver->io.suInfoBase;
+
+   if (ptr)
+      ptr = bld.mkOp2v(OP_SHL, TYPE_U32, bld.getScratch(), ptr, bld.mkImm(4));
+
+   return bld.
+      mkLoadv(TYPE_U32, bld.mkSymbol(FILE_MEMORY_CONST, b, TYPE_U64, off + 8), ptr);
 }
 
 inline Value *
@@ -1576,6 +1626,17 @@ NVC0LoweringPass::handleRDSV(Instruction *i)
       ld = bld.mkOp1(OP_PIXLD, TYPE_U32, i->getDef(0), bld.mkImm(0));
       ld->subOp = NV50_IR_SUBOP_PIXLD_COVMASK;
       break;
+   case SV_BASEVERTEX:
+   case SV_BASEINSTANCE:
+   case SV_DRAWID:
+      ld = bld.mkLoad(TYPE_U32, i->getDef(0),
+                      bld.mkSymbol(FILE_MEMORY_CONST,
+                                   prog->driver->io.auxCBSlot,
+                                   TYPE_U32,
+                                   prog->driver->io.drawInfoBase +
+                                   4 * (sv - SV_BASEVERTEX)),
+                      NULL);
+      break;
    default:
       if (prog->getType() == Program::TYPE_TESSELLATION_EVAL && !i->perPatch)
          vtx = bld.mkOp1v(OP_PFETCH, TYPE_U32, bld.getSSA(), bld.mkImm(0));
@@ -1769,6 +1830,7 @@ NVC0LoweringPass::visit(Instruction *i)
       return handleRDSV(i);
    case OP_WRSV:
       return handleWRSV(i);
+   case OP_STORE:
    case OP_LOAD:
       if (i->src(0).getFile() == FILE_SHADER_INPUT) {
          if (prog->getType() == Program::TYPE_COMPUTE) {
@@ -1803,6 +1865,26 @@ NVC0LoweringPass::visit(Instruction *i)
       } else if (i->src(0).getFile() == FILE_SHADER_OUTPUT) {
          assert(prog->getType() == Program::TYPE_TESSELLATION_CONTROL);
          i->op = OP_VFETCH;
+      } else if (i->src(0).getFile() == FILE_MEMORY_GLOBAL) {
+         Value *ind = i->getIndirect(0, 1);
+         Value *ptr = loadResInfo64(ind, i->getSrc(0)->reg.fileIndex * 16);
+         // XXX come up with a way not to do this for EVERY little access but
+         // rather to batch these up somehow. Unfortunately we've lost the
+         // information about the field width by the time we get here.
+         Value *offset = bld.loadImm(NULL, i->getSrc(0)->reg.data.offset + typeSizeof(i->sType));
+         Value *length = loadResLength32(ind, i->getSrc(0)->reg.fileIndex * 16);
+         Value *pred = new_LValue(func, FILE_PREDICATE);
+         if (i->src(0).isIndirect(0)) {
+            bld.mkOp2(OP_ADD, TYPE_U64, ptr, ptr, i->getIndirect(0, 0));
+            bld.mkOp2(OP_ADD, TYPE_U32, offset, offset, i->getIndirect(0, 0));
+         }
+         i->setIndirect(0, 1, NULL);
+         i->setIndirect(0, 0, ptr);
+         bld.mkCmp(OP_SET, CC_GT, TYPE_U32, pred, TYPE_U32, offset, length);
+         i->setPredicate(CC_NOT_P, pred);
+         if (i->defExists(0)) {
+            bld.mkMov(i->getDef(0), bld.mkImm(0));
+         }
       }
       break;
    case OP_ATOM:
@@ -1820,6 +1902,9 @@ NVC0LoweringPass::visit(Instruction *i)
    case OP_SUREDP:
       if (targ->getChipset() >= NVISA_GK104_CHIPSET)
          handleSurfaceOpNVE4(i->asTex());
+      break;
+   case OP_SUQ:
+      handleSUQ(i);
       break;
    default:
       break;

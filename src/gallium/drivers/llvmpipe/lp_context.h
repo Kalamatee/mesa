@@ -82,8 +82,6 @@ struct llvmpipe_context {
    struct pipe_viewport_state viewports[PIPE_MAX_VIEWPORTS];
    struct pipe_vertex_buffer vertex_buffer[PIPE_MAX_ATTRIBS];
    struct pipe_index_buffer index_buffer;
-   struct pipe_resource *mapped_vs_tex[PIPE_MAX_SHADER_SAMPLER_VIEWS];
-   struct pipe_resource *mapped_gs_tex[PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
    unsigned num_samplers[PIPE_SHADER_TYPES];
    unsigned num_sampler_views[PIPE_SHADER_TYPES];
@@ -108,28 +106,22 @@ struct llvmpipe_context {
    struct vertex_info vertex_info;
    
    /** Which vertex shader output slot contains color */
-   uint8_t color_slot[2];
+   int8_t color_slot[2];
 
    /** Which vertex shader output slot contains bcolor */
-   uint8_t bcolor_slot[2];
+   int8_t bcolor_slot[2];
 
    /** Which vertex shader output slot contains point size */
-   uint8_t psize_slot;
+   int8_t psize_slot;
 
    /** Which vertex shader output slot contains viewport index */
-   uint8_t viewport_index_slot;
+   int8_t viewport_index_slot;
 
    /** Which geometry shader output slot contains layer */
-   uint8_t layer_slot;
+   int8_t layer_slot;
 
    /** A fake frontface output for unfilled primitives */
-   uint8_t face_slot;
-
-   /** Which output slot is used for the fake vp index info */
-   uint8_t fake_vpindex_slot;
-
-   /** Which output slot is used for the fake layer info */
-   uint8_t fake_layer_slot;
+   int8_t face_slot;
 
    /** Depth format and bias settings. */
    boolean floating_point_depth;

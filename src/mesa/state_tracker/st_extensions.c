@@ -37,6 +37,7 @@
 #include "util/u_math.h"
 
 #include "st_context.h"
+#include "st_debug.h"
 #include "st_extensions.h"
 #include "st_format.h"
 
@@ -217,6 +218,11 @@ void st_init_limits(struct pipe_screen *screen,
                                           c->MaxUniformBlockSize / 4 *
                                           pc->MaxUniformBlocks);
 
+      pc->MaxAtomicCounters = MAX_ATOMIC_COUNTERS;
+      pc->MaxAtomicBuffers = screen->get_shader_param(
+            screen, sh, PIPE_SHADER_CAP_MAX_SHADER_BUFFERS) / 2;
+      pc->MaxShaderStorageBlocks = pc->MaxAtomicBuffers;
+
       /* Gallium doesn't really care about local vs. env parameters so use the
        * same limits.
        */
@@ -314,10 +320,11 @@ void st_init_limits(struct pipe_screen *screen,
    c->GLSLSkipStrictMaxUniformLimitCheck =
       screen->get_param(screen, PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS);
 
+   c->UniformBufferOffsetAlignment =
+      screen->get_param(screen, PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT);
+
    if (can_ubo) {
       extensions->ARB_uniform_buffer_object = GL_TRUE;
-      c->UniformBufferOffsetAlignment =
-         screen->get_param(screen, PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT);
       c->MaxCombinedUniformBlocks = c->MaxUniformBufferBindings =
          c->Program[MESA_SHADER_VERTEX].MaxUniformBlocks +
          c->Program[MESA_SHADER_TESS_CTRL].MaxUniformBlocks +
@@ -325,6 +332,36 @@ void st_init_limits(struct pipe_screen *screen,
          c->Program[MESA_SHADER_GEOMETRY].MaxUniformBlocks +
          c->Program[MESA_SHADER_FRAGMENT].MaxUniformBlocks;
       assert(c->MaxCombinedUniformBlocks <= MAX_COMBINED_UNIFORM_BUFFERS);
+   }
+
+   c->GLSLFragCoordIsSysVal =
+      screen->get_param(screen, PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL);
+   c->GLSLFrontFacingIsSysVal =
+      screen->get_param(screen, PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL);
+
+   c->MaxAtomicBufferBindings =
+         c->Program[MESA_SHADER_FRAGMENT].MaxAtomicBuffers;
+   c->MaxCombinedAtomicBuffers =
+         c->Program[MESA_SHADER_VERTEX].MaxAtomicBuffers +
+         c->Program[MESA_SHADER_TESS_CTRL].MaxAtomicBuffers +
+         c->Program[MESA_SHADER_TESS_EVAL].MaxAtomicBuffers +
+         c->Program[MESA_SHADER_GEOMETRY].MaxAtomicBuffers +
+         c->Program[MESA_SHADER_FRAGMENT].MaxAtomicBuffers;
+   assert(c->MaxCombinedAtomicBuffers <= MAX_COMBINED_ATOMIC_BUFFERS);
+
+   if (c->MaxCombinedAtomicBuffers > 0)
+      extensions->ARB_shader_atomic_counters = GL_TRUE;
+
+   c->MaxCombinedShaderOutputResources = c->MaxDrawBuffers;
+   c->ShaderStorageBufferOffsetAlignment =
+      screen->get_param(screen, PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT);
+   if (c->ShaderStorageBufferOffsetAlignment) {
+      c->MaxCombinedShaderStorageBlocks = c->MaxShaderStorageBufferBindings =
+         c->MaxCombinedAtomicBuffers;
+      c->MaxCombinedShaderOutputResources +=
+         c->MaxCombinedShaderStorageBlocks;
+      c->MaxShaderStorageBlockSize = 1 << 27;
+      extensions->ARB_shader_storage_buffer_object = GL_TRUE;
    }
 }
 
@@ -440,34 +477,48 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_base_instance),                PIPE_CAP_START_INSTANCE                   },
       { o(ARB_buffer_storage),               PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT   },
       { o(ARB_clear_texture),                PIPE_CAP_CLEAR_TEXTURE                    },
+      { o(ARB_clip_control),                 PIPE_CAP_CLIP_HALFZ                       },
       { o(ARB_color_buffer_float),           PIPE_CAP_VERTEX_COLOR_UNCLAMPED           },
+      { o(ARB_conditional_render_inverted),  PIPE_CAP_CONDITIONAL_RENDER_INVERTED      },
       { o(ARB_copy_image),                   PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS },
       { o(ARB_depth_clamp),                  PIPE_CAP_DEPTH_CLIP_DISABLE               },
       { o(ARB_depth_texture),                PIPE_CAP_TEXTURE_SHADOW_MAP               },
+      { o(ARB_derivative_control),           PIPE_CAP_TGSI_FS_FINE_DERIVATIVE          },
       { o(ARB_draw_buffers_blend),           PIPE_CAP_INDEP_BLEND_FUNC                 },
+      { o(ARB_draw_indirect),                PIPE_CAP_DRAW_INDIRECT                    },
       { o(ARB_draw_instanced),               PIPE_CAP_TGSI_INSTANCEID                  },
       { o(ARB_fragment_program_shadow),      PIPE_CAP_TEXTURE_SHADOW_MAP               },
       { o(ARB_framebuffer_object),           PIPE_CAP_MIXED_FRAMEBUFFER_SIZES          },
+      { o(ARB_indirect_parameters),          PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS       },
       { o(ARB_instanced_arrays),             PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR  },
       { o(ARB_occlusion_query),              PIPE_CAP_OCCLUSION_QUERY                  },
       { o(ARB_occlusion_query2),             PIPE_CAP_OCCLUSION_QUERY                  },
       { o(ARB_pipeline_statistics_query),    PIPE_CAP_QUERY_PIPELINE_STATISTICS        },
       { o(ARB_point_sprite),                 PIPE_CAP_POINT_SPRITE                     },
+      { o(ARB_query_buffer_object),          PIPE_CAP_QUERY_BUFFER_OBJECT              },
+      { o(ARB_sample_shading),               PIPE_CAP_SAMPLE_SHADING                   },
       { o(ARB_seamless_cube_map),            PIPE_CAP_SEAMLESS_CUBE_MAP                },
+      { o(ARB_shader_draw_parameters),       PIPE_CAP_DRAW_PARAMETERS                  },
       { o(ARB_shader_stencil_export),        PIPE_CAP_SHADER_STENCIL_EXPORT            },
       { o(ARB_shader_texture_image_samples), PIPE_CAP_TGSI_TXQS                        },
       { o(ARB_shader_texture_lod),           PIPE_CAP_SM3                              },
       { o(ARB_shadow),                       PIPE_CAP_TEXTURE_SHADOW_MAP               },
       { o(ARB_texture_buffer_object),        PIPE_CAP_TEXTURE_BUFFER_OBJECTS           },
+      { o(ARB_texture_cube_map_array),       PIPE_CAP_CUBE_MAP_ARRAY                   },
       { o(ARB_texture_gather),               PIPE_CAP_MAX_TEXTURE_GATHER_COMPONENTS    },
       { o(ARB_texture_mirror_clamp_to_edge), PIPE_CAP_TEXTURE_MIRROR_CLAMP             },
+      { o(ARB_texture_multisample),          PIPE_CAP_TEXTURE_MULTISAMPLE              },
       { o(ARB_texture_non_power_of_two),     PIPE_CAP_NPOT_TEXTURES                    },
+      { o(ARB_texture_query_lod),            PIPE_CAP_TEXTURE_QUERY_LOD                },
+      { o(ARB_texture_view),                 PIPE_CAP_SAMPLER_VIEW_TARGET              },
       { o(ARB_timer_query),                  PIPE_CAP_QUERY_TIMESTAMP                  },
       { o(ARB_transform_feedback2),          PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME       },
       { o(ARB_transform_feedback3),          PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME       },
 
       { o(EXT_blend_equation_separate),      PIPE_CAP_BLEND_EQUATION_SEPARATE          },
+      { o(EXT_depth_bounds_test),            PIPE_CAP_DEPTH_BOUNDS_TEST                },
       { o(EXT_draw_buffers2),                PIPE_CAP_INDEP_BLEND_ENABLE               },
+      { o(EXT_polygon_offset_clamp),         PIPE_CAP_POLYGON_OFFSET_CLAMP             },
       { o(EXT_stencil_two_side),             PIPE_CAP_TWO_SIDED_STENCIL                },
       { o(EXT_texture_array),                PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS         },
       { o(EXT_texture_filter_anisotropic),   PIPE_CAP_ANISOTROPIC_FILTER               },
@@ -488,17 +539,6 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(OES_standard_derivatives),         PIPE_CAP_SM3                              },
       { o(OES_texture_float_linear),         PIPE_CAP_TEXTURE_FLOAT_LINEAR             },
       { o(OES_texture_half_float_linear),    PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR        },
-      { o(ARB_texture_cube_map_array),       PIPE_CAP_CUBE_MAP_ARRAY                   },
-      { o(ARB_texture_multisample),          PIPE_CAP_TEXTURE_MULTISAMPLE              },
-      { o(ARB_texture_query_lod),            PIPE_CAP_TEXTURE_QUERY_LOD                },
-      { o(ARB_sample_shading),               PIPE_CAP_SAMPLE_SHADING                   },
-      { o(ARB_draw_indirect),                PIPE_CAP_DRAW_INDIRECT                    },
-      { o(ARB_derivative_control),           PIPE_CAP_TGSI_FS_FINE_DERIVATIVE          },
-      { o(ARB_conditional_render_inverted),  PIPE_CAP_CONDITIONAL_RENDER_INVERTED      },
-      { o(ARB_texture_view),                 PIPE_CAP_SAMPLER_VIEW_TARGET              },
-      { o(ARB_clip_control),                 PIPE_CAP_CLIP_HALFZ                       },
-      { o(EXT_polygon_offset_clamp),         PIPE_CAP_POLYGON_OFFSET_CLAMP             },
-      { o(EXT_depth_bounds_test),            PIPE_CAP_DEPTH_BOUNDS_TEST                },
    };
 
    /* Required: render target and sampler support */
@@ -965,4 +1005,8 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->ARB_gpu_shader_fp64 = GL_TRUE;
       extensions->ARB_vertex_attrib_64bit = GL_TRUE;
    }
+
+   if ((ST_DEBUG & DEBUG_GREMEDY) &&
+       screen->get_param(screen, PIPE_CAP_STRING_MARKER))
+      extensions->GREMEDY_string_marker = GL_TRUE;
 }

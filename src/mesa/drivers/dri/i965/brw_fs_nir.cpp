@@ -21,7 +21,7 @@
  * IN THE SOFTWARE.
  */
 
-#include "glsl/ir.h"
+#include "compiler/glsl/ir.h"
 #include "main/shaderimage.h"
 #include "brw_fs.h"
 #include "brw_fs_surface_builder.h"
@@ -43,10 +43,10 @@ fs_visitor::emit_nir_code()
    nir_emit_system_values();
 
    /* get the main function and emit it */
-   nir_foreach_overload(nir, overload) {
-      assert(strcmp(overload->function->name, "main") == 0);
-      assert(overload->impl);
-      nir_emit_impl(overload->impl);
+   nir_foreach_function(nir, function) {
+      assert(strcmp(function->name, "main") == 0);
+      assert(function->impl);
+      nir_emit_impl(function->impl);
    }
 }
 
@@ -130,7 +130,11 @@ fs_visitor::nir_setup_outputs()
          break;
       }
       case MESA_SHADER_FRAGMENT:
-         if (var->data.index > 0) {
+         if (key->force_dual_color_blend &&
+             var->data.location == FRAG_RESULT_DATA1) {
+            this->dual_src_output = reg;
+            this->do_dual_src = true;
+         } else if (var->data.index > 0) {
             assert(var->data.location == FRAG_RESULT_DATA0);
             assert(var->data.index == 1);
             this->dual_src_output = reg;
@@ -220,6 +224,20 @@ emit_system_values_block(nir_block *block, void *void_visitor)
          reg = &v->nir_system_values[SYSTEM_VALUE_INSTANCE_ID];
          if (reg->file == BAD_FILE)
             *reg = *v->emit_vs_system_value(SYSTEM_VALUE_INSTANCE_ID);
+         break;
+
+      case nir_intrinsic_load_base_instance:
+         assert(v->stage == MESA_SHADER_VERTEX);
+         reg = &v->nir_system_values[SYSTEM_VALUE_BASE_INSTANCE];
+         if (reg->file == BAD_FILE)
+            *reg = *v->emit_vs_system_value(SYSTEM_VALUE_BASE_INSTANCE);
+         break;
+
+      case nir_intrinsic_load_draw_id:
+         assert(v->stage == MESA_SHADER_VERTEX);
+         reg = &v->nir_system_values[SYSTEM_VALUE_DRAW_ID];
+         if (reg->file == BAD_FILE)
+            *reg = *v->emit_vs_system_value(SYSTEM_VALUE_DRAW_ID);
          break;
 
       case nir_intrinsic_load_invocation_id:
@@ -338,10 +356,10 @@ fs_visitor::nir_emit_system_values()
       nir_system_values[i] = fs_reg();
    }
 
-   nir_foreach_overload(nir, overload) {
-      assert(strcmp(overload->function->name, "main") == 0);
-      assert(overload->impl);
-      nir_foreach_block(overload->impl, emit_system_values_block, this);
+   nir_foreach_function(nir, function) {
+      assert(strcmp(function->name, "main") == 0);
+      assert(function->impl);
+      nir_foreach_block(function->impl, emit_system_values_block, this);
    }
 }
 
@@ -1013,6 +1031,9 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr)
 
    case nir_op_ubitfield_extract:
    case nir_op_ibitfield_extract:
+      unreachable("should have been lowered");
+   case nir_op_ubfe:
+   case nir_op_ibfe:
       bld.BFE(result, op[2], op[1], op[0]);
       break;
    case nir_op_bfm:
@@ -1023,8 +1044,7 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr)
       break;
 
    case nir_op_bitfield_insert:
-      unreachable("not reached: should be handled by "
-                  "lower_instructions::bitfield_insert_to_bfm_bfi");
+      unreachable("not reached: should have been lowered");
 
    case nir_op_ishl:
       bld.SHL(result, op[0], op[1]);
@@ -1058,6 +1078,22 @@ fs_visitor::nir_emit_alu(const fs_builder &bld, nir_alu_instr *instr)
       inst = bld.SEL(result, op[1], op[2]);
       inst->predicate = BRW_PREDICATE_NORMAL;
       break;
+
+   case nir_op_extract_u8:
+   case nir_op_extract_i8: {
+      nir_const_value *byte = nir_src_as_const_value(instr->src[1].src);
+      bld.emit(SHADER_OPCODE_EXTRACT_BYTE,
+               result, op[0], brw_imm_ud(byte->u[0]));
+      break;
+   }
+
+   case nir_op_extract_u16:
+   case nir_op_extract_i16: {
+      nir_const_value *word = nir_src_as_const_value(instr->src[1].src);
+      bld.emit(SHADER_OPCODE_EXTRACT_WORD,
+               result, op[0], brw_imm_ud(word->u[0]));
+      break;
+   }
 
    default:
       unreachable("unhandled instruction");
@@ -1747,7 +1783,9 @@ fs_visitor::nir_emit_vs_intrinsic(const fs_builder &bld,
 
    case nir_intrinsic_load_vertex_id_zero_base:
    case nir_intrinsic_load_base_vertex:
-   case nir_intrinsic_load_instance_id: {
+   case nir_intrinsic_load_instance_id:
+   case nir_intrinsic_load_base_instance:
+   case nir_intrinsic_load_draw_id: {
       gl_system_value sv = nir_system_value_from_intrinsic(instr->intrinsic);
       fs_reg val = nir_system_values[sv];
       assert(val.file != BAD_FILE);
@@ -1833,12 +1871,33 @@ fs_visitor::nir_emit_tes_intrinsic(const fs_builder &bld,
 
       fs_inst *inst;
       if (indirect_offset.file == BAD_FILE) {
-         /* Replicate the patch handle to all enabled channels */
-         fs_reg patch_handle = bld.vgrf(BRW_REGISTER_TYPE_UD, 1);
-         bld.MOV(patch_handle, retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_UD));
+         /* Arbitrarily only push up to 32 vec4 slots worth of data,
+          * which is 16 registers (since each holds 2 vec4 slots).
+          */
+         const unsigned max_push_slots = 32;
+         if (imm_offset < max_push_slots) {
+            fs_reg src = fs_reg(ATTR, imm_offset / 2, dest.type);
+            for (int i = 0; i < instr->num_components; i++) {
+               bld.MOV(offset(dest, bld, i),
+                       component(src, 4 * (imm_offset % 2) + i));
+            }
+            tes_prog_data->base.urb_read_length =
+               MAX2(tes_prog_data->base.urb_read_length,
+                    DIV_ROUND_UP(imm_offset + 1, 2));
+         } else {
+            /* Replicate the patch handle to all enabled channels */
+            const fs_reg srcs[] = {
+               retype(brw_vec1_grf(0, 0), BRW_REGISTER_TYPE_UD)
+            };
+            fs_reg patch_handle = bld.vgrf(BRW_REGISTER_TYPE_UD, 1);
+            bld.LOAD_PAYLOAD(patch_handle, srcs, ARRAY_SIZE(srcs), 0);
 
-         inst = bld.emit(SHADER_OPCODE_URB_READ_SIMD8, dest, patch_handle);
-         inst->mlen = 1;
+            inst = bld.emit(SHADER_OPCODE_URB_READ_SIMD8, dest, patch_handle);
+            inst->mlen = 1;
+            inst->offset = imm_offset;
+            inst->base_mrf = -1;
+            inst->regs_written = instr->num_components;
+         }
       } else {
          /* Indirect indexing - use per-slot offsets as well. */
          const fs_reg srcs[] = {
@@ -1850,10 +1909,10 @@ fs_visitor::nir_emit_tes_intrinsic(const fs_builder &bld,
 
          inst = bld.emit(SHADER_OPCODE_URB_READ_SIMD8_PER_SLOT, dest, payload);
          inst->mlen = 2;
+         inst->offset = imm_offset;
+         inst->base_mrf = -1;
+         inst->regs_written = instr->num_components;
       }
-      inst->offset = imm_offset;
-      inst->base_mrf = -1;
-      inst->regs_written = instr->num_components;
       break;
    }
    default:

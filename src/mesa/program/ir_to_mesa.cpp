@@ -35,16 +35,16 @@
 #include "main/shaderapi.h"
 #include "main/shaderobj.h"
 #include "main/uniforms.h"
-#include "glsl/ast.h"
-#include "glsl/ir.h"
-#include "glsl/ir_expression_flattening.h"
-#include "glsl/ir_visitor.h"
-#include "glsl/ir_optimization.h"
-#include "glsl/ir_uniform.h"
-#include "glsl/glsl_parser_extras.h"
-#include "glsl/nir/glsl_types.h"
-#include "glsl/linker.h"
-#include "glsl/program.h"
+#include "compiler/glsl/ast.h"
+#include "compiler/glsl/ir.h"
+#include "compiler/glsl/ir_expression_flattening.h"
+#include "compiler/glsl/ir_visitor.h"
+#include "compiler/glsl/ir_optimization.h"
+#include "compiler/glsl/ir_uniform.h"
+#include "compiler/glsl/glsl_parser_extras.h"
+#include "compiler/glsl_types.h"
+#include "compiler/glsl/linker.h"
+#include "compiler/glsl/program.h"
 #include "program/hash_table.h"
 #include "program/prog_instruction.h"
 #include "program/prog_optimize.h"
@@ -1244,10 +1244,7 @@ ir_to_mesa_visitor::visit(ir_expression *ir)
    case ir_unop_unpack_unorm_2x16:
    case ir_unop_unpack_unorm_4x8:
    case ir_unop_unpack_half_2x16:
-   case ir_unop_unpack_half_2x16_split_x:
-   case ir_unop_unpack_half_2x16_split_y:
    case ir_unop_unpack_double_2x32:
-   case ir_binop_pack_half_2x16_split:
    case ir_unop_bitfield_reverse:
    case ir_unop_bit_count:
    case ir_unop_find_msb:
@@ -1303,9 +1300,7 @@ ir_to_mesa_visitor::visit(ir_expression *ir)
       break;
 
    case ir_binop_vector_extract:
-   case ir_binop_bfm:
    case ir_triop_fma:
-   case ir_triop_bfi:
    case ir_triop_bitfield_extract:
    case ir_triop_vector_insert:
    case ir_quadop_bitfield_insert:
@@ -2296,6 +2291,10 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name,
    unsigned int size;
 
    (void) row_major;
+
+   /* atomics don't get real storage */
+   if (type->contains_atomic())
+      return;
 
    if (type->is_vector() || type->is_scalar()) {
       size = type->vector_elements;
