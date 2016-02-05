@@ -246,6 +246,8 @@ VOID METHOD(BitMapIntelGMA, Root, Dispose)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+
     LOCK_BITMAP
     {
         LOCK_HW
@@ -292,6 +294,8 @@ VOID METHOD(BitMapIntelGMA, Root, Get)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     ULONG idx;
 
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+
     if (IS_BitMapIntelGMA_ATTR(msg->attrID, idx))
     {
         switch (idx)
@@ -328,6 +332,8 @@ VOID METHOD(BitMapIntelGMA, Root, Get)
 
 VOID METHOD(BitMapIntelGMA, Root, Set)
 {
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+
 #if defined(INTELGMA_COMPOSIT)
     struct TagItem  *tag, *tstate;
     GMABitMap_t * bmdata = OOP_INST_DATA(cl, o);
@@ -417,6 +423,10 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutPixel)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     void *ptr;
 
+#if (0)
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+#endif
+
 //	if (msg->x >= 0 && msg->x < bm->width && msg->y >= 0 && msg->y < bm->height)
     {
         LOCK_BITMAP
@@ -456,6 +466,10 @@ HIDDT_Pixel METHOD(BitMapIntelGMA, Hidd_BitMap, GetPixel)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     HIDDT_Pixel pixel = 0;
     void *ptr;
+
+#if (0)
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+#endif
 
     LOCK_BITMAP
     {
@@ -498,6 +512,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, DrawPixel)
     HIDDT_DrawMode  	mode;
     HIDDT_Pixel     	writeMask;
     void                *ptr;
+
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
     ptr = (void *)(bm->framebuffer + msg->y * bm->pitch);
     if (bm->fbgfx)
@@ -584,6 +600,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, DrawEllipse)
     WORD    	x = msg->rx, y = 0;     /* ellipse points */
     HIDDT_Pixel     	    	    src;
     HIDDT_DrawMode  	    	    mode;
+
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
     /* intermediate terms to speed up loop */
     LONG    	t1 = msg->rx * msg->rx, t2 = t1 << 1, t3 = t2 << 1;
@@ -722,6 +740,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, DrawLine)
 	LONG        x1, y1, x2, y2;
 
 	APTR    	doclip = GC_DOCLIP(gc);
+
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
     src       = GC_FG(gc);
     mode      = GC_DRMD(gc);
@@ -987,6 +1007,8 @@ ULONG METHOD(BitMapIntelGMA, Hidd_BitMap, BytesPerLine)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+
     return (bm->pitch);
 }
 
@@ -994,6 +1016,8 @@ BOOL METHOD(BitMapIntelGMA, Hidd_BitMap, ObtainDirectAccess)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     IPTR VideoData;
+
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
     LOCK_BITMAP
 
@@ -1021,6 +1045,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, ReleaseDirectAccess)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     UNLOCK_BITMAP
 
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+
 #if defined(INTELGMA_COMPOSIT)
 	if (bm->displayable)
     {
@@ -1045,6 +1071,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, ReleaseDirectAccess)
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, FillRect)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
     LOCK_BITMAP
 
@@ -1106,6 +1134,8 @@ static inline int do_alpha(int a, int v)
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutAlphaImage)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
     LOCK_BITMAP
 
@@ -1296,6 +1326,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutImage)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     BOOL done = FALSE;
+
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
     LOCK_BITMAP
 
@@ -1655,6 +1687,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutImageLUT)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+
     LOCK_BITMAP
 
     if (bm->fbgfx)
@@ -1782,6 +1816,8 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, GetImage)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     int done = 0;
     IPTR VideoData;
+
+    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
 
     LOCK_BITMAP
 
@@ -2035,6 +2071,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutTemplate)
     LOCK_BITMAP
 
     IPTR VideoData = bm->framebuffer;
+    D(bug("[IntelGMA] videoram @ 0x%p\n", VideoData));
 
     if (bm->fbgfx)
     {
@@ -2121,6 +2158,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutTemplate)
     } /* switch(bm->bpp) */
 
     UNLOCK_BITMAP
+    D(bug("[IntelGMA] PutTemplate: done\n"));
 }
 
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutPattern)
@@ -2236,6 +2274,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutPattern)
     } /* switch(bm->bpp) */
 
     UNLOCK_BITMAP
+    D(bug("[IntelGMA] PutPattern: done\n"));
 }
 
 #if defined(INTELGMA_COMPOSIT)
@@ -2291,7 +2330,7 @@ static const struct OOP_MethodDescr BitMapIntelGMA_Hidd_BitMap_descr[] =
 #endif
     {NULL					   	    , 0				       }
 };
-#if !defined(INTELGMA_COMPOSIT)
+#if defined(INTELGMA_COMPOSIT)
 #define NUM_BitMapIntelGMA_Hidd_BitMap_METHODS 16
 #else
 #define NUM_BitMapIntelGMA_Hidd_BitMap_METHODS 15

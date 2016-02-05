@@ -5,14 +5,13 @@
 
 #include <hidd/gallium.h>
 #include <proto/oop.h>
+#include <proto/utility.h>
 #include <aros/debug.h>
 
 #include <gallium/gallium.h>
 
 #include "pipe/p_screen.h"
-#include "vc4/sp_texture.h"
-#include "vc4/sp_public.h"
-#include "vc4/sp_screen.h"
+#include "vc4/vc4_screen.h"
 #include "util/u_format.h"
 #include "util/u_math.h"
 #include "state_tracker/sw_winsys.h"
@@ -93,28 +92,32 @@ HiddVC4UnMapDisplaytarget(struct sw_winsys *ws, struct sw_displaytarget *dt)
 
 OOP_Object *METHOD(VC4Gallium, Root, New)
 {
-    o = (OOP_Object *)OOP_DoSuperMethod(cl, o, (OOP_Msg) msg);
+    IPTR interfaceVers;
 
-    if (0)
+    D(bug("[SoftPipe] %s()\n", __PRETTY_FUNCTION__));
+
+    interfaceVers = GetTagData(aHidd_Gallium_InterfaceVersion, -1, msg->attrList);
+    if (interfaceVers != GALLIUM_INTERFACE_VERSION)
+        return NULL;
+
+    o = (OOP_Object *)OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+    if (o)
     {
-        struct HIDDVC4Data * HIDDVC4_Data = OOP_INST_DATA(cl, o);
-        struct sw_winsys *vc4_ws = NULL;
+        struct HiddGalliumVC4Data * HiddVC4_DATA = OOP_INST_DATA(cl, o);
 
-        OOP_GetAttr(o, aHidd_Gallium_WinSys, &vc4_ws);
+        HiddSoftpipe_DATA->vc4_obj = o;
 
-        if (vc4_ws)
-        {
-            /* Fill in with functions is displaytarget is ever used*/
-            vc4_ws->destroy                            = NULL;
-            vc4_ws->is_displaytarget_format_supported  = NULL;
-            vc4_ws->displaytarget_create               = HiddVC4CreateDisplaytarget;
-            vc4_ws->displaytarget_from_handle          = NULL;
-            vc4_ws->displaytarget_get_handle           = NULL;
-            vc4_ws->displaytarget_map                  = HiddVC4MapDisplaytarget;
-            vc4_ws->displaytarget_unmap                = HiddVC4UnMapDisplaytarget;
-            vc4_ws->displaytarget_display              = NULL;
-            vc4_ws->displaytarget_destroy              = HiddVC4DestroyDisplaytarget;
-        }
+#if (0)
+        HiddVC4_DATA->vc4_ws.destroy                            = NULL;
+        HiddVC4_DATA->vc4_ws.is_displaytarget_format_supported  = NULL;
+        HiddVC4_DATA->vc4_ws.displaytarget_create               = HiddVC4CreateDisplaytarget;
+        HiddVC4_DATA->vc4_ws.displaytarget_from_handle          = NULL;
+        HiddVC4_DATA->vc4_ws.displaytarget_get_handle           = NULL;
+        HiddVC4_DATA->vc4_ws.displaytarget_map                  = HiddVC4MapDisplaytarget;
+        HiddVC4_DATA->vc4_ws.displaytarget_unmap                = HiddVC4UnMapDisplaytarget;
+        HiddVC4_DATA->vc4_ws.displaytarget_display              = NULL;
+        HiddVC4_DATA->vc4_ws.displaytarget_destroy              = HiddVC4DestroyDisplaytarget;
+#endif
     }
 
     return o;
