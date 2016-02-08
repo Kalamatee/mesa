@@ -12668,6 +12668,12 @@
     <enum name="FRAMEBUFFER_SRGB_CAPABLE_EXT"      value="0x8DBA"/>
 </category>
 
+<category name="GL_ATI_meminfo" number="359">
+    <enum name="VBO_FREE_MEMORY_ATI"          value="0x87FB" />
+    <enum name="TEXTURE_FREE_MEMORY_ATI"      value="0x87FC" />
+    <enum name="RENDERBUFFER_FREE_MEMORY_ATI" value="0x87FD" />
+</category>
+
 <xi:include href="AMD_performance_monitor.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>
 
 <category name="GL_APPLE_texture_range" number="367">
@@ -12719,6 +12725,14 @@
 
 <category name="GL_AMD_pinned_memory" number="411">
     <enum name="EXTERNAL_VIRTUAL_MEMORY_BUFFER_AMD"   value="0x9160"/>
+</category>
+
+<category name="GL_NVX_gpu_memory_info" number="438">
+    <enum name="GPU_MEMORY_INFO_DEDICATED_VIDMEM_NVX"         value="0x9047" />
+    <enum name="GPU_MEMORY_INFO_TOTAL_AVAILABLE_MEMORY_NVX"   value="0x9048" />
+    <enum name="GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX" value="0x9049" />
+    <enum name="GPU_MEMORY_INFO_EVICTION_COUNT_NVX"           value="0x904A" />
+    <enum name="GPU_MEMORY_INFO_EVICTED_MEMORY_NVX"           value="0x904B" />
 </category>
 
 <xi:include href="INTEL_performance_query.xml" xmlns:xi="http://www.w3.org/2001/XInclude"/>

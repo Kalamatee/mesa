@@ -3891,6 +3891,7 @@ struct gl_extensions
    GLboolean AMD_vertex_shader_layer;
    GLboolean AMD_vertex_shader_viewport_index;
    GLboolean APPLE_object_purgeable;
+   GLboolean ATI_meminfo;
    GLboolean ATI_texture_compression_3dc;
    GLboolean ATI_texture_mirror_once;
    GLboolean ATI_texture_env_combine3;
@@ -3911,6 +3912,7 @@ struct gl_extensions
    GLboolean NV_texture_env_combine4;
    GLboolean NV_texture_rectangle;
    GLboolean NV_vdpau_interop;
+   GLboolean NVX_gpu_memory_info;
    GLboolean TDFX_texture_compression_FXT1;
    GLboolean OES_EGL_image;
    GLboolean OES_draw_texture;
@@ -4589,6 +4591,18 @@ struct gl_context
    GLboolean ShareGroupReset;
 };
 
+/**
+ * Information about memory usage. All sizes are in kilobytes.
+ */
+struct gl_memory_info
+{
+   unsigned total_device_memory; /**< size of device memory, e.g. VRAM */
+   unsigned avail_device_memory; /**< free device memory at the moment */
+   unsigned total_staging_memory; /**< size of staging memory, e.g. GART */
+   unsigned avail_staging_memory; /**< free staging memory at the moment */
+   unsigned device_memory_evicted; /**< size of memory evicted (monotonic counter) */
+   unsigned nr_device_memory_evictions; /**< # of evictions (monotonic counter) */
+};
 
 #ifdef DEBUG
 extern int MESA_VERBOSE;
