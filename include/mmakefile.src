@@ -2,17 +2,11 @@
 include $(TOP)/config/make.cfg
 
 GL_INCLUDE_FILES := gl.h glext.h
-KHR_INCLUDE_FILES := khrplatform.h
 
-#MM- mesa3dgl-includes : mesagl-includes mesakhr-includes
-#MM- includes-copy : mesa3dgl-includes
-
-#MM- mesagl-includes
 %copy_includes path=GL dir=GL includes=$(GL_INCLUDE_FILES)
 
-#MM- mesakhr-includes
+KHR_INCLUDE_FILES := khrplatform.h
+
 %copy_includes path=KHR dir=KHR includes=$(KHR_INCLUDE_FILES)
 
-
 %common
-
