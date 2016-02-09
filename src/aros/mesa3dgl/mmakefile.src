@@ -8,7 +8,7 @@ include $(TOP)/config/make.cfg
 include $(SRCDIR)/$(CURDIR)/mesa.cfg
 
 include $(top_srcdir)/src/mesa/Makefile.sources
-include $(top_srcdir)/src/glsl/Makefile.sources
+include $(top_srcdir)/src/compiler/glsl/Makefile.sources
 include $(top_srcdir)/src/mapi/Makefile.sources
 
 #MM- workbench-libs-complete : mesa3dgl-library-$(AROS_TARGET_TOOLCHAIN)
@@ -43,11 +43,11 @@ USER_INCLUDES := \
             -iquote $(top_builddir)/src/mesa \
             -iquote $(top_builddir)/src/mesa/main \
             -iquote $(top_builddir)/src/mapi \
-            -iquote $(top_builddir)/src/glsl \
+            -iquote $(top_builddir)/src/compiler/glsl \
             -iquote $(top_srcdir)/src/mesa/main \
             -iquote $(top_srcdir)/src/mapi \
-            -iquote $(top_srcdir)/src/glsl \
-            -iquote $(top_srcdir)/src/glsl/glcpp \
+            -iquote $(top_srcdir)/src/compiler/glsl \
+            -iquote $(top_srcdir)/src/compiler/glsl/glcpp \
             -iquote $(top_srcdir)/src/talloc \
             -iquote $(top_srcdir)/src/gallium/include \
             -iquote $(top_srcdir)/src/gallium/auxiliary
@@ -76,7 +76,7 @@ MESAGL_LIBRARY_SOURCES_CXX := \
 
 USER_LDFLAGS := \
   -L$(top_libdir) \
-  -Wl,--start-group -lglapi -lmesa -lglsl -lgalliumauxiliary -lgallium -lglcpp -lmesautil -Wl,--end-group \
+  -Wl,--start-group -lglapi -lmesa -lcompiler -lgalliumauxiliary -lgallium -lmesautil -Wl,--end-group \
   -lpthread -lposixc -lstdcio -lstdc
 
 %build_module_library mmake=mesa3dgl-library \

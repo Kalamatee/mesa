@@ -131,6 +131,122 @@ void METHOD(IntelGMA, Root, Get)
     OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 }
 
+void METHOD(IntelGMA, Hidd_Gfx, CopyBox)
+{
+    ULONG mode = GC_DRMD(msg->gc);
+    IPTR src=0, dst=0;
+
+    D(bug("[IntelGMA:Display] %s()\n", __PRETTY_FUNCTION__));
+
+    /* Check whether we can get Drawable attribute of our GMA class */
+    OOP_GetAttr(msg->src,   aHidd_BitMap_IntelGMA_Drawable,   &src);
+    OOP_GetAttr(msg->dest,  aHidd_BitMap_IntelGMA_Drawable,   &dst);
+
+    if (!dst || !src)
+    {
+        
+        /* No. One of the bitmaps is not a GMA bitmap */
+        OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+    }
+    else
+    {
+        /* Yes. Get the instance data of both bitmaps */
+        GMABitMap_t *bm_src = OOP_INST_DATA(OOP_OCLASS(msg->src), msg->src);
+        GMABitMap_t *bm_dst = OOP_INST_DATA(OOP_OCLASS(msg->dest), msg->dest);
+
+        D(bug("[IntelGMA:HW] %s: src(%p,%d:%d@%d), dst(%p,%d:%d@%d), %d:%d\n",
+                    __PRETTY_FUNCTION__,
+                    bm_src->framebuffer,msg->srcX,msg->srcY,bm_src->depth,
+                    bm_dst->framebuffer,msg->destX,msg->destY,bm_dst->depth,
+                    msg->width, msg->height));
+
+        /* Case -1: (To be fixed) one of the bitmaps have chunky outside GFX mem */
+        if (!bm_src->fbgfx || !bm_dst->fbgfx)
+        {
+            D(bug("[IntelGMA:HW] %s: one of bitmaps outside VRAM!\n", __PRETTY_FUNCTION__));
+
+            OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+        }
+        /* Case 0: one of bitmaps is 8bpp, whereas the other is TrueColor one */
+        else if ((bm_src->depth <= 8 || bm_dst->depth <= 8) &&
+            (bm_src->depth != bm_dst->depth))
+        {
+            /* Unsupported case */
+            OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+            return;
+        }
+        else
+        {
+            BOOL done = FALSE;
+
+            LOCK_MULTI_BITMAP
+            LOCK_BITMAP_BM(bm_src)
+            LOCK_BITMAP_BM(bm_dst)
+            UNLOCK_MULTI_BITMAP
+
+#if (0)
+            /* First, just try to use 3d hardware. */
+            D(bug("[IntelGMA:HW] CopyBox(src(%p,%d:%d@%d),dst(%p,%d:%d@%d),%d:%d\n",
+                    bm_src->framebuffer,msg->srcX,msg->srcY,bm_src->depth,
+                    bm_dst->framebuffer,msg->destX,msg->destY,bm_dst->depth,
+                    msg->width, msg->height));
+
+            done = copybox3d( bm_dst, bm_src,
+                           msg->destX, msg->destY, msg->width, msg->height,
+                           msg->srcX, msg->srcY, msg->width, msg->height );
+#endif
+            /*
+                   handle the case where copy3d failed, but both bitmaps have the same depth
+                   - use Blit engine
+                  */
+            if ((!done) && (bm_src->depth == bm_dst->depth))
+            {
+                LOCK_HW
+
+                uint32_t br00, br13, br22, br23, br09, br11, br26, br12;
+
+                br00 = (2 << 29) | (0x53 << 22) | (6);
+                if (bm_dst->bpp == 4)
+                    br00 |= 3 << 20;
+
+                br13 = bm_dst->pitch | ROP_table[mode].rop;
+                if (bm_dst->bpp == 4)
+                    br13 |= 3 << 24;
+                else if (bm_dst->bpp == 2)
+                    br13 |= 1 << 24;
+
+                br22 = msg->destX | (msg->destY << 16);
+                br23 = (msg->destX + msg->width) | (msg->destY + msg->height) << 16;
+                br09 = bm_dst->framebuffer;
+                br11 = bm_src->pitch;
+                br26 = msg->srcX | (msg->srcY << 16);
+                br12 = bm_src->framebuffer;
+
+                START_RING(8);
+
+                OUT_RING(br00);
+                OUT_RING(br13);
+                OUT_RING(br22);
+                OUT_RING(br23);
+                OUT_RING(br09);
+                OUT_RING(br26);
+                OUT_RING(br11);
+                OUT_RING(br12);
+
+                ADVANCE_RING();
+
+                DO_FLUSH();
+                UNLOCK_HW
+            }
+
+            UNLOCK_BITMAP_BM(bm_dst)
+            UNLOCK_BITMAP_BM(bm_src)
+
+            if( ! done ) OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+        }
+    }
+}
+
 BOOL HIDD_IntelGMA_SwitchToVideoMode(OOP_Object * bm)
 {
     OOP_Class * cl = OOP_OCLASS(bm);
@@ -239,8 +355,16 @@ static const struct OOP_MethodDescr IntelGMA_Root_descr[] =
 };
 #define NUM_IntelGMA_Root_METHODS 2
 
+static const struct OOP_MethodDescr IntelGMA_Gfx_descr[] =
+{
+    {(OOP_MethodFunc)IntelGMA__Hidd_Gfx__CopyBox,               moHidd_Gfx_CopyBox              },
+    {NULL,                                                      0                               }
+};
+#define NUM_IntelGMA_Gfx_METHODS 1
+
 const struct OOP_InterfaceDescr IntelGMA_ifdescr[] =
 {
     {IntelGMA_Root_descr,               IID_Root,               NUM_IntelGMA_Root_METHODS       },
+    {IntelGMA_Gfx_descr,               IID_Hidd_Gfx,               NUM_IntelGMA_Gfx_METHODS       },
     {NULL,                              NULL,                   0				}
 };
