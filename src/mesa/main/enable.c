@@ -31,6 +31,7 @@
 #include "glheader.h"
 #include "clip.h"
 #include "context.h"
+#include "debug_output.h"
 #include "enable.h"
 #include "errors.h"
 #include "light.h"
@@ -748,7 +749,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          return;
 
       /* GL_ARB_texture_cube_map */
-      case GL_TEXTURE_CUBE_MAP_ARB:
+      case GL_TEXTURE_CUBE_MAP:
          if (ctx->API != API_OPENGL_COMPAT && ctx->API != API_OPENGLES)
             goto invalid_enum_error;
          CHECK_EXTENSION(ARB_texture_cube_map, cap);
@@ -1449,7 +1450,7 @@ _mesa_IsEnabled( GLenum cap )
          return ctx->Array.VAO->VertexAttrib[VERT_ATTRIB_POINT_SIZE].Enabled;
 
       /* GL_ARB_texture_cube_map */
-      case GL_TEXTURE_CUBE_MAP_ARB:
+      case GL_TEXTURE_CUBE_MAP:
          CHECK_EXTENSION(ARB_texture_cube_map);
          return is_texture_enabled(ctx, TEXTURE_CUBE_BIT);
 

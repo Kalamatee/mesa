@@ -113,7 +113,6 @@ struct si_cs_shader_state {
 
 struct si_textures_info {
 	struct si_sampler_views		views;
-	struct si_sampler_states	states;
 	uint32_t			depth_texture_mask; /* which textures are depth */
 	uint32_t			compressed_colortex_mask;
 };
@@ -202,7 +201,6 @@ struct si_context {
 	struct si_viewports		viewports;
 	struct si_stencil_ref		stencil_ref;
 	struct r600_atom		spi_map;
-	struct r600_atom		spi_ps_input;
 
 	/* Precomputed states. */
 	struct si_pm4_state		*init_config;
@@ -222,7 +220,6 @@ struct si_context {
 	struct si_vertex_element	*vertex_elements;
 	unsigned			sprite_coord_enable;
 	bool				flatshade;
-	bool				force_persample_interp;
 
 	/* shader descriptors */
 	struct si_descriptors		vertex_buffers;

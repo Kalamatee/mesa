@@ -224,24 +224,6 @@ typedef struct nir_variable {
       unsigned location_frac:2;
 
       /**
-       * Non-zero if this variable was created by lowering a named interface
-       * block which was not an array.
-       *
-       * Note that this variable and \c from_named_ifc_block_array will never
-       * both be non-zero.
-       */
-      unsigned from_named_ifc_block_nonarray:1;
-
-      /**
-       * Non-zero if this variable was created by lowering a named interface
-       * block which was an array.
-       *
-       * Note that this variable and \c from_named_ifc_block_nonarray will never
-       * both be non-zero.
-       */
-      unsigned from_named_ifc_block_array:1;
-
-      /**
        * \brief Layout qualifier for gl_FragDepth.
        *
        * This is not equal to \c ir_depth_layout_none if and only if this
@@ -786,7 +768,7 @@ typedef struct {
 } nir_call_instr;
 
 #define INTRINSIC(name, num_srcs, src_components, has_dest, dest_components, \
-                  num_variables, num_indices, flags) \
+                  num_variables, num_indices, idx0, idx1, idx2, flags) \
    nir_intrinsic_##name,
 
 #define LAST_INTRINSIC(name) nir_last_intrinsic = nir_intrinsic_##name,
@@ -798,6 +780,8 @@ typedef enum {
 
 #undef INTRINSIC
 #undef LAST_INTRINSIC
+
+#define NIR_INTRINSIC_MAX_CONST_INDEX 3
 
 /** Represents an intrinsic
  *
@@ -842,7 +826,7 @@ typedef struct {
     */
    uint8_t num_components;
 
-   int const_index[3];
+   int const_index[NIR_INTRINSIC_MAX_CONST_INDEX];
 
    nir_deref_var *variables[2];
 
@@ -870,6 +854,39 @@ typedef enum {
     */
    NIR_INTRINSIC_CAN_REORDER = (1 << 1),
 } nir_intrinsic_semantic_flag;
+
+/**
+ * \name NIR intrinsics const-index flag
+ *
+ * Indicates the usage of a const_index slot.
+ *
+ * \sa nir_intrinsic_info::index_map
+ */
+typedef enum {
+   /**
+    * Generally instructions that take a offset src argument, can encode
+    * a constant 'base' value which is added to the offset.
+    */
+   NIR_INTRINSIC_BASE = 1,
+
+   /**
+    * For store instructions, a writemask for the store.
+    */
+   NIR_INTRINSIC_WRMASK = 2,
+
+   /**
+    * The stream-id for GS emit_vertex/end_primitive intrinsics.
+    */
+   NIR_INTRINSIC_STREAM_ID = 3,
+
+   /**
+    * The clip-plane id for load_user_clip_plane intrinsic.
+    */
+   NIR_INTRINSIC_UCP_ID = 4,
+
+   NIR_INTRINSIC_NUM_INDEX_FLAGS,
+
+} nir_intrinsic_index_flag;
 
 #define NIR_INTRINSIC_MAX_INPUTS 4
 
@@ -900,11 +917,36 @@ typedef struct {
    /** the number of constant indices used by the intrinsic */
    unsigned num_indices;
 
+   /** indicates the usage of intr->const_index[n] */
+   unsigned index_map[NIR_INTRINSIC_NUM_INDEX_FLAGS];
+
    /** semantic flags for calls to this intrinsic */
    nir_intrinsic_semantic_flag flags;
 } nir_intrinsic_info;
 
 extern const nir_intrinsic_info nir_intrinsic_infos[nir_num_intrinsics];
+
+
+#define INTRINSIC_IDX_ACCESSORS(name, flag, type)                             \
+static inline type                                                            \
+nir_intrinsic_##name(nir_intrinsic_instr *instr)                              \
+{                                                                             \
+   const nir_intrinsic_info *info = &nir_intrinsic_infos[instr->intrinsic];   \
+   assert(info->index_map[NIR_INTRINSIC_##flag] > 0);                         \
+   return instr->const_index[info->index_map[NIR_INTRINSIC_##flag] - 1];      \
+}                                                                             \
+static inline void                                                            \
+nir_intrinsic_set_##name(nir_intrinsic_instr *instr, type val)                \
+{                                                                             \
+   const nir_intrinsic_info *info = &nir_intrinsic_infos[instr->intrinsic];   \
+   assert(info->index_map[NIR_INTRINSIC_##flag] > 0);                         \
+   instr->const_index[info->index_map[NIR_INTRINSIC_##flag] - 1] = val;       \
+}
+
+INTRINSIC_IDX_ACCESSORS(write_mask, WRMASK, unsigned)
+INTRINSIC_IDX_ACCESSORS(base, BASE, int)
+INTRINSIC_IDX_ACCESSORS(stream_id, STREAM_ID, unsigned)
+INTRINSIC_IDX_ACCESSORS(ucp_id, UCP_ID, unsigned)
 
 /**
  * \group texture information
@@ -923,6 +965,7 @@ typedef enum {
    nir_tex_src_ms_index, /* MSAA sample index */
    nir_tex_src_ddx,
    nir_tex_src_ddy,
+   nir_tex_src_texture_offset, /* < dynamically uniform indirect offset */
    nir_tex_src_sampler_offset, /* < dynamically uniform indirect offset */
    nir_num_tex_src_types
 } nir_tex_src_type;
@@ -967,23 +1010,48 @@ typedef struct {
     */
    bool is_new_style_shadow;
 
-   /* constant offset - must be 0 if the offset source is used */
-   int const_offset[4];
-
    /* gather component selector */
    unsigned component : 2;
 
+   /** The texture index
+    *
+    * If this texture instruction has a nir_tex_src_texture_offset source,
+    * then the texture index is given by texture_index + texture_offset.
+    */
+   unsigned texture_index;
+
+   /** The size of the texture array or 0 if it's not an array */
+   unsigned texture_array_size;
+
+   /** The texture deref
+    *
+    * If this is null, use texture_index instead.
+    */
+   nir_deref_var *texture;
+
    /** The sampler index
+    *
+    * The following operations do not require a sampler and, as such, this
+    * field should be ignored:
+    *    - nir_texop_txf
+    *    - nir_texop_txf_ms
+    *    - nir_texop_txs
+    *    - nir_texop_lod
+    *    - nir_texop_tg4
+    *    - nir_texop_query_levels
+    *    - nir_texop_texture_samples
+    *    - nir_texop_samples_identical
     *
     * If this texture instruction has a nir_tex_src_sampler_offset source,
     * then the sampler index is given by sampler_index + sampler_offset.
     */
    unsigned sampler_index;
 
-   /** The size of the sampler array or 0 if it's not an array */
-   unsigned sampler_array_size;
-
-   nir_deref_var *sampler; /* if this is NULL, use sampler_index instead */
+   /** The sampler deref
+    *
+    * If this is null, use sampler_index instead.
+    */
+   nir_deref_var *sampler;
 } nir_tex_instr;
 
 static inline unsigned
@@ -2049,15 +2117,15 @@ typedef struct nir_lower_tex_options {
    unsigned saturate_t;
    unsigned saturate_r;
 
-   /* Bitmask of samplers that need swizzling.
+   /* Bitmask of textures that need swizzling.
     *
-    * If (swizzle_result & (1 << sampler_index)), then the swizzle in
-    * swizzles[sampler_index] is applied to the result of the texturing
+    * If (swizzle_result & (1 << texture_index)), then the swizzle in
+    * swizzles[texture_index] is applied to the result of the texturing
     * operation.
     */
    unsigned swizzle_result;
 
-   /* A swizzle for each sampler.  Values 0-3 represent x, y, z, or w swizzles
+   /* A swizzle for each texture.  Values 0-3 represent x, y, z, or w swizzles
     * while 4 and 5 represent 0 and 1 respectively.
     */
    uint8_t swizzles[32][4];

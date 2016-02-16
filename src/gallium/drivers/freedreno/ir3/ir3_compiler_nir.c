@@ -1004,7 +1004,7 @@ emit_intrinsic_load_ubo(struct ir3_compile *ctx, nir_intrinsic_instr *intr,
 	nir_const_value *const_offset;
 	/* UBO addresses are the first driver params: */
 	unsigned ubo = regid(ctx->so->first_driver_param + IR3_UBOS_OFF, 0);
-	int off = intr->const_index[0];
+	int off = 0;
 
 	/* First src is ubo index, which could either be an immed or not: */
 	src0 = get_src(ctx, &intr->src[0])[0];
@@ -1092,7 +1092,7 @@ emit_intrinsic_store_var(struct ir3_compile *ctx, nir_intrinsic_instr *intr)
 	nir_deref_array *darr = nir_deref_as_array(dvar->deref.child);
 	struct ir3_array *arr = get_var(ctx, dvar->var);
 	struct ir3_instruction *addr, **src;
-	unsigned wrmask = intr->const_index[0];
+	unsigned wrmask = nir_intrinsic_write_mask(intr);
 
 	compile_assert(ctx, dvar->deref.child &&
 		(dvar->deref.child->deref_type == nir_deref_type_array));
@@ -1145,8 +1145,8 @@ emit_intrinsic(struct ir3_compile *ctx, nir_intrinsic_instr *intr)
 	const nir_intrinsic_info *info = &nir_intrinsic_infos[intr->intrinsic];
 	struct ir3_instruction **dst, **src;
 	struct ir3_block *b = ctx->block;
-	int idx = intr->const_index[0];
 	nir_const_value *const_offset;
+	int idx;
 
 	if (info->has_dest) {
 		dst = get_dst(ctx, &intr->dest, intr->num_components);
@@ -1156,6 +1156,7 @@ emit_intrinsic(struct ir3_compile *ctx, nir_intrinsic_instr *intr)
 
 	switch (intr->intrinsic) {
 	case nir_intrinsic_load_uniform:
+		idx = nir_intrinsic_base(intr);
 		const_offset = nir_src_as_const_value(intr->src[0]);
 		if (const_offset) {
 			idx += const_offset->u[0];
@@ -1182,6 +1183,7 @@ emit_intrinsic(struct ir3_compile *ctx, nir_intrinsic_instr *intr)
 		emit_intrinsic_load_ubo(ctx, intr, dst);
 		break;
 	case nir_intrinsic_load_input:
+		idx = nir_intrinsic_base(intr);
 		const_offset = nir_src_as_const_value(intr->src[0]);
 		if (const_offset) {
 			idx += const_offset->u[0];
@@ -1208,6 +1210,7 @@ emit_intrinsic(struct ir3_compile *ctx, nir_intrinsic_instr *intr)
 		emit_intrinsic_store_var(ctx, intr);
 		break;
 	case nir_intrinsic_store_output:
+		idx = nir_intrinsic_base(intr);
 		const_offset = nir_src_as_const_value(intr->src[1]);
 		compile_assert(ctx, const_offset != NULL);
 		idx += const_offset->u[0];
@@ -1243,6 +1246,7 @@ emit_intrinsic(struct ir3_compile *ctx, nir_intrinsic_instr *intr)
 		dst[0] = ctx->instance_id;
 		break;
 	case nir_intrinsic_load_user_clip_plane:
+		idx = nir_intrinsic_ucp_id(intr);
 		for (int i = 0; i < intr->num_components; i++) {
 			unsigned n = idx * 4 + i;
 			dst[i] = create_driver_param(ctx, IR3_DP_UCP0_X + n);
@@ -1430,21 +1434,6 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 
 	tex_info(tex, &flags, &coords);
 
-	if (!has_off) {
-		/* could still have a constant offset: */
-		if (tex->const_offset[0] || tex->const_offset[1] ||
-				tex->const_offset[2] || tex->const_offset[3]) {
-			off = const_off;
-
-			off[0] = create_immed(b, tex->const_offset[0]);
-			off[1] = create_immed(b, tex->const_offset[1]);
-			off[2] = create_immed(b, tex->const_offset[2]);
-			off[3] = create_immed(b, tex->const_offset[3]);
-
-			has_off = true;
-		}
-	}
-
 	/* scale up integer coords for TXF based on the LOD */
 	if (ctx->unminify_coords && (opc == OPC_ISAML)) {
 		assert(has_lod);
@@ -1544,7 +1533,7 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 		type = TYPE_U32;
 
 	sam = ir3_SAM(b, opc, type, TGSI_WRITEMASK_XYZW,
-			flags, tex->sampler_index, tex->sampler_index,
+			flags, tex->texture_index, tex->texture_index,
 			create_collect(b, src0, nsrc0),
 			create_collect(b, src1, nsrc1));
 
@@ -1571,7 +1560,7 @@ emit_tex_query_levels(struct ir3_compile *ctx, nir_tex_instr *tex)
 	dst = get_dst(ctx, &tex->dest, 1);
 
 	sam = ir3_SAM(b, OPC_GETINFO, TYPE_U32, TGSI_WRITEMASK_Z, 0,
-			tex->sampler_index, tex->sampler_index, NULL, NULL);
+			tex->texture_index, tex->texture_index, NULL, NULL);
 
 	/* even though there is only one component, since it ends
 	 * up in .z rather than .x, we need a split_dest()
@@ -1608,7 +1597,7 @@ emit_tex_txs(struct ir3_compile *ctx, nir_tex_instr *tex)
 	lod = get_src(ctx, &tex->src[0].src)[0];
 
 	sam = ir3_SAM(b, OPC_GETSIZE, TYPE_U32, TGSI_WRITEMASK_XYZW, flags,
-			tex->sampler_index, tex->sampler_index, lod, NULL);
+			tex->texture_index, tex->texture_index, lod, NULL);
 
 	split_dest(b, dst, sam, 4);
 

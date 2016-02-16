@@ -1872,6 +1872,8 @@ typedef enum
    PROGRAM_UNDEFINED,   /**< Invalid/TBD value */
    PROGRAM_IMMEDIATE,   /**< Immediate value, used by TGSI */
    PROGRAM_BUFFER,      /**< for shader buffers, compile-time only */
+   PROGRAM_MEMORY,      /**< for shared, global and local memory */
+   PROGRAM_IMAGE,       /**< for shader images, compile-time only */
    PROGRAM_FILE_MAX
 } gl_register_file;
 
@@ -2044,6 +2046,11 @@ struct gl_compute_program
     * Size specified using local_size_{x,y,z}.
     */
    unsigned LocalSize[3];
+
+   /**
+    * Size of shared variables accessed by the compute shader.
+    */
+   unsigned SharedSize;
 };
 
 
@@ -3722,6 +3729,7 @@ struct gl_constants
    GLuint MaxComputeWorkGroupCount[3]; /* Array of x, y, z dimensions */
    GLuint MaxComputeWorkGroupSize[3]; /* Array of x, y, z dimensions */
    GLuint MaxComputeWorkGroupInvocations;
+   GLuint MaxComputeSharedMemorySize;
 
    /** GL_ARB_gpu_shader5 */
    GLfloat MinFragmentInterpolationOffset;

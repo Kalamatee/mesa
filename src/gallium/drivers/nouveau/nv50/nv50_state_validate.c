@@ -2,7 +2,6 @@
 #include "util/u_format.h"
 
 #include "nv50/nv50_context.h"
-#include "nv50/nv50_defs.xml.h"
 
 static inline void
 nv50_fb_set_null_rt(struct nouveau_pushbuf *push, unsigned i)
@@ -510,7 +509,7 @@ static struct state_validate {
 };
 
 bool
-nv50_state_validate(struct nv50_context *nv50, uint32_t mask, unsigned words)
+nv50_state_validate(struct nv50_context *nv50, uint32_t mask)
 {
    uint32_t state_mask;
    int ret;

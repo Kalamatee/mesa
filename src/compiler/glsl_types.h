@@ -60,6 +60,7 @@ enum glsl_base_type {
    GLSL_TYPE_ARRAY,
    GLSL_TYPE_VOID,
    GLSL_TYPE_SUBROUTINE,
+   GLSL_TYPE_FUNCTION,
    GLSL_TYPE_ERROR
 };
 
@@ -121,7 +122,7 @@ struct glsl_type {
    unsigned sampler_dimensionality:3; /**< \see glsl_sampler_dim */
    unsigned sampler_shadow:1;
    unsigned sampler_array:1;
-   unsigned sampler_type:2;    /**< Type of data returned using this
+   unsigned sampled_type:2;    /**< Type of data returned using this
 				* sampler or image.  Only \c
 				* GLSL_TYPE_FLOAT, \c GLSL_TYPE_INT,
 				* and \c GLSL_TYPE_UINT are valid.
@@ -187,7 +188,7 @@ struct glsl_type {
     */
    union {
       const struct glsl_type *array;            /**< Type of array elements. */
-      const struct glsl_type *parameters;       /**< Parameters to function. */
+      struct glsl_function_param *parameters;   /**< Parameters to function. */
       struct glsl_struct_field *structure;      /**< List of struct fields. */
    } fields;
 
@@ -250,6 +251,8 @@ struct glsl_type {
                                                 bool array,
                                                 glsl_base_type type);
 
+   static const glsl_type *get_image_instance(enum glsl_sampler_dim dim,
+                                              bool array, glsl_base_type type);
 
    /**
     * Get the instance of an array type
@@ -276,6 +279,13 @@ struct glsl_type {
     * Get the instance of an subroutine type
     */
    static const glsl_type *get_subroutine_instance(const char *subroutine_name);
+
+   /**
+    * Get the instance of a function type
+    */
+   static const glsl_type *get_function_instance(const struct glsl_type *return_type,
+                                                 const glsl_function_param *parameters,
+                                                 unsigned num_params);
 
    /**
     * Get the type resulting from a multiplication of \p type_a * \p type_b
@@ -758,6 +768,10 @@ private:
    glsl_type(const glsl_struct_field *fields, unsigned num_fields,
 	     enum glsl_interface_packing packing, const char *name);
 
+   /** Constructor for interface types */
+   glsl_type(const glsl_type *return_type,
+             const glsl_function_param *params, unsigned num_params);
+
    /** Constructor for array types */
    glsl_type(const glsl_type *array, unsigned length);
 
@@ -775,6 +789,9 @@ private:
 
    /** Hash table containing the known subroutine types. */
    static struct hash_table *subroutine_types;
+
+   /** Hash table containing the known function types. */
+   static struct hash_table *function_types;
 
    static bool record_key_compare(const void *a, const void *b);
    static unsigned record_key_hash(const void *key);
@@ -802,6 +819,10 @@ private:
    friend void _mesa_glsl_release_types(void);
    /*@}*/
 };
+
+#undef DECL_TYPE
+#undef STRUCT_TYPE
+#endif /* __cplusplus */
 
 struct glsl_struct_field {
    const struct glsl_type *type;
@@ -860,6 +881,7 @@ struct glsl_struct_field {
    unsigned image_volatile:1;
    unsigned image_restrict:1;
 
+#ifdef __cplusplus
    glsl_struct_field(const struct glsl_type *_type, const char *_name)
       : type(_type), name(_name), location(-1), interpolation(0), centroid(0),
         sample(0), matrix_layout(GLSL_MATRIX_LAYOUT_INHERITED), patch(0),
@@ -873,6 +895,14 @@ struct glsl_struct_field {
    {
       /* empty */
    }
+#endif
+};
+
+struct glsl_function_param {
+   const struct glsl_type *type;
+
+   bool in;
+   bool out;
 };
 
 static inline unsigned int
@@ -880,9 +910,5 @@ glsl_align(unsigned int a, unsigned int align)
 {
    return (a + align - 1) / align * align;
 }
-
-#undef DECL_TYPE
-#undef STRUCT_TYPE
-#endif /* __cplusplus */
 
 #endif /* GLSL_TYPES_H */

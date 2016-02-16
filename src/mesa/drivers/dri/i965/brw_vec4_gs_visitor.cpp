@@ -182,29 +182,6 @@ vec4_gs_visitor::emit_prolog()
       }
    }
 
-   /* If the geometry shader uses the gl_PointSize input, we need to fix it up
-    * to account for the fact that the vertex shader stored it in the w
-    * component of VARYING_SLOT_PSIZ.
-    */
-   if (nir->info.inputs_read & VARYING_BIT_PSIZ) {
-      this->current_annotation = "swizzle gl_PointSize input";
-      for (int vertex = 0; vertex < (int)nir->info.gs.vertices_in; vertex++) {
-         dst_reg dst(ATTR,
-                     BRW_VARYING_SLOT_COUNT * vertex + VARYING_SLOT_PSIZ);
-         dst.type = BRW_REGISTER_TYPE_F;
-         src_reg src(dst);
-         dst.writemask = WRITEMASK_X;
-         src.swizzle = BRW_SWIZZLE_WWWW;
-         inst = emit(MOV(dst, src));
-
-         /* In dual instanced dispatch mode, dst has a width of 4, so we need
-          * to make sure the MOV happens regardless of which channels are
-          * enabled.
-          */
-         inst->force_writemask_all = true;
-      }
-   }
-
    this->current_annotation = NULL;
 }
 
@@ -795,6 +772,8 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
 
    prog_data->output_topology =
       get_hw_prim_for_gl_prim(shader->info.gs.output_primitive);
+
+   prog_data->vertices_in = shader->info.gs.vertices_in;
 
    /* The GLSL linker will have already matched up GS inputs and the outputs
     * of prior stages.  The driver does extend VS outputs in some cases, but

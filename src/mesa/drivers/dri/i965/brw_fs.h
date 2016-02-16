@@ -115,8 +115,8 @@ public:
    bool run_cs();
    void optimize();
    void allocate_registers();
-   void setup_payload_gen4();
-   void setup_payload_gen6();
+   void setup_fs_payload_gen4();
+   void setup_fs_payload_gen6();
    void setup_vs_payload();
    void setup_gs_payload();
    void setup_cs_payload();
@@ -207,6 +207,8 @@ public:
                      fs_reg mcs,
                      int gather_component,
                      bool is_cube_array,
+                     uint32_t surface,
+                     fs_reg surface_reg,
                      uint32_t sampler,
                      fs_reg sampler_reg);
    fs_reg emit_mcs_fetch(const fs_reg &coordinate, unsigned components,
@@ -448,6 +450,7 @@ private:
    void generate_linterp(fs_inst *inst, struct brw_reg dst,
 			 struct brw_reg *src);
    void generate_tex(fs_inst *inst, struct brw_reg dst, struct brw_reg src,
+                     struct brw_reg surface_index,
                      struct brw_reg sampler_index);
    void generate_get_buffer_size(fs_inst *inst, struct brw_reg dst,
                                  struct brw_reg src,

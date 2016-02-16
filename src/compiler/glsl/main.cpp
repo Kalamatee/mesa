@@ -58,10 +58,15 @@ initialize_context(struct gl_context *ctx, gl_api api)
    ctx->Const.MaxComputeWorkGroupSize[1] = 1024;
    ctx->Const.MaxComputeWorkGroupSize[2] = 64;
    ctx->Const.MaxComputeWorkGroupInvocations = 1024;
+   ctx->Const.MaxComputeSharedMemorySize = 32768;
    ctx->Const.Program[MESA_SHADER_COMPUTE].MaxTextureImageUnits = 16;
    ctx->Const.Program[MESA_SHADER_COMPUTE].MaxUniformComponents = 1024;
    ctx->Const.Program[MESA_SHADER_COMPUTE].MaxInputComponents = 0; /* not used */
    ctx->Const.Program[MESA_SHADER_COMPUTE].MaxOutputComponents = 0; /* not used */
+   ctx->Const.Program[MESA_SHADER_COMPUTE].MaxAtomicBuffers = 8;
+   ctx->Const.Program[MESA_SHADER_COMPUTE].MaxAtomicCounters = 8;
+   ctx->Const.Program[MESA_SHADER_COMPUTE].MaxImageUniforms = 8;
+   ctx->Const.Program[MESA_SHADER_COMPUTE].MaxUniformBlocks = 12;
 
    switch (ctx->Const.GLSLVersion) {
    case 100:

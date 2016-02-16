@@ -79,13 +79,17 @@ fs_visitor::emit_vs_system_value(int location)
 /* Sample from the MCS surface attached to this multisample texture. */
 fs_reg
 fs_visitor::emit_mcs_fetch(const fs_reg &coordinate, unsigned components,
-                           const fs_reg &sampler)
+                           const fs_reg &texture)
 {
    const fs_reg dest = vgrf(glsl_type::uvec4_type);
-   const fs_reg srcs[] = {
-      coordinate, fs_reg(), fs_reg(), fs_reg(), fs_reg(), fs_reg(),
-      sampler, fs_reg(), brw_imm_ud(components), brw_imm_d(0)
-   };
+
+   fs_reg srcs[TEX_LOGICAL_NUM_SRCS];
+   srcs[TEX_LOGICAL_SRC_COORDINATE] = coordinate;
+   srcs[TEX_LOGICAL_SRC_SURFACE] = texture;
+   srcs[TEX_LOGICAL_SRC_SAMPLER] = texture;
+   srcs[TEX_LOGICAL_SRC_COORD_COMPONENTS] = brw_imm_d(components);
+   srcs[TEX_LOGICAL_SRC_GRAD_COMPONENTS] = brw_imm_d(0);
+
    fs_inst *inst = bld.emit(SHADER_OPCODE_TXF_MCS_LOGICAL, dest, srcs,
                             ARRAY_SIZE(srcs));
 
@@ -108,6 +112,8 @@ fs_visitor::emit_texture(ir_texture_opcode op,
                          fs_reg mcs,
                          int gather_component,
                          bool is_cube_array,
+                         uint32_t surface,
+                         fs_reg surface_reg,
                          uint32_t sampler,
                          fs_reg sampler_reg)
 {
@@ -145,13 +151,21 @@ fs_visitor::emit_texture(ir_texture_opcode op,
     * samples, so don't worry about them.
     */
    fs_reg dst = vgrf(glsl_type::get_instance(dest_type->base_type, 4, 1));
-   const fs_reg srcs[] = {
-      coordinate, shadow_c, lod, lod2,
-      sample_index, mcs, sampler_reg, offset_value,
-      brw_imm_d(coord_components), brw_imm_d(grad_components)
-   };
-   enum opcode opcode;
 
+   fs_reg srcs[TEX_LOGICAL_NUM_SRCS];
+   srcs[TEX_LOGICAL_SRC_COORDINATE] = coordinate;
+   srcs[TEX_LOGICAL_SRC_SHADOW_C] = shadow_c;
+   srcs[TEX_LOGICAL_SRC_LOD] = lod;
+   srcs[TEX_LOGICAL_SRC_LOD2] = lod2;
+   srcs[TEX_LOGICAL_SRC_SAMPLE_INDEX] = sample_index;
+   srcs[TEX_LOGICAL_SRC_MCS] = mcs;
+   srcs[TEX_LOGICAL_SRC_SURFACE] = surface_reg;
+   srcs[TEX_LOGICAL_SRC_SAMPLER] = sampler_reg;
+   srcs[TEX_LOGICAL_SRC_OFFSET_VALUE] = offset_value;
+   srcs[TEX_LOGICAL_SRC_COORD_COMPONENTS] = brw_imm_d(coord_components);
+   srcs[TEX_LOGICAL_SRC_GRAD_COMPONENTS] = brw_imm_d(grad_components);
+
+   enum opcode opcode;
    switch (op) {
    case ir_tex:
       opcode = SHADER_OPCODE_TEX_LOGICAL;
@@ -200,7 +214,7 @@ fs_visitor::emit_texture(ir_texture_opcode op,
 
    if (op == ir_tg4) {
       if (gather_component == 1 &&
-          key_tex->gather_channel_quirk_mask & (1 << sampler)) {
+          key_tex->gather_channel_quirk_mask & (1 << surface)) {
          /* gather4 sampler is broken for green channel on RG32F --
           * we must ask for blue instead.
           */
@@ -210,7 +224,7 @@ fs_visitor::emit_texture(ir_texture_opcode op,
       }
 
       if (devinfo->gen == 6)
-         emit_gen6_gather_wa(key_tex->gen6_gather_wa[sampler], dst);
+         emit_gen6_gather_wa(key_tex->gen6_gather_wa[surface], dst);
    }
 
    /* fixup #layers for cube map arrays */

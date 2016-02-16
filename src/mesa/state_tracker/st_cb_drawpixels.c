@@ -35,6 +35,7 @@
 #include "main/bufferobj.h"
 #include "main/blit.h"
 #include "main/format_pack.h"
+#include "main/framebuffer.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/pack.h"
@@ -56,6 +57,7 @@
 #include "st_cb_fbo.h"
 #include "st_context.h"
 #include "st_debug.h"
+#include "st_draw.h"
 #include "st_format.h"
 #include "st_program.h"
 #include "st_texture.h"
@@ -63,12 +65,10 @@
 #include "pipe/p_context.h"
 #include "pipe/p_defines.h"
 #include "tgsi/tgsi_ureg.h"
-#include "util/u_draw_quad.h"
 #include "util/u_format.h"
 #include "util/u_inlines.h"
 #include "util/u_math.h"
 #include "util/u_tile.h"
-#include "util/u_upload_mgr.h"
 #include "cso_cache/cso_context.h"
 
 
@@ -162,21 +162,21 @@ make_passthrough_vertex_shader(struct st_context *st,
          return NULL;
 
       /* MOV result.pos, vertex.pos; */
-      ureg_MOV(ureg, 
+      ureg_MOV(ureg,
                ureg_DECL_output( ureg, TGSI_SEMANTIC_POSITION, 0 ),
                ureg_DECL_vs_input( ureg, 0 ));
-      
-      /* MOV result.texcoord0, vertex.attr[1]; */
-      ureg_MOV(ureg, 
-               ureg_DECL_output( ureg, texcoord_semantic, 0 ),
-               ureg_DECL_vs_input( ureg, 1 ));
-      
+
       if (passColor) {
-         /* MOV result.color0, vertex.attr[2]; */
-         ureg_MOV(ureg, 
+         /* MOV result.color0, vertex.attr[1]; */
+         ureg_MOV(ureg,
                   ureg_DECL_output( ureg, TGSI_SEMANTIC_COLOR, 0 ),
-                  ureg_DECL_vs_input( ureg, 2 ));
+                  ureg_DECL_vs_input( ureg, 1 ));
       }
+
+      /* MOV result.texcoord0, vertex.attr[2]; */
+      ureg_MOV(ureg,
+               ureg_DECL_output( ureg, texcoord_semantic, 0 ),
+               ureg_DECL_vs_input( ureg, 2 ));
 
       ureg_END( ureg );
       
@@ -358,8 +358,8 @@ make_texture(struct st_context *st,
       GLenum intFormat = internal_format(ctx, format, type);
 
       pipeFormat = st_choose_format(st, intFormat, format, type,
-                                    PIPE_TEXTURE_2D, 0, PIPE_BIND_SAMPLER_VIEW,
-                                    FALSE);
+                                    st->internal_target, 0,
+                                    PIPE_BIND_SAMPLER_VIEW, FALSE);
       assert(pipeFormat != PIPE_FORMAT_NONE);
    }
 
@@ -441,103 +441,6 @@ make_texture(struct st_context *st,
 }
 
 
-/**
- * Draw quad with texcoords and optional color.
- * Coords are gallium window coords with y=0=top.
- * \param color  may be null
- * \param invertTex  if true, flip texcoords vertically
- */
-static void
-draw_quad(struct gl_context *ctx, GLfloat x0, GLfloat y0, GLfloat z,
-          GLfloat x1, GLfloat y1, const GLfloat *color,
-          GLboolean invertTex, GLfloat maxXcoord, GLfloat maxYcoord)
-{
-   struct st_context *st = st_context(ctx);
-   struct pipe_context *pipe = st->pipe;
-   GLfloat (*verts)[3][4]; /* four verts, three attribs, XYZW */
-   struct pipe_resource *buf = NULL;
-   unsigned offset;
-
-   u_upload_alloc(st->uploader, 0, 4 * sizeof(verts[0]), 4, &offset,
-                  &buf, (void **) &verts);
-   if (!buf) {
-      return;
-   }
-
-   /* setup vertex data */
-   {
-      const struct gl_framebuffer *fb = st->ctx->DrawBuffer;
-      const GLfloat fb_width = (GLfloat) fb->Width;
-      const GLfloat fb_height = (GLfloat) fb->Height;
-      const GLfloat clip_x0 = x0 / fb_width * 2.0f - 1.0f;
-      const GLfloat clip_y0 = y0 / fb_height * 2.0f - 1.0f;
-      const GLfloat clip_x1 = x1 / fb_width * 2.0f - 1.0f;
-      const GLfloat clip_y1 = y1 / fb_height * 2.0f - 1.0f;
-      const GLfloat sLeft = 0.0f, sRight = maxXcoord;
-      const GLfloat tTop = invertTex ? maxYcoord : 0.0f;
-      const GLfloat tBot = invertTex ? 0.0f : maxYcoord;
-      GLuint i;
-
-      /* upper-left */
-      verts[0][0][0] = clip_x0;    /* v[0].attr[0].x */
-      verts[0][0][1] = clip_y0;    /* v[0].attr[0].y */
-
-      /* upper-right */
-      verts[1][0][0] = clip_x1;
-      verts[1][0][1] = clip_y0;
-
-      /* lower-right */
-      verts[2][0][0] = clip_x1;
-      verts[2][0][1] = clip_y1;
-
-      /* lower-left */
-      verts[3][0][0] = clip_x0;
-      verts[3][0][1] = clip_y1;
-
-      verts[0][1][0] = sLeft; /* v[0].attr[1].S */
-      verts[0][1][1] = tTop;  /* v[0].attr[1].T */
-      verts[1][1][0] = sRight;
-      verts[1][1][1] = tTop;
-      verts[2][1][0] = sRight;
-      verts[2][1][1] = tBot;
-      verts[3][1][0] = sLeft;
-      verts[3][1][1] = tBot;
-
-      /* same for all verts: */
-      if (color) {
-         for (i = 0; i < 4; i++) {
-            verts[i][0][2] = z;         /* v[i].attr[0].z */
-            verts[i][0][3] = 1.0f;      /* v[i].attr[0].w */
-            verts[i][2][0] = color[0];  /* v[i].attr[2].r */
-            verts[i][2][1] = color[1];  /* v[i].attr[2].g */
-            verts[i][2][2] = color[2];  /* v[i].attr[2].b */
-            verts[i][2][3] = color[3];  /* v[i].attr[2].a */
-            verts[i][1][2] = 0.0f;      /* v[i].attr[1].R */
-            verts[i][1][3] = 1.0f;      /* v[i].attr[1].Q */
-         }
-      }
-      else {
-         for (i = 0; i < 4; i++) {
-            verts[i][0][2] = z;    /*Z*/
-            verts[i][0][3] = 1.0f; /*W*/
-            verts[i][1][2] = 0.0f; /*R*/
-            verts[i][1][3] = 1.0f; /*Q*/
-         }
-      }
-   }
-
-   u_upload_unmap(st->uploader);
-   util_draw_vertex_buffer(pipe, st->cso_context, buf,
-                           cso_get_aux_vertex_buffer_slot(st->cso_context),
-                           offset,
-			   PIPE_PRIM_QUADS,
-			   4,  /* verts */
-			   3); /* attribs/vert */
-   pipe_resource_reference(&buf, NULL);
-}
-
-
-
 static void
 draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
                    GLsizei width, GLsizei height,
@@ -554,9 +457,14 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    struct st_context *st = st_context(ctx);
    struct pipe_context *pipe = st->pipe;
    struct cso_context *cso = st->cso_context;
+   const unsigned fb_width = _mesa_geometric_width(ctx->DrawBuffer);
+   const unsigned fb_height = _mesa_geometric_height(ctx->DrawBuffer);
    GLfloat x0, y0, x1, y1;
    GLsizei maxSize;
-   boolean normalized = sv[0]->texture->target != PIPE_TEXTURE_RECT;
+   boolean normalized = sv[0]->texture->target == PIPE_TEXTURE_2D;
+   unsigned cso_state_mask;
+
+   assert(sv[0]->texture->target == st->internal_target);
 
    /* limit checks */
    /* XXX if DrawPixels image is larger than max texture size, break
@@ -567,22 +475,19 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    assert(width <= maxSize);
    assert(height <= maxSize);
 
-   cso_save_rasterizer(cso);
-   cso_save_viewport(cso);
-   cso_save_fragment_samplers(cso);
-   cso_save_fragment_sampler_views(cso);
-   cso_save_fragment_shader(cso);
-   cso_save_stream_outputs(cso);
-   cso_save_vertex_shader(cso);
-   cso_save_tessctrl_shader(cso);
-   cso_save_tesseval_shader(cso);
-   cso_save_geometry_shader(cso);
-   cso_save_vertex_elements(cso);
-   cso_save_aux_vertex_buffer_slot(cso);
+   cso_state_mask = (CSO_BIT_RASTERIZER |
+                     CSO_BIT_VIEWPORT |
+                     CSO_BIT_FRAGMENT_SAMPLERS |
+                     CSO_BIT_FRAGMENT_SAMPLER_VIEWS |
+                     CSO_BIT_STREAM_OUTPUTS |
+                     CSO_BIT_VERTEX_ELEMENTS |
+                     CSO_BIT_AUX_VERTEX_BUFFER_SLOT |
+                     CSO_BITS_ALL_SHADERS);
    if (write_stencil) {
-      cso_save_depth_stencil_alpha(cso);
-      cso_save_blend(cso);
+      cso_state_mask |= (CSO_BIT_DEPTH_STENCIL_ALPHA |
+                         CSO_BIT_BLEND);
    }
+   cso_save_state(cso, cso_state_mask);
 
    /* rasterizer state: just scissor */
    {
@@ -648,8 +553,10 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
       sampler.normalized_coords = normalized;
 
       if (fpv) {
+         /* drawing a color image */
          const struct pipe_sampler_state *samplers[PIPE_MAX_SAMPLERS];
-         uint num = MAX2(MAX2(fpv->drawpix_sampler, fpv->pixelmap_sampler) + 1,
+         uint num = MAX3(fpv->drawpix_sampler + 1,
+                         fpv->pixelmap_sampler + 1,
                          st->state.num_samplers[PIPE_SHADER_FRAGMENT]);
          uint i;
 
@@ -662,31 +569,16 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
 
          cso_set_samplers(cso, PIPE_SHADER_FRAGMENT, num, samplers);
       } else {
+         /* drawing a depth/stencil image */
          const struct pipe_sampler_state *samplers[2] = {&sampler, &sampler};
 
          cso_set_samplers(cso, PIPE_SHADER_FRAGMENT, num_sampler_view, samplers);
       }
    }
 
-   /* viewport state: viewport matching window dims */
-   {
-      const float w = (float) ctx->DrawBuffer->Width;
-      const float h = (float) ctx->DrawBuffer->Height;
-      struct pipe_viewport_state vp;
-      vp.scale[0] =  0.5f * w;
-      vp.scale[1] = -0.5f * h;
-      vp.scale[2] = 0.5f;
-      vp.translate[0] = 0.5f * w;
-      vp.translate[1] = 0.5f * h;
-      vp.translate[2] = 0.5f;
-      cso_set_viewport(cso, &vp);
-   }
-
-   cso_set_vertex_elements(cso, 3, st->velems_util_draw);
-   cso_set_stream_outputs(st->cso_context, 0, NULL, NULL);
-
    /* user textures, plus the drawpix textures */
    if (fpv) {
+      /* drawing a color image */
       struct pipe_sampler_view *sampler_views[PIPE_MAX_SAMPLERS];
       uint num = MAX3(fpv->drawpix_sampler + 1,
                       fpv->pixelmap_sampler + 1,
@@ -699,15 +591,23 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
       if (sv[1])
          sampler_views[fpv->pixelmap_sampler] = sv[1];
       cso_set_sampler_views(cso, PIPE_SHADER_FRAGMENT, num, sampler_views);
-   } else
+   } else {
+      /* drawing a depth/stencil image */
       cso_set_sampler_views(cso, PIPE_SHADER_FRAGMENT, num_sampler_view, sv);
+   }
+
+   /* viewport state: viewport matching window dims */
+   cso_set_viewport_dims(cso, fb_width, fb_height, TRUE);
+
+   cso_set_vertex_elements(cso, 3, st->util_velems);
+   cso_set_stream_outputs(cso, 0, NULL, NULL);
 
    /* Compute Gallium window coords (y=0=top) with pixel zoom.
     * Recall that these coords are transformed by the current
     * vertex shader and viewport transformation.
     */
    if (st_fb_orientation(ctx->DrawBuffer) == Y_0_BOTTOM) {
-      y = ctx->DrawBuffer->Height - (int) (y + height * ctx->Pixel.ZoomY);
+      y = fb_height - (int) (y + height * ctx->Pixel.ZoomY);
       invertTex = !invertTex;
    }
 
@@ -719,27 +619,27 @@ draw_textured_quad(struct gl_context *ctx, GLint x, GLint y, GLfloat z,
    /* convert Z from [0,1] to [-1,-1] to match viewport Z scale/bias */
    z = z * 2.0f - 1.0f;
 
-   draw_quad(ctx, x0, y0, z, x1, y1, color, invertTex,
-             normalized ? ((GLfloat) width / sv[0]->texture->width0) : (GLfloat)width,
-             normalized ? ((GLfloat) height / sv[0]->texture->height0) : (GLfloat)height);
+   {
+      const float clip_x0 = x0 / (float) fb_width * 2.0f - 1.0f;
+      const float clip_y0 = y0 / (float) fb_height * 2.0f - 1.0f;
+      const float clip_x1 = x1 / (float) fb_width * 2.0f - 1.0f;
+      const float clip_y1 = y1 / (float) fb_height * 2.0f - 1.0f;
+      const float maxXcoord = normalized ?
+         ((float) width / sv[0]->texture->width0) : (float) width;
+      const float maxYcoord = normalized
+         ? ((float) height / sv[0]->texture->height0) : (float) height;
+      const float sLeft = 0.0f, sRight = maxXcoord;
+      const float tTop = invertTex ? maxYcoord : 0.0f;
+      const float tBot = invertTex ? 0.0f : maxYcoord;
+
+      if (!st_draw_quad(st, clip_x0, clip_y0, clip_x1, clip_y1, z,
+                        sLeft, tBot, sRight, tTop, color, 0)) {
+         _mesa_error(ctx, GL_OUT_OF_MEMORY, "glDrawPixels");
+      }
+   }
 
    /* restore state */
-   cso_restore_rasterizer(cso);
-   cso_restore_viewport(cso);
-   cso_restore_fragment_samplers(cso);
-   cso_restore_fragment_sampler_views(cso);
-   cso_restore_fragment_shader(cso);
-   cso_restore_vertex_shader(cso);
-   cso_restore_tessctrl_shader(cso);
-   cso_restore_tesseval_shader(cso);
-   cso_restore_geometry_shader(cso);
-   cso_restore_vertex_elements(cso);
-   cso_restore_aux_vertex_buffer_slot(cso);
-   cso_restore_stream_outputs(cso);
-   if (write_stencil) {
-      cso_restore_depth_stencil_alpha(cso);
-      cso_restore_blend(cso);
-   }
+   cso_restore_state(cso);
 }
 
 
@@ -948,7 +848,7 @@ get_color_fp_variant(struct st_context *st)
                        ctx->Pixel.AlphaScale != 1.0);
    key.pixelMaps = ctx->Pixel.MapColorFlag;
    key.clamp_color = st->clamp_frag_color_in_shader &&
-                     st->ctx->Color._ClampFragmentColor;
+                     ctx->Color._ClampFragmentColor;
 
    fpv = st_get_fp_variant(st, st->fp, &key);
 
@@ -1052,7 +952,6 @@ st_DrawPixels(struct gl_context *ctx, GLint x, GLint y,
 {
    void *driver_vp, *driver_fp;
    struct st_context *st = st_context(ctx);
-   const GLfloat *color;
    struct pipe_context *pipe = st->pipe;
    GLboolean write_stencil = GL_FALSE, write_depth = GL_FALSE;
    struct pipe_sampler_view *sv[2] = { NULL };
@@ -1066,7 +965,7 @@ st_DrawPixels(struct gl_context *ctx, GLint x, GLint y,
 
    st_flush_bitmap_cache(st);
 
-   st_validate_state(st);
+   st_validate_state(st, ST_PIPELINE_RENDER);
 
    /* Limit the size of the glDrawPixels to the max texture size.
     * Strictly speaking, that's not correct but since we don't handle
@@ -1098,7 +997,6 @@ st_DrawPixels(struct gl_context *ctx, GLint x, GLint y,
       driver_fp = get_drawpix_z_stencil_program(st, write_depth,
                                                 write_stencil);
       driver_vp = make_passthrough_vertex_shader(st, GL_TRUE);
-      color = ctx->Current.RasterColor;
    }
    else {
       fpv = get_color_fp_variant(st);
@@ -1106,7 +1004,6 @@ st_DrawPixels(struct gl_context *ctx, GLint x, GLint y,
       driver_fp = fpv->driver_shader;
       driver_vp = make_passthrough_vertex_shader(st, GL_FALSE);
 
-      color = NULL;
       if (ctx->Pixel.MapColorFlag) {
          pipe_sampler_view_reference(&sv[1],
                                      st->pixel_xfer.pixelmap_sampler_view);
@@ -1164,7 +1061,8 @@ st_DrawPixels(struct gl_context *ctx, GLint x, GLint y,
                       num_sampler_view,
                       driver_vp,
                       driver_fp, fpv,
-                      color, GL_FALSE, write_depth, write_stencil);
+                      ctx->Current.RasterColor,
+                      GL_FALSE, write_depth, write_stencil);
    pipe_sampler_view_reference(&sv[0], NULL);
    if (num_sampler_view > 1)
       pipe_sampler_view_reference(&sv[1], NULL);
@@ -1419,7 +1317,6 @@ st_CopyPixels(struct gl_context *ctx, GLint srcx, GLint srcy,
    struct pipe_sampler_view *sv[2] = { NULL };
    struct st_fp_variant *fpv = NULL;
    int num_sampler_view = 1;
-   GLfloat *color;
    enum pipe_format srcFormat;
    unsigned srcBind;
    GLboolean invertTex = GL_FALSE;
@@ -1428,7 +1325,7 @@ st_CopyPixels(struct gl_context *ctx, GLint srcx, GLint srcy,
 
    st_flush_bitmap_cache(st);
 
-   st_validate_state(st);
+   st_validate_state(st, ST_PIPELINE_RENDER);
 
    if (type == GL_DEPTH_STENCIL) {
       /* XXX make this more efficient */
@@ -1461,7 +1358,6 @@ st_CopyPixels(struct gl_context *ctx, GLint srcx, GLint srcy,
       fpv = get_color_fp_variant(st);
 
       rbRead = st_get_color_read_renderbuffer(ctx);
-      color = NULL;
 
       driver_fp = fpv->driver_shader;
       driver_vp = make_passthrough_vertex_shader(st, GL_FALSE);
@@ -1482,7 +1378,6 @@ st_CopyPixels(struct gl_context *ctx, GLint srcx, GLint srcy,
       assert(type == GL_DEPTH);
       rbRead = st_renderbuffer(ctx->ReadBuffer->
                                Attachment[BUFFER_DEPTH].Renderbuffer);
-      color = ctx->Current.Attrib[VERT_ATTRIB_COLOR0];
 
       driver_fp = get_drawpix_z_stencil_program(st, GL_TRUE, GL_FALSE);
       driver_vp = make_passthrough_vertex_shader(st, GL_TRUE);
@@ -1614,7 +1509,8 @@ st_CopyPixels(struct gl_context *ctx, GLint srcx, GLint srcy,
                       num_sampler_view,
                       driver_vp, 
                       driver_fp, fpv,
-                      color, invertTex, GL_FALSE, GL_FALSE);
+                      ctx->Current.Attrib[VERT_ATTRIB_COLOR0],
+                      invertTex, GL_FALSE, GL_FALSE);
 
    pipe_resource_reference(&pt, NULL);
    pipe_sampler_view_reference(&sv[0], NULL);

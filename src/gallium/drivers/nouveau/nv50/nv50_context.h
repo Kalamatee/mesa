@@ -230,9 +230,7 @@ void nv50_stream_output_validate(struct nv50_context *);
 extern void nv50_init_state_functions(struct nv50_context *);
 
 /* nv50_state_validate.c */
-/* @words: check for space before emitting relocs */
-extern bool nv50_state_validate(struct nv50_context *, uint32_t state_mask,
-                                unsigned space_words);
+bool nv50_state_validate(struct nv50_context *, uint32_t state_mask);
 
 /* nv50_surface.c */
 extern void nv50_clear(struct pipe_context *, unsigned buffers,
@@ -324,7 +322,6 @@ nv98_video_buffer_create(struct pipe_context *pipe,
 
 /* nv50_compute.c */
 void
-nv50_launch_grid(struct pipe_context *, const uint *, const uint *,
-                 uint32_t, const void *);
+nv50_launch_grid(struct pipe_context *, const struct pipe_grid_info *);
 
 #endif

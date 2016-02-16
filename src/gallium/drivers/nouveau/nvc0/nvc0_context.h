@@ -258,8 +258,7 @@ extern void nvc0_init_state_functions(struct nvc0_context *);
 /* nvc0_state_validate.c */
 void nvc0_validate_global_residents(struct nvc0_context *,
                                     struct nouveau_bufctx *, int bin);
-extern bool nvc0_state_validate(struct nvc0_context *, uint32_t state_mask,
-                                unsigned space_words);
+bool nvc0_state_validate(struct nvc0_context *, uint32_t state_mask);
 
 /* nvc0_surface.c */
 extern void nvc0_clear(struct pipe_context *, unsigned buffers,
@@ -332,11 +331,9 @@ nvc0_video_buffer_create(struct pipe_context *pipe,
 void nvc0_push_vbo(struct nvc0_context *, const struct pipe_draw_info *);
 
 /* nve4_compute.c */
-void nve4_launch_grid(struct pipe_context *,
-                      const uint *, const uint *, uint32_t, const void *);
+void nve4_launch_grid(struct pipe_context *, const struct pipe_grid_info *);
 
 /* nvc0_compute.c */
-void nvc0_launch_grid(struct pipe_context *,
-                      const uint *, const uint *, uint32_t, const void *);
+void nvc0_launch_grid(struct pipe_context *, const struct pipe_grid_info *);
 
 #endif

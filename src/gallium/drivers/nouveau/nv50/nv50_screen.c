@@ -72,7 +72,8 @@ nv50_screen_is_format_supported(struct pipe_screen *pscreen,
                  PIPE_BIND_TRANSFER_WRITE |
                  PIPE_BIND_SHARED);
 
-   return (nv50_format_table[format].usage & bindings) == bindings;
+   return (( nv50_format_table[format].usage |
+            nv50_vertex_format[format].usage) & bindings) == bindings;
 }
 
 static int
@@ -315,6 +316,8 @@ nv50_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
+   case PIPE_SHADER_CAP_SUPPORTED_IRS:
+   case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
       return 0;
    case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
       return 32;

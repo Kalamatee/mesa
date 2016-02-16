@@ -486,8 +486,10 @@ nir_tex_instr_create(nir_shader *shader, unsigned num_srcs)
    for (unsigned i = 0; i < num_srcs; i++)
       src_init(&instr->src[i].src);
 
+   instr->texture_index = 0;
+   instr->texture_array_size = 0;
+   instr->texture = NULL;
    instr->sampler_index = 0;
-   instr->sampler_array_size = 0;
    instr->sampler = NULL;
 
    return instr;
@@ -978,9 +980,10 @@ visit_deref_src(nir_deref_var *deref, nir_foreach_src_cb cb, void *state)
 {
    nir_deref *cur = &deref->deref;
    while (cur != NULL) {
-      if (cur->deref_type == nir_deref_type_array)
+      if (cur->deref_type == nir_deref_type_array) {
          if (!visit_deref_array_src(nir_deref_as_array(cur), cb, state))
             return false;
+      }
 
       cur = cur->child;
    }
@@ -1001,13 +1004,20 @@ visit_alu_src(nir_alu_instr *instr, nir_foreach_src_cb cb, void *state)
 static bool
 visit_tex_src(nir_tex_instr *instr, nir_foreach_src_cb cb, void *state)
 {
-   for (unsigned i = 0; i < instr->num_srcs; i++)
+   for (unsigned i = 0; i < instr->num_srcs; i++) {
       if (!visit_src(&instr->src[i].src, cb, state))
          return false;
+   }
 
-   if (instr->sampler != NULL)
+   if (instr->texture != NULL) {
+      if (!visit_deref_src(instr->texture, cb, state))
+         return false;
+   }
+
+   if (instr->sampler != NULL) {
       if (!visit_deref_src(instr->sampler, cb, state))
          return false;
+   }
 
    return true;
 }
@@ -1017,15 +1027,17 @@ visit_intrinsic_src(nir_intrinsic_instr *instr, nir_foreach_src_cb cb,
                     void *state)
 {
    unsigned num_srcs = nir_intrinsic_infos[instr->intrinsic].num_srcs;
-   for (unsigned i = 0; i < num_srcs; i++)
+   for (unsigned i = 0; i < num_srcs; i++) {
       if (!visit_src(&instr->src[i], cb, state))
          return false;
+   }
 
    unsigned num_vars =
       nir_intrinsic_infos[instr->intrinsic].num_variables;
-   for (unsigned i = 0; i < num_vars; i++)
+   for (unsigned i = 0; i < num_vars; i++) {
       if (!visit_deref_src(instr->variables[i], cb, state))
          return false;
+   }
 
    return true;
 }

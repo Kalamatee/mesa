@@ -27,6 +27,7 @@
 
 #include "main/core.h" /* for struct gl_context */
 #include "main/context.h"
+#include "main/debug_output.h"
 #include "main/shaderobj.h"
 #include "util/u_atomic.h" /* for p_atomic_cmpxchg */
 #include "util/ralloc.h"
@@ -67,8 +68,6 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->info_log = ralloc_strdup(mem_ctx, "");
    this->error = false;
    this->loop_nesting_ast = NULL;
-
-   this->struct_specifier_depth = 0;
 
    this->uses_builtin_functions = false;
 
@@ -119,6 +118,7 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->Const.MaxTessEvaluationAtomicCounters = ctx->Const.Program[MESA_SHADER_TESS_EVAL].MaxAtomicCounters;
    this->Const.MaxGeometryAtomicCounters = ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxAtomicCounters;
    this->Const.MaxFragmentAtomicCounters = ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxAtomicCounters;
+   this->Const.MaxComputeAtomicCounters = ctx->Const.Program[MESA_SHADER_COMPUTE].MaxAtomicCounters;
    this->Const.MaxCombinedAtomicCounters = ctx->Const.MaxCombinedAtomicCounters;
    this->Const.MaxAtomicBufferBindings = ctx->Const.MaxAtomicBufferBindings;
    this->Const.MaxVertexAtomicCounterBuffers =
@@ -131,6 +131,8 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
       ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxAtomicBuffers;
    this->Const.MaxFragmentAtomicCounterBuffers =
       ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxAtomicBuffers;
+   this->Const.MaxComputeAtomicCounterBuffers =
+      ctx->Const.Program[MESA_SHADER_COMPUTE].MaxAtomicBuffers;
    this->Const.MaxCombinedAtomicCounterBuffers =
       ctx->Const.MaxCombinedAtomicBuffers;
    this->Const.MaxAtomicCounterBufferSize =
@@ -142,6 +144,9 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    for (unsigned i = 0; i < ARRAY_SIZE(this->Const.MaxComputeWorkGroupSize); i++)
       this->Const.MaxComputeWorkGroupSize[i] = ctx->Const.MaxComputeWorkGroupSize[i];
 
+   this->Const.MaxComputeTextureImageUnits = ctx->Const.Program[MESA_SHADER_COMPUTE].MaxTextureImageUnits;
+   this->Const.MaxComputeUniformComponents = ctx->Const.Program[MESA_SHADER_COMPUTE].MaxUniformComponents;
+
    this->Const.MaxImageUnits = ctx->Const.MaxImageUnits;
    this->Const.MaxCombinedShaderOutputResources = ctx->Const.MaxCombinedShaderOutputResources;
    this->Const.MaxImageSamples = ctx->Const.MaxImageSamples;
@@ -150,6 +155,7 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->Const.MaxTessEvaluationImageUniforms = ctx->Const.Program[MESA_SHADER_TESS_EVAL].MaxImageUniforms;
    this->Const.MaxGeometryImageUniforms = ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxImageUniforms;
    this->Const.MaxFragmentImageUniforms = ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxImageUniforms;
+   this->Const.MaxComputeImageUniforms = ctx->Const.Program[MESA_SHADER_COMPUTE].MaxImageUniforms;
    this->Const.MaxCombinedImageUniforms = ctx->Const.MaxCombinedImageUniforms;
 
    /* ARB_viewport_array */
@@ -945,27 +951,11 @@ _mesa_ast_process_interface_block(YYLTYPE *locp,
                           "the interface block");
       }
 
-      /* From GLSL ES 3.0, chapter 4.3.7 "Interface Blocks":
-       *
-       * "GLSL ES 3.0 does not support interface blocks for shader inputs or
-       * outputs."
-       *
-       * And from GLSL ES 3.0, chapter 4.6.1 "The invariant qualifier":.
-       *
-       * "Only variables output from a shader can be candidates for
-       * invariance."
-       *
-       * From GLSL 4.40 and GLSL 1.50, section "Interface Blocks":
-       *
-       * "If optional qualifiers are used, they can include interpolation
-       * qualifiers, auxiliary storage qualifiers, and storage qualifiers
-       * and they must declare an input, output, or uniform member
-       * consistent with the interface qualifier of the block"
-       */
-      if (qualifier.flags.q.invariant)
+      if (!(q.flags.q.in || q.flags.q.out) && qualifier.flags.q.invariant)
          _mesa_glsl_error(locp, state,
-                          "invariant qualifiers cannot be used "
-                          "with interface blocks members");
+                          "invariant qualifiers can be used only "
+                          "in interface block members for shader "
+                          "inputs or outputs");
    }
 }
 

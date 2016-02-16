@@ -21,6 +21,7 @@
  */
 
 #include "pipe/p_defines.h"
+#include "util/u_framebuffer.h"
 #include "util/u_helpers.h"
 #include "util/u_inlines.h"
 #include "util/u_transfer.h"
@@ -32,7 +33,6 @@
 #include "nvc0/nvc0_query_hw.h"
 
 #include "nvc0/nvc0_3d.xml.h"
-#include "nv50/nv50_texture.xml.h"
 
 #include "nouveau_gldefs.h"
 
@@ -940,21 +940,10 @@ nvc0_set_framebuffer_state(struct pipe_context *pipe,
                            const struct pipe_framebuffer_state *fb)
 {
     struct nvc0_context *nvc0 = nvc0_context(pipe);
-    unsigned i;
 
     nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_FB);
 
-    for (i = 0; i < fb->nr_cbufs; ++i)
-       pipe_surface_reference(&nvc0->framebuffer.cbufs[i], fb->cbufs[i]);
-    for (; i < nvc0->framebuffer.nr_cbufs; ++i)
-       pipe_surface_reference(&nvc0->framebuffer.cbufs[i], NULL);
-
-    nvc0->framebuffer.nr_cbufs = fb->nr_cbufs;
-
-    nvc0->framebuffer.width = fb->width;
-    nvc0->framebuffer.height = fb->height;
-
-    pipe_surface_reference(&nvc0->framebuffer.zsbuf, fb->zsbuf);
+    util_copy_framebuffer_state(&nvc0->framebuffer, fb);
 
     nvc0->dirty |= NVC0_NEW_FRAMEBUFFER;
 }
@@ -1241,7 +1230,7 @@ nvc0_set_compute_resources(struct pipe_context *pipe,
 static void
 nvc0_set_shader_images(struct pipe_context *pipe, unsigned shader,
                        unsigned start_slot, unsigned count,
-                       struct pipe_image_view **views)
+                       struct pipe_image_view *views)
 {
 }
 

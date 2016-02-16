@@ -76,7 +76,7 @@ nv50_vertex_state_create(struct pipe_context *pipe,
         enum pipe_format fmt = ve->src_format;
 
         so->element[i].pipe = elements[i];
-        so->element[i].state = nv50_format_table[fmt].vtx;
+        so->element[i].state = nv50_vertex_format[fmt].vtx;
 
         if (!so->element[i].state) {
             switch (util_format_get_nr_components(fmt)) {
@@ -89,7 +89,7 @@ nv50_vertex_state_create(struct pipe_context *pipe,
                 FREE(so);
                 return NULL;
             }
-            so->element[i].state = nv50_format_table[fmt].vtx;
+            so->element[i].state = nv50_vertex_format[fmt].vtx;
             so->need_conversion = true;
             pipe_debug_message(&nouveau_context(pipe)->debug, FALLBACK,
                                "Converting vertex element %d, no hw format %s",
@@ -790,7 +790,7 @@ nv50_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info)
    if (unlikely(nv50->num_so_targets && !nv50->gmtyprog))
       nv50->state.prim_size = nv50_pipe_prim_to_prim_size[info->mode];
 
-   nv50_state_validate(nv50, ~0, 8); /* 8 as minimum, we use flush_notify */
+   nv50_state_validate(nv50, ~0);
 
    push->kick_notify = nv50_draw_vbo_kick_notify;
 

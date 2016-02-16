@@ -528,14 +528,12 @@ static int r600_get_shader_param(struct pipe_screen* pscreen, unsigned shader, e
 		return 16;
         case PIPE_SHADER_CAP_PREFERRED_IR:
 		if (shader == PIPE_SHADER_COMPUTE) {
-#if HAVE_LLVM < 0x0306
-			return PIPE_SHADER_IR_LLVM;
-#else
 			return PIPE_SHADER_IR_NATIVE;
-#endif
 		} else {
 			return PIPE_SHADER_IR_TGSI;
 		}
+	case PIPE_SHADER_CAP_SUPPORTED_IRS:
+		return 0;
 	case PIPE_SHADER_CAP_DOUBLES:
 		if (rscreen->b.family == CHIP_CYPRESS ||
 			rscreen->b.family == CHIP_CAYMAN || rscreen->b.family == CHIP_ARUBA)
@@ -545,6 +543,7 @@ static int r600_get_shader_param(struct pipe_screen* pscreen, unsigned shader, e
 	case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
 	case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
 	case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
+	case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
 		return 0;
 	case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
 		/* due to a bug in the shader compiler, some loops hang

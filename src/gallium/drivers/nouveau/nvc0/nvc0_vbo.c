@@ -80,7 +80,7 @@ nvc0_vertex_state_create(struct pipe_context *pipe,
         enum pipe_format fmt = ve->src_format;
 
         so->element[i].pipe = elements[i];
-        so->element[i].state = nvc0_format_table[fmt].vtx;
+        so->element[i].state = nvc0_vertex_format[fmt].vtx;
 
         if (!so->element[i].state) {
             switch (util_format_get_nr_components(fmt)) {
@@ -93,7 +93,7 @@ nvc0_vertex_state_create(struct pipe_context *pipe,
                 FREE(so);
                 return NULL;
             }
-            so->element[i].state = nvc0_format_table[fmt].vtx;
+            so->element[i].state = nvc0_vertex_format[fmt].vtx;
             so->need_conversion = true;
             pipe_debug_message(&nouveau_context(pipe)->debug, FALLBACK,
                                "Converting vertex element %d, no hw format %s",
@@ -967,8 +967,7 @@ nvc0_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info)
       IMMED_NVC0(push, NVC0_3D(PATCH_VERTICES), nvc0->state.patch_vertices);
    }
 
-   /* 8 as minimum to avoid immediate double validation of new buffers */
-   nvc0_state_validate(nvc0, ~0, 8);
+   nvc0_state_validate(nvc0, ~0);
 
    if (nvc0->vertprog->vp.need_draw_parameters) {
       PUSH_SPACE(push, 9);

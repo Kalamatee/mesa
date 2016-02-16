@@ -510,6 +510,7 @@ type_size_scalar(const struct glsl_type *type)
    case GLSL_TYPE_ERROR:
    case GLSL_TYPE_INTERFACE:
    case GLSL_TYPE_DOUBLE:
+   case GLSL_TYPE_FUNCTION:
       unreachable("not reached");
    }
 
@@ -739,18 +740,20 @@ fs_inst::components_read(unsigned i) const
    case SHADER_OPCODE_LOD_LOGICAL:
    case SHADER_OPCODE_TG4_LOGICAL:
    case SHADER_OPCODE_TG4_OFFSET_LOGICAL:
-      assert(src[8].file == IMM && src[9].file == IMM);
+      assert(src[TEX_LOGICAL_SRC_COORD_COMPONENTS].file == IMM &&
+             src[TEX_LOGICAL_SRC_GRAD_COMPONENTS].file == IMM);
       /* Texture coordinates. */
-      if (i == 0)
-         return src[8].ud;
+      if (i == TEX_LOGICAL_SRC_COORDINATE)
+         return src[TEX_LOGICAL_SRC_COORD_COMPONENTS].ud;
       /* Texture derivatives. */
-      else if ((i == 2 || i == 3) && opcode == SHADER_OPCODE_TXD_LOGICAL)
-         return src[9].ud;
+      else if ((i == TEX_LOGICAL_SRC_LOD || i == TEX_LOGICAL_SRC_LOD2) &&
+               opcode == SHADER_OPCODE_TXD_LOGICAL)
+         return src[TEX_LOGICAL_SRC_GRAD_COMPONENTS].ud;
       /* Texture offset. */
-      else if (i == 7)
+      else if (i == TEX_LOGICAL_SRC_OFFSET_VALUE)
          return 2;
       /* MCS */
-      else if (i == 5 && opcode == SHADER_OPCODE_TXF_CMS_W_LOGICAL)
+      else if (i == TEX_LOGICAL_SRC_MCS && opcode == SHADER_OPCODE_TXF_CMS_W_LOGICAL)
          return 2;
       else
          return 1;
@@ -3651,6 +3654,7 @@ lower_sampler_logical_send_gen4(const fs_builder &bld, fs_inst *inst, opcode op,
                                 const fs_reg &coordinate,
                                 const fs_reg &shadow_c,
                                 const fs_reg &lod, const fs_reg &lod2,
+                                const fs_reg &surface,
                                 const fs_reg &sampler,
                                 unsigned coord_components,
                                 unsigned grad_components)
@@ -3743,8 +3747,9 @@ lower_sampler_logical_send_gen4(const fs_builder &bld, fs_inst *inst, opcode op,
 
    inst->opcode = op;
    inst->src[0] = reg_undef;
-   inst->src[1] = sampler;
-   inst->resize_sources(2);
+   inst->src[1] = surface;
+   inst->src[2] = sampler;
+   inst->resize_sources(3);
    inst->base_mrf = msg_begin.nr;
    inst->mlen = msg_end.nr - msg_begin.nr;
    inst->header_size = 1;
@@ -3756,6 +3761,7 @@ lower_sampler_logical_send_gen5(const fs_builder &bld, fs_inst *inst, opcode op,
                                 const fs_reg &shadow_c,
                                 fs_reg lod, fs_reg lod2,
                                 const fs_reg &sample_index,
+                                const fs_reg &surface,
                                 const fs_reg &sampler,
                                 const fs_reg &offset_value,
                                 unsigned coord_components,
@@ -3838,8 +3844,9 @@ lower_sampler_logical_send_gen5(const fs_builder &bld, fs_inst *inst, opcode op,
 
    inst->opcode = op;
    inst->src[0] = reg_undef;
-   inst->src[1] = sampler;
-   inst->resize_sources(2);
+   inst->src[1] = surface;
+   inst->src[2] = sampler;
+   inst->resize_sources(3);
    inst->base_mrf = message.nr;
    inst->mlen = msg_end.nr - message.nr;
    inst->header_size = header_size;
@@ -3863,7 +3870,9 @@ lower_sampler_logical_send_gen7(const fs_builder &bld, fs_inst *inst, opcode op,
                                 const fs_reg &shadow_c,
                                 fs_reg lod, fs_reg lod2,
                                 const fs_reg &sample_index,
-                                const fs_reg &mcs, const fs_reg &sampler,
+                                const fs_reg &mcs,
+                                const fs_reg &surface,
+                                const fs_reg &sampler,
                                 fs_reg offset_value,
                                 unsigned coord_components,
                                 unsigned grad_components)
@@ -4066,8 +4075,9 @@ lower_sampler_logical_send_gen7(const fs_builder &bld, fs_inst *inst, opcode op,
    /* Generate the SEND. */
    inst->opcode = op;
    inst->src[0] = src_payload;
-   inst->src[1] = sampler;
-   inst->resize_sources(2);
+   inst->src[1] = surface;
+   inst->src[2] = sampler;
+   inst->resize_sources(3);
    inst->base_mrf = -1;
    inst->mlen = mlen;
    inst->header_size = header_size;
@@ -4080,31 +4090,34 @@ static void
 lower_sampler_logical_send(const fs_builder &bld, fs_inst *inst, opcode op)
 {
    const brw_device_info *devinfo = bld.shader->devinfo;
-   const fs_reg &coordinate = inst->src[0];
-   const fs_reg &shadow_c = inst->src[1];
-   const fs_reg &lod = inst->src[2];
-   const fs_reg &lod2 = inst->src[3];
-   const fs_reg &sample_index = inst->src[4];
-   const fs_reg &mcs = inst->src[5];
-   const fs_reg &sampler = inst->src[6];
-   const fs_reg &offset_value = inst->src[7];
-   assert(inst->src[8].file == IMM && inst->src[9].file == IMM);
-   const unsigned coord_components = inst->src[8].ud;
-   const unsigned grad_components = inst->src[9].ud;
+   const fs_reg &coordinate = inst->src[TEX_LOGICAL_SRC_COORDINATE];
+   const fs_reg &shadow_c = inst->src[TEX_LOGICAL_SRC_SHADOW_C];
+   const fs_reg &lod = inst->src[TEX_LOGICAL_SRC_LOD];
+   const fs_reg &lod2 = inst->src[TEX_LOGICAL_SRC_LOD2];
+   const fs_reg &sample_index = inst->src[TEX_LOGICAL_SRC_SAMPLE_INDEX];
+   const fs_reg &mcs = inst->src[TEX_LOGICAL_SRC_MCS];
+   const fs_reg &surface = inst->src[TEX_LOGICAL_SRC_SURFACE];
+   const fs_reg &sampler = inst->src[TEX_LOGICAL_SRC_SAMPLER];
+   const fs_reg &offset_value = inst->src[TEX_LOGICAL_SRC_OFFSET_VALUE];
+   assert(inst->src[TEX_LOGICAL_SRC_COORD_COMPONENTS].file == IMM);
+   const unsigned coord_components = inst->src[TEX_LOGICAL_SRC_COORD_COMPONENTS].ud;
+   assert(inst->src[TEX_LOGICAL_SRC_GRAD_COMPONENTS].file == IMM);
+   const unsigned grad_components = inst->src[TEX_LOGICAL_SRC_GRAD_COMPONENTS].ud;
 
    if (devinfo->gen >= 7) {
       lower_sampler_logical_send_gen7(bld, inst, op, coordinate,
                                       shadow_c, lod, lod2, sample_index,
-                                      mcs, sampler, offset_value,
+                                      mcs, surface, sampler, offset_value,
                                       coord_components, grad_components);
    } else if (devinfo->gen >= 5) {
       lower_sampler_logical_send_gen5(bld, inst, op, coordinate,
                                       shadow_c, lod, lod2, sample_index,
-                                      sampler, offset_value,
+                                      surface, sampler, offset_value,
                                       coord_components, grad_components);
    } else {
       lower_sampler_logical_send_gen4(bld, inst, op, coordinate,
-                                      shadow_c, lod, lod2, sampler,
+                                      shadow_c, lod, lod2,
+                                      surface, sampler,
                                       coord_components, grad_components);
    }
 }
@@ -4384,7 +4397,7 @@ get_lowered_simd_width(const struct brw_device_info *devinfo,
 
    case SHADER_OPCODE_TG4_OFFSET_LOGICAL: {
       /* gather4_po_c is unsupported in SIMD16 mode. */
-      const fs_reg &shadow_c = inst->src[1];
+      const fs_reg &shadow_c = inst->src[TEX_LOGICAL_SRC_SHADOW_C];
       return (shadow_c.file != BAD_FILE ? 8 : inst->exec_size);
    }
    case SHADER_OPCODE_TXL_LOGICAL:
@@ -4393,7 +4406,7 @@ get_lowered_simd_width(const struct brw_device_info *devinfo,
        * Gen4-6 can't support TXL and TXB with shadow comparison in SIMD16
        * mode because the message exceeds the maximum length of 11.
        */
-      const fs_reg &shadow_c = inst->src[1];
+      const fs_reg &shadow_c = inst->src[TEX_LOGICAL_SRC_SHADOW_C];
       if (devinfo->gen == 4 && shadow_c.file == BAD_FILE)
          return 16;
       else if (devinfo->gen < 7 && shadow_c.file != BAD_FILE)
@@ -4416,7 +4429,8 @@ get_lowered_simd_width(const struct brw_device_info *devinfo,
        * circumstances it can end up with a message that is too long in SIMD16
        * mode.
        */
-      const unsigned coord_components = inst->src[8].ud;
+      const unsigned coord_components =
+         inst->src[TEX_LOGICAL_SRC_COORD_COMPONENTS].ud;
       /* First three arguments are the sample index and the two arguments for
        * the MCS data.
        */
@@ -4726,7 +4740,7 @@ fs_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
       case IMM:
          switch (inst->src[i].type) {
          case BRW_REGISTER_TYPE_F:
-            fprintf(file, "%ff", inst->src[i].f);
+            fprintf(file, "%-gf", inst->src[i].f);
             break;
          case BRW_REGISTER_TYPE_W:
          case BRW_REGISTER_TYPE_D:
@@ -4835,10 +4849,12 @@ fs_visitor::get_instruction_generating_reg(fs_inst *start,
 }
 
 void
-fs_visitor::setup_payload_gen6()
+fs_visitor::setup_fs_payload_gen6()
 {
-   bool uses_depth =
-      (nir->info.inputs_read & (1 << VARYING_SLOT_POS)) != 0;
+   assert(stage == MESA_SHADER_FRAGMENT);
+   brw_wm_prog_data *prog_data = (brw_wm_prog_data*) this->prog_data;
+   brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
+
    unsigned barycentric_interp_modes =
       (stage == MESA_SHADER_FRAGMENT) ?
       ((brw_wm_prog_data*) this->prog_data)->barycentric_interp_modes : 0;
@@ -4867,7 +4883,9 @@ fs_visitor::setup_payload_gen6()
    }
 
    /* R27: interpolated depth if uses source depth */
-   if (uses_depth) {
+   prog_data->uses_src_depth =
+      (nir->info.inputs_read & (1 << VARYING_SLOT_POS)) != 0;
+   if (prog_data->uses_src_depth) {
       payload.source_depth_reg = payload.num_regs;
       payload.num_regs++;
       if (dispatch_width == 16) {
@@ -4875,8 +4893,11 @@ fs_visitor::setup_payload_gen6()
          payload.num_regs++;
       }
    }
+
    /* R29: interpolated W set if GEN6_WM_USES_SOURCE_W. */
-   if (uses_depth) {
+   prog_data->uses_src_w =
+      (nir->info.inputs_read & (1 << VARYING_SLOT_POS)) != 0;
+   if (prog_data->uses_src_w) {
       payload.source_w_reg = payload.num_regs;
       payload.num_regs++;
       if (dispatch_width == 16) {
@@ -4885,19 +4906,17 @@ fs_visitor::setup_payload_gen6()
       }
    }
 
-   if (stage == MESA_SHADER_FRAGMENT) {
-      brw_wm_prog_data *prog_data = (brw_wm_prog_data*) this->prog_data;
-      brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
-      prog_data->uses_pos_offset = key->compute_pos_offset;
-      /* R31: MSAA position offsets. */
-      if (prog_data->uses_pos_offset) {
-         payload.sample_pos_reg = payload.num_regs;
-         payload.num_regs++;
-      }
+   prog_data->uses_pos_offset = key->compute_pos_offset;
+   /* R31: MSAA position offsets. */
+   if (prog_data->uses_pos_offset) {
+      payload.sample_pos_reg = payload.num_regs;
+      payload.num_regs++;
    }
 
    /* R32: MSAA input coverage mask */
-   if (nir->info.system_values_read & SYSTEM_BIT_SAMPLE_MASK_IN) {
+   prog_data->uses_sample_mask =
+      (nir->info.system_values_read & SYSTEM_BIT_SAMPLE_MASK_IN) != 0;
+   if (prog_data->uses_sample_mask) {
       assert(devinfo->gen >= 7);
       payload.sample_mask_in_reg = payload.num_regs;
       payload.num_regs++;
@@ -5066,7 +5085,7 @@ fs_visitor::optimize()
 
    if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER)) {
       char filename[64];
-      snprintf(filename, 64, "%s%d-%s-00-start",
+      snprintf(filename, 64, "%s%d-%s-00-00-start",
                stage_abbrev, dispatch_width, nir->info.name);
 
       backend_shader::dump_instructions(filename);
@@ -5334,9 +5353,9 @@ fs_visitor::run_fs(bool do_rep_send)
    assert(stage == MESA_SHADER_FRAGMENT);
 
    if (devinfo->gen >= 6)
-      setup_payload_gen6();
+      setup_fs_payload_gen6();
    else
-      setup_payload_gen4();
+      setup_fs_payload_gen4();
 
    if (0) {
       emit_dummy_fs();
