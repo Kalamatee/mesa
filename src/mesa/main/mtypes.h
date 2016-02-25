@@ -44,6 +44,7 @@
 #include "math/m_matrix.h"	/* GLmatrix */
 #include "compiler/shader_enums.h"
 #include "main/formats.h"       /* MESA_FORMAT_COUNT */
+#include "compiler/glsl/list.h"
 
 
 #ifdef __cplusplus
@@ -2771,6 +2772,13 @@ struct gl_shader_program
    struct gl_uniform_storage **UniformRemapTable;
 
    /**
+    * Sometimes there are empty slots left over in UniformRemapTable after we
+    * allocate slots to explicit locations. This list stores the blocks of
+    * continuous empty slots inside UniformRemapTable.
+    */
+   struct exec_list EmptyUniformLocations;
+
+   /**
     * Size of the gl_ClipDistance array that is output from the last pipeline
     * stage before the fragment shader.
     */
@@ -3046,6 +3054,7 @@ struct gl_shared_state
    mtx_t Mutex;		   /**< for thread safety */
    GLint RefCount;			   /**< Reference count */
    struct _mesa_HashTable *DisplayList;	   /**< Display lists hash table */
+   struct _mesa_HashTable *BitmapAtlas;    /**< For optimized glBitmap text */
    struct _mesa_HashTable *TexObjects;	   /**< Texture objects hash table */
 
    /** Default texture objects (shared by all texture units) */

@@ -205,6 +205,7 @@ struct st_context
    struct {
       struct pipe_rasterizer_state rasterizer;
       struct pipe_sampler_state sampler;
+      struct pipe_sampler_state atlas_sampler;
       enum pipe_format tex_format;
       void *vs;
       struct bitmap_cache *cache;
@@ -215,6 +216,14 @@ struct st_context
       void *zs_shaders[4];
       void *vert_shaders[2];   /**< ureg shaders */
    } drawpix;
+
+   struct {
+      GLsizei width, height;
+      GLenum format, type;
+      const void *user_pointer;  /**< Last user 'pixels' pointer */
+      void *image;               /**< Copy of the glDrawPixels image data */
+      struct pipe_resource *texture;
+   } drawpix_cache;
 
    /** for glClear */
    struct {

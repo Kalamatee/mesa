@@ -264,8 +264,8 @@ nv50_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
    case PIPE_SHADER_VERTEX:
    case PIPE_SHADER_GEOMETRY:
    case PIPE_SHADER_FRAGMENT:
-   case PIPE_SHADER_COMPUTE:
       break;
+   case PIPE_SHADER_COMPUTE:
    default:
       return 0;
    }
@@ -565,7 +565,7 @@ nv50_screen_init_hwctx(struct nv50_screen *screen)
 
    if (screen->tesla->oclass >= NVA0_3D_CLASS) {
       BEGIN_NV04(push, SUBC_3D(NVA0_3D_TEX_MISC), 1);
-      PUSH_DATA (push, NVA0_3D_TEX_MISC_SEAMLESS_CUBE_MAP);
+      PUSH_DATA (push, 0);
    }
 
    BEGIN_NV04(push, NV50_3D(SCREEN_Y_CONTROL), 1);

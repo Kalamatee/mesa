@@ -23,6 +23,7 @@
 #include "nvc0/nvc0_context.h"
 #include "nvc0/nvc0_resource.h"
 #include "nvc0/gm107_texture.xml.h"
+#include "nvc0/nvc0_compute.xml.h"
 #include "nv50/g80_texture.xml.h"
 #include "nv50/g80_defs.xml.h"
 
@@ -429,7 +430,7 @@ nvc0_update_tic(struct nvc0_context *nvc0, struct nv50_tic_entry *tic,
    tic->tic[2] |= address >> 32;
 }
 
-static bool
+bool
 nvc0_validate_tic(struct nvc0_context *nvc0, int s)
 {
    uint32_t commands[32];
@@ -470,7 +471,10 @@ nvc0_validate_tic(struct nvc0_context *nvc0, int s)
          need_flush = true;
       } else
       if (res->status & NOUVEAU_BUFFER_STATUS_GPU_WRITING) {
-         BEGIN_NVC0(push, NVC0_3D(TEX_CACHE_CTL), 1);
+         if (unlikely(s == 5))
+            BEGIN_NVC0(push, NVC0_CP(TEX_CACHE_CTL), 1);
+         else
+            BEGIN_NVC0(push, NVC0_3D(TEX_CACHE_CTL), 1);
          PUSH_DATA (push, (tic->id << 4) | 1);
          NOUVEAU_DRV_STAT(&nvc0->screen->base, tex_cache_flush_count, 1);
       }
@@ -483,7 +487,10 @@ nvc0_validate_tic(struct nvc0_context *nvc0, int s)
          continue;
       commands[n++] = (tic->id << 9) | (i << 1) | 1;
 
-      BCTX_REFN(nvc0->bufctx_3d, TEX(s, i), res, RD);
+      if (unlikely(s == 5))
+         BCTX_REFN(nvc0->bufctx_cp, CP_TEX(i), res, RD);
+      else
+         BCTX_REFN(nvc0->bufctx_3d, 3D_TEX(s, i), res, RD);
    }
    for (; i < nvc0->state.num_textures[s]; ++i)
       commands[n++] = (i << 1) | 0;
@@ -491,7 +498,10 @@ nvc0_validate_tic(struct nvc0_context *nvc0, int s)
    nvc0->state.num_textures[s] = nvc0->num_textures[s];
 
    if (n) {
-      BEGIN_NIC0(push, NVC0_3D(BIND_TIC(s)), n);
+      if (unlikely(s == 5))
+         BEGIN_NIC0(push, NVC0_CP(BIND_TIC), n);
+      else
+         BEGIN_NIC0(push, NVC0_3D(BIND_TIC(s)), n);
       PUSH_DATAp(push, commands, n);
    }
    nvc0->textures_dirty[s] = 0;
@@ -547,7 +557,7 @@ nve4_validate_tic(struct nvc0_context *nvc0, unsigned s)
       nvc0->tex_handles[s][i] &= ~NVE4_TIC_ENTRY_INVALID;
       nvc0->tex_handles[s][i] |= tic->id;
       if (dirty)
-         BCTX_REFN(nvc0->bufctx_3d, TEX(s, i), res, RD);
+         BCTX_REFN(nvc0->bufctx_3d, 3D_TEX(s, i), res, RD);
    }
    for (; i < nvc0->state.num_textures[s]; ++i) {
       nvc0->tex_handles[s][i] |= NVE4_TIC_ENTRY_INVALID;
@@ -577,7 +587,7 @@ void nvc0_validate_textures(struct nvc0_context *nvc0)
    }
 }
 
-static bool
+bool
 nvc0_validate_tsc(struct nvc0_context *nvc0, int s)
 {
    uint32_t commands[16];
@@ -595,6 +605,7 @@ nvc0_validate_tsc(struct nvc0_context *nvc0, int s)
          commands[n++] = (i << 4) | 0;
          continue;
       }
+      nvc0->seamless_cube_map = tsc->seamless_cube_map;
       if (tsc->id < 0) {
          tsc->id = nvc0_screen_tsc_alloc(nvc0->screen, tsc);
 
@@ -613,7 +624,10 @@ nvc0_validate_tsc(struct nvc0_context *nvc0, int s)
    nvc0->state.num_samplers[s] = nvc0->num_samplers[s];
 
    if (n) {
-      BEGIN_NIC0(push, NVC0_3D(BIND_TSC(s)), n);
+      if (unlikely(s == 5))
+         BEGIN_NIC0(push, NVC0_CP(BIND_TSC), n);
+      else
+         BEGIN_NIC0(push, NVC0_3D(BIND_TSC(s)), n);
       PUSH_DATAp(push, commands, n);
    }
    nvc0->samplers_dirty[s] = 0;
@@ -698,7 +712,7 @@ nve4_set_tex_handles(struct nvc0_context *nvc0)
 
    if (nvc0->screen->base.class_3d < NVE4_3D_CLASS)
       return;
-   address = nvc0->screen->uniform_bo->offset + (5 << 16);
+   address = nvc0->screen->uniform_bo->offset + (6 << 16);
 
    for (s = 0; s < 5; ++s, address += (1 << 10)) {
       uint32_t dirty = nvc0->textures_dirty[s] | nvc0->samplers_dirty[s];
