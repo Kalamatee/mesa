@@ -128,6 +128,8 @@ private:
 
    void emitFlow(const Instruction *);
 
+   void emitVOTE(const Instruction *);
+
    inline void defId(const ValueDef&, const int pos);
    inline void srcId(const ValueRef&, const int pos);
    inline void srcId(const ValueRef *, const int pos);
@@ -1271,15 +1273,41 @@ CodeEmitterGK110::emitBAR(const Instruction *i)
    case NV50_IR_SUBOP_BAR_RED_OR:   code[1] |= 0x90; break;
    case NV50_IR_SUBOP_BAR_RED_POPC: code[1] |= 0x10; break;
    default:
-      code[1] |= 0x20;
       assert(i->subOp == NV50_IR_SUBOP_BAR_SYNC);
       break;
    }
 
    emitPredicate(i);
 
-   srcId(i->src(0), 10);
-   srcId(i->src(1), 23);
+   // barrier id
+   if (i->src(0).getFile() == FILE_GPR) {
+      srcId(i->src(0), 10);
+   } else {
+      ImmediateValue *imm = i->getSrc(0)->asImm();
+      assert(imm);
+      code[0] |= imm->reg.data.u32 << 10;
+      code[1] |= 0x8000;
+   }
+
+   // thread count
+   if (i->src(1).getFile() == FILE_GPR) {
+      srcId(i->src(1), 23);
+   } else {
+      ImmediateValue *imm = i->getSrc(0)->asImm();
+      assert(imm);
+      assert(imm->reg.data.u32 <= 0xfff);
+      code[0] |= imm->reg.data.u32 << 23;
+      code[1] |= imm->reg.data.u32 >> 9;
+      code[1] |= 0x4000;
+   }
+
+   if (i->srcExists(2) && (i->predSrc != 2)) {
+      srcId(i->src(2), 32 + 10);
+      if (i->src(2).mod == Modifier(NV50_IR_MOD_NOT))
+         code[1] |= 1 << 13;
+   } else {
+      code[1] |= 7 << 10;
+   }
 }
 
 void CodeEmitterGK110::emitMEMBAR(const Instruction *i)
@@ -1368,6 +1396,24 @@ CodeEmitterGK110::emitFlow(const Instruction *i)
       code[0] |= (pcRel & 0x1ff) << 23;
       code[1] |= (pcRel >> 9) & 0x7fff;
    }
+}
+
+void
+CodeEmitterGK110::emitVOTE(const Instruction *i)
+{
+   assert(i->src(0).getFile() == FILE_PREDICATE &&
+          i->def(1).getFile() == FILE_PREDICATE);
+
+   code[0] = 0x00000002;
+   code[1] = 0x86c00000 | (i->subOp << 19);
+
+   emitPredicate(i);
+
+   defId(i->def(0), 2);
+   defId(i->def(1), 48);
+   if (i->src(0).mod == Modifier(NV50_IR_MOD_NOT))
+      code[1] |= 1 << 13;
+   srcId(i->src(0), 42);
 }
 
 void
@@ -1597,7 +1643,13 @@ CodeEmitterGK110::emitSTORE(const Instruction *i)
    switch (i->src(0).getFile()) {
    case FILE_MEMORY_GLOBAL: code[1] = 0xe0000000; code[0] = 0x00000000; break;
    case FILE_MEMORY_LOCAL:  code[1] = 0x7a800000; code[0] = 0x00000002; break;
-   case FILE_MEMORY_SHARED: code[1] = 0x7ac00000; code[0] = 0x00000002; break;
+   case FILE_MEMORY_SHARED:
+      code[0] = 0x00000002;
+      if (i->subOp == NV50_IR_SUBOP_STORE_UNLOCKED)
+         code[1] = 0x78400000;
+      else
+         code[1] = 0x7ac00000;
+      break;
    default:
       assert(!"invalid memory file");
       break;
@@ -1617,6 +1669,13 @@ CodeEmitterGK110::emitSTORE(const Instruction *i)
    code[0] |= offset << 23;
    code[1] |= offset >> 9;
 
+   // Unlocked store on shared memory can fail.
+   if (i->src(0).getFile() == FILE_MEMORY_SHARED &&
+       i->subOp == NV50_IR_SUBOP_STORE_UNLOCKED) {
+      assert(i->defExists(0));
+      defId(i->def(0), 32 + 16);
+   }
+
    emitPredicate(i);
 
    srcId(i->src(1), 2);
@@ -1635,7 +1694,13 @@ CodeEmitterGK110::emitLOAD(const Instruction *i)
    switch (i->src(0).getFile()) {
    case FILE_MEMORY_GLOBAL: code[1] = 0xc0000000; code[0] = 0x00000000; break;
    case FILE_MEMORY_LOCAL:  code[1] = 0x7a000000; code[0] = 0x00000002; break;
-   case FILE_MEMORY_SHARED: code[1] = 0x7a400000; code[0] = 0x00000002; break;
+   case FILE_MEMORY_SHARED:
+      code[0] = 0x00000002;
+      if (i->subOp == NV50_IR_SUBOP_LOAD_LOCKED)
+         code[1] = 0x77400000;
+      else
+         code[1] = 0x7a400000;
+      break;
    case FILE_MEMORY_CONST:
       if (!i->src(0).isIndirect(0) && typeSizeof(i->dType) == 4) {
          emitMOV(i);
@@ -1662,6 +1727,13 @@ CodeEmitterGK110::emitLOAD(const Instruction *i)
    }
    code[0] |= offset << 23;
    code[1] |= offset >> 9;
+
+   // Locked store on shared memory can fail.
+   if (i->src(0).getFile() == FILE_MEMORY_SHARED &&
+       i->subOp == NV50_IR_SUBOP_LOAD_LOCKED) {
+      assert(i->defExists(1));
+      defId(i->def(1), 32 + 16);
+   }
 
    emitPredicate(i);
 
@@ -2053,6 +2125,9 @@ CodeEmitterGK110::emitInstruction(Instruction *insn)
       break;
    case OP_CCTL:
       emitCCTL(insn);
+      break;
+   case OP_VOTE:
+      emitVOTE(insn);
       break;
    case OP_PHI:
    case OP_UNION:

@@ -23,7 +23,6 @@
  */
 
 #include "nvc0/nvc0_context.h"
-#include "nvc0/nvc0_compute.h"
 #include "nvc0/nve4_compute.h"
 
 #include "codegen/nv50_ir_driver.h"
@@ -302,35 +301,30 @@ nve4_compute_set_tex_handles(struct nvc0_context *nvc0)
    nvc0->samplers_dirty[s] = 0;
 }
 
+static struct nvc0_state_validate
+validate_list_cp[] = {
+   { nvc0_compprog_validate,              NVC0_NEW_CP_PROGRAM     },
+   { nve4_compute_validate_textures,      NVC0_NEW_CP_TEXTURES    },
+   { nve4_compute_validate_samplers,      NVC0_NEW_CP_SAMPLERS    },
+   { nve4_compute_set_tex_handles,        NVC0_NEW_CP_TEXTURES |
+                                          NVC0_NEW_CP_SAMPLERS    },
+   { nve4_compute_validate_surfaces,      NVC0_NEW_CP_SURFACES    },
+   { nvc0_compute_validate_globals,       NVC0_NEW_CP_GLOBALS     },
+};
 
 static bool
-nve4_compute_state_validate(struct nvc0_context *nvc0)
+nve4_state_validate_cp(struct nvc0_context *nvc0, uint32_t mask)
 {
-   if (!nvc0_compute_validate_program(nvc0))
-      return false;
-   if (nvc0->dirty_cp & NVC0_NEW_CP_TEXTURES)
-      nve4_compute_validate_textures(nvc0);
-   if (nvc0->dirty_cp & NVC0_NEW_CP_SAMPLERS)
-      nve4_compute_validate_samplers(nvc0);
-   if (nvc0->dirty_cp & (NVC0_NEW_CP_TEXTURES | NVC0_NEW_CP_SAMPLERS))
-       nve4_compute_set_tex_handles(nvc0);
-   if (nvc0->dirty_cp & NVC0_NEW_CP_SURFACES)
-      nve4_compute_validate_surfaces(nvc0);
-   if (nvc0->dirty_cp & NVC0_NEW_CP_GLOBALS)
-      nvc0_validate_global_residents(nvc0,
-                                     nvc0->bufctx_cp, NVC0_BIND_CP_GLOBAL);
+   bool ret;
 
-   nvc0_bufctx_fence(nvc0, nvc0->bufctx_cp, false);
+   ret = nvc0_state_validate(nvc0, mask, validate_list_cp,
+                             ARRAY_SIZE(validate_list_cp), &nvc0->dirty_cp,
+                             nvc0->bufctx_cp);
 
-   nouveau_pushbuf_bufctx(nvc0->base.pushbuf, nvc0->bufctx_cp);
-   if (unlikely(nouveau_pushbuf_validate(nvc0->base.pushbuf)))
-      return false;
    if (unlikely(nvc0->state.flushed))
       nvc0_bufctx_fence(nvc0, nvc0->bufctx_cp, true);
-
-   return true;
+   return ret;
 }
-
 
 static void
 nve4_compute_upload_input(struct nvc0_context *nvc0, const void *input,
@@ -450,7 +444,7 @@ nve4_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
    BCTX_REFN_bo(nvc0->bufctx_cp, CP_DESC, NOUVEAU_BO_GART | NOUVEAU_BO_RD,
                 desc_bo);
 
-   ret = !nve4_compute_state_validate(nvc0);
+   ret = !nve4_state_validate_cp(nvc0, ~0);
    if (ret)
       goto out;
 

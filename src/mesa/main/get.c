@@ -1055,6 +1055,8 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       }
       break;
    /* GL_KHR_DEBUG */
+   case GL_DEBUG_OUTPUT:
+   case GL_DEBUG_OUTPUT_SYNCHRONOUS:
    case GL_DEBUG_LOGGED_MESSAGES:
    case GL_DEBUG_NEXT_LOGGED_MESSAGE_LENGTH:
    case GL_DEBUG_GROUP_STACK_DEPTH:
@@ -1715,19 +1717,19 @@ _mesa_GetInteger64v(GLenum pname, GLint64 *params)
       break;
 
    case TYPE_FLOATN_4:
-      params[3] = FLOAT_TO_INT64(((GLfloat *) p)[3]);
+      params[3] = FLOAT_TO_INT(((GLfloat *) p)[3]);
    case TYPE_FLOATN_3:
-      params[2] = FLOAT_TO_INT64(((GLfloat *) p)[2]);
+      params[2] = FLOAT_TO_INT(((GLfloat *) p)[2]);
    case TYPE_FLOATN_2:
-      params[1] = FLOAT_TO_INT64(((GLfloat *) p)[1]);
+      params[1] = FLOAT_TO_INT(((GLfloat *) p)[1]);
    case TYPE_FLOATN:
-      params[0] = FLOAT_TO_INT64(((GLfloat *) p)[0]);
+      params[0] = FLOAT_TO_INT(((GLfloat *) p)[0]);
       break;
 
    case TYPE_DOUBLEN_2:
-      params[1] = FLOAT_TO_INT64(((GLdouble *) p)[1]);
+      params[1] = FLOAT_TO_INT(((GLdouble *) p)[1]);
    case TYPE_DOUBLEN:
-      params[0] = FLOAT_TO_INT64(((GLdouble *) p)[0]);
+      params[0] = FLOAT_TO_INT(((GLdouble *) p)[0]);
       break;
 
    case TYPE_INT_4:

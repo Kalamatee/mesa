@@ -2471,7 +2471,6 @@ static void
 bind_framebuffer(GLenum target, GLuint framebuffer, bool allow_user_names)
 {
    struct gl_framebuffer *newDrawFb, *newReadFb;
-   struct gl_framebuffer *oldDrawFb, *oldReadFb;
    GLboolean bindReadBuf, bindDrawBuf;
    GET_CURRENT_CONTEXT(ctx);
 
@@ -2525,18 +2524,23 @@ bind_framebuffer(GLenum target, GLuint framebuffer, bool allow_user_names)
       newReadFb = ctx->WinSysReadBuffer;
    }
 
+   _mesa_bind_framebuffers(ctx,
+                           bindDrawBuf ? newDrawFb : ctx->DrawBuffer,
+                           bindReadBuf ? newReadFb : ctx->ReadBuffer);
+}
+
+void
+_mesa_bind_framebuffers(struct gl_context *ctx,
+                        struct gl_framebuffer *newDrawFb,
+                        struct gl_framebuffer *newReadFb)
+{
+   struct gl_framebuffer *const oldDrawFb = ctx->DrawBuffer;
+   struct gl_framebuffer *const oldReadFb = ctx->ReadBuffer;
+   const bool bindDrawBuf = oldDrawFb != newDrawFb;
+   const bool bindReadBuf = oldReadFb != newReadFb;
+
    assert(newDrawFb);
    assert(newDrawFb != &DummyFramebuffer);
-
-   /* save pointers to current/old framebuffers */
-   oldDrawFb = ctx->DrawBuffer;
-   oldReadFb = ctx->ReadBuffer;
-
-   /* check if really changing bindings */
-   if (oldDrawFb == newDrawFb)
-      bindDrawBuf = GL_FALSE;
-   if (oldReadFb == newReadFb)
-      bindReadBuf = GL_FALSE;
 
    /*
     * OK, now bind the new Draw/Read framebuffers, if they're changing.
@@ -2573,7 +2577,12 @@ bind_framebuffer(GLenum target, GLuint framebuffer, bool allow_user_names)
    }
 
    if ((bindDrawBuf || bindReadBuf) && ctx->Driver.BindFramebuffer) {
-      ctx->Driver.BindFramebuffer(ctx, target, newDrawFb, newReadFb);
+      /* The few classic drivers that actually hook this function really only
+       * want to know if the draw framebuffer changed.
+       */
+      ctx->Driver.BindFramebuffer(ctx,
+                                  bindDrawBuf ? GL_FRAMEBUFFER : GL_READ_FRAMEBUFFER,
+                                  newDrawFb, newReadFb);
    }
 }
 
@@ -2815,6 +2824,7 @@ reuse_framebuffer_texture_attachment(struct gl_framebuffer *fb,
    dst_att->Complete = src_att->Complete;
    dst_att->TextureLevel = src_att->TextureLevel;
    dst_att->Zoffset = src_att->Zoffset;
+   dst_att->Layered = src_att->Layered;
 }
 
 
@@ -3570,8 +3580,22 @@ _mesa_get_framebuffer_attachment_parameter(struct gl_context *ctx,
    const struct gl_renderbuffer_attachment *att;
    GLenum err;
 
-   /* The error differs in GL and GLES. */
-   err = _mesa_is_desktop_gl(ctx) ? GL_INVALID_OPERATION : GL_INVALID_ENUM;
+   /* The error code for an attachment type of GL_NONE differs between APIs.
+    *
+    * From the ES 2.0.25 specification, page 127:
+    * "If the value of FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE is NONE, then
+    *  querying any other pname will generate INVALID_ENUM."
+    *
+    * From the OpenGL 3.0 specification, page 337, or identically,
+    * the OpenGL ES 3.0.4 specification, page 240:
+    *
+    * "If the value of FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE is NONE, no
+    *  framebuffer is bound to target.  In this case querying pname
+    *  FRAMEBUFFER_ATTACHMENT_OBJECT_NAME will return zero, and all other
+    *  queries will generate an INVALID_OPERATION error."
+    */
+   err = ctx->API == API_OPENGLES2 && ctx->Version < 30 ?
+      GL_INVALID_ENUM : GL_INVALID_OPERATION;
 
    if (_mesa_is_winsys_fbo(buffer)) {
       /* Page 126 (page 136 of the PDF) of the OpenGL ES 2.0.25 spec
@@ -4160,7 +4184,8 @@ _mesa_InvalidateFramebuffer(GLenum target, GLsizei numAttachments,
     */
    invalidate_framebuffer_storage(ctx, fb, numAttachments, attachments,
                                   0, 0,
-                                  MAX_VIEWPORT_WIDTH, MAX_VIEWPORT_HEIGHT,
+                                  ctx->Const.MaxViewportWidth,
+                                  ctx->Const.MaxViewportHeight,
                                   "glInvalidateFramebuffer");
 }
 
@@ -4200,7 +4225,8 @@ _mesa_InvalidateNamedFramebufferData(GLuint framebuffer,
     */
    invalidate_framebuffer_storage(ctx, fb, numAttachments, attachments,
                                   0, 0,
-                                  MAX_VIEWPORT_WIDTH, MAX_VIEWPORT_HEIGHT,
+                                  ctx->Const.MaxViewportWidth,
+                                  ctx->Const.MaxViewportHeight,
                                   "glInvalidateNamedFramebufferData");
 }
 

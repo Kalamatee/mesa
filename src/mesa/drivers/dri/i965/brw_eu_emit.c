@@ -2526,6 +2526,8 @@ brw_send_indirect_message(struct brw_codegen *p,
    struct brw_inst *send;
    int setup;
 
+   dst = retype(dst, BRW_REGISTER_TYPE_UW);
+
    assert(desc.type == BRW_REGISTER_TYPE_UD);
 
    /* We hold on to the setup instruction (the SEND in the direct case, the OR
@@ -3207,6 +3209,7 @@ brw_memory_fence(struct brw_codegen *p,
     * message doesn't write anything back.
     */
    insn = next_insn(p, BRW_OPCODE_SEND);
+   dst = retype(dst, BRW_REGISTER_TYPE_UW);
    brw_set_dest(p, insn, dst);
    brw_set_src0(p, insn, dst);
    brw_set_memory_fence_message(p, insn, GEN7_SFID_DATAPORT_DATA_CACHE,
@@ -3399,7 +3402,7 @@ brw_broadcast(struct brw_codegen *p,
           */
          inst = brw_MOV(p,
                         brw_null_reg(),
-                        stride(brw_swizzle1(idx, 0), 0, 4, 1));
+                        stride(brw_swizzle(idx, BRW_SWIZZLE_XXXX), 0, 4, 1));
          brw_inst_set_pred_control(devinfo, inst, BRW_PREDICATE_NONE);
          brw_inst_set_cond_modifier(devinfo, inst, BRW_CONDITIONAL_NZ);
          brw_inst_set_flag_reg_nr(devinfo, inst, 1);
@@ -3473,7 +3476,7 @@ brw_barrier(struct brw_codegen *p, struct brw_reg src)
    assert(devinfo->gen >= 7);
 
    inst = next_insn(p, BRW_OPCODE_SEND);
-   brw_set_dest(p, inst, brw_null_reg());
+   brw_set_dest(p, inst, retype(brw_null_reg(), BRW_REGISTER_TYPE_UW));
    brw_set_src0(p, inst, src);
    brw_set_src1(p, inst, brw_null_reg());
 

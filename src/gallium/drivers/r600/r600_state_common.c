@@ -693,6 +693,26 @@ static void r600_set_sampler_views(struct pipe_context *pipe, unsigned shader,
 	}
 }
 
+static void r600_update_compressed_colortex_mask(struct r600_samplerview_state *views)
+{
+	uint32_t mask = views->enabled_mask;
+
+	while (mask) {
+		unsigned i = u_bit_scan(&mask);
+		struct pipe_resource *res = views->views[i]->base.texture;
+
+		if (res && res->target != PIPE_BUFFER) {
+			struct r600_texture *rtex = (struct r600_texture *)res;
+
+			if (rtex->cmask.size) {
+				views->compressed_colortex_mask |= 1 << i;
+			} else {
+				views->compressed_colortex_mask &= ~(1 << i);
+			}
+		}
+	}
+}
+
 static void r600_set_viewport_states(struct pipe_context *ctx,
                                      unsigned start_slot,
                                      unsigned num_viewports,
@@ -1457,6 +1477,16 @@ static bool r600_update_derived_state(struct r600_context *rctx)
 
 	if (!rctx->blitter->running) {
 		unsigned i;
+		unsigned counter;
+
+		counter = p_atomic_read(&rctx->screen->b.compressed_colortex_counter);
+		if (counter != rctx->b.last_compressed_colortex_counter) {
+			rctx->b.last_compressed_colortex_counter = counter;
+
+			for (i = 0; i < PIPE_SHADER_TYPES; ++i) {
+				r600_update_compressed_colortex_mask(&rctx->samplers[i].views);
+			}
+		}
 
 		/* Decompress textures if needed. */
 		for (i = 0; i < PIPE_SHADER_TYPES; i++) {
@@ -1672,7 +1702,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 	struct radeon_winsys_cs *cs = rctx->b.gfx.cs;
 	bool render_cond_bit = rctx->b.render_cond && !rctx->b.render_cond_force_off;
 	uint64_t mask;
-	unsigned num_patches;
+	unsigned num_patches, dirty_fb_counter;
 
 	if (!info.indirect && !info.count && (info.indexed || !info.count_from_stream_output)) {
 		return;
@@ -1686,6 +1716,13 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 	/* make sure that the gfx ring is only one active */
 	if (rctx->b.dma.cs && rctx->b.dma.cs->cdw) {
 		rctx->b.dma.flush(rctx, RADEON_FLUSH_ASYNC, NULL);
+	}
+
+	/* Re-emit the framebuffer state if needed. */
+	dirty_fb_counter = p_atomic_read(&rctx->b.screen->dirty_fb_counter);
+	if (dirty_fb_counter != rctx->b.last_dirty_fb_counter) {
+		rctx->b.last_dirty_fb_counter = dirty_fb_counter;
+		r600_mark_atom_dirty(rctx, &rctx->framebuffer.atom);
 	}
 
 	if (!r600_update_derived_state(rctx)) {
@@ -2235,7 +2272,6 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 	uint32_t result = 0, word4 = 0, yuv_format = 0;
 	const struct util_format_description *desc;
 	boolean uniform = TRUE;
-	bool enable_s3tc = rscreen->b.info.drm_minor >= 9;
 	bool is_srgb_valid = FALSE;
 	const unsigned char swizzle_xxxx[4] = {0, 0, 0, 0};
 	const unsigned char swizzle_yyyy[4] = {1, 1, 1, 1};
@@ -2330,9 +2366,6 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 	}
 
 	if (desc->layout == UTIL_FORMAT_LAYOUT_RGTC) {
-		if (!enable_s3tc)
-			goto out_unknown;
-
 		switch (format) {
 		case PIPE_FORMAT_RGTC1_SNORM:
 		case PIPE_FORMAT_LATC1_SNORM:
@@ -2354,10 +2387,6 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 	}
 
 	if (desc->layout == UTIL_FORMAT_LAYOUT_S3TC) {
-
-		if (!enable_s3tc)
-			goto out_unknown;
-
 		if (!util_format_s3tc_enabled) {
 			goto out_unknown;
 		}
@@ -2386,9 +2415,6 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 	}
 
 	if (desc->layout == UTIL_FORMAT_LAYOUT_BPTC) {
-		if (!enable_s3tc)
-			goto out_unknown;
-
 		if (rscreen->b.chip_class < EVERGREEN)
 			goto out_unknown;
 
@@ -2721,6 +2747,13 @@ uint32_t r600_colorformat_endian_swap(uint32_t colorformat)
 
 		/* 32-bit buffers. */
 		case V_0280A0_COLOR_8_8_8_8:
+			/*
+			 * No need to do endian swaps on four 8-bits components,
+			 * as mesa<-->pipe formats conversion take into account
+			 * the endianess
+			 */
+			return ENDIAN_NONE;
+
 		case V_0280A0_COLOR_2_10_10_10:
 		case V_0280A0_COLOR_8_24:
 		case V_0280A0_COLOR_24_8:

@@ -75,44 +75,6 @@
  * Mesa's Driver Functions
  ***************************************/
 
-static size_t
-brw_query_samples_for_format(struct gl_context *ctx, GLenum target,
-                             GLenum internalFormat, int samples[16])
-{
-   struct brw_context *brw = brw_context(ctx);
-
-   (void) target;
-
-   switch (brw->gen) {
-   case 9:
-      samples[0] = 16;
-      samples[1] = 8;
-      samples[2] = 4;
-      samples[3] = 2;
-      return 4;
-
-   case 8:
-      samples[0] = 8;
-      samples[1] = 4;
-      samples[2] = 2;
-      return 3;
-
-   case 7:
-      samples[0] = 8;
-      samples[1] = 4;
-      return 2;
-
-   case 6:
-      samples[0] = 4;
-      return 1;
-
-   default:
-      assert(brw->gen < 6);
-      samples[0] = 1;
-      return 1;
-   }
-}
-
 const char *const brw_vendor_string = "Intel Open Source Technology Center";
 
 const char *
@@ -379,7 +341,7 @@ brw_init_driver_functions(struct brw_context *brw,
    if (brw->gen >= 7)
       brw_init_conditional_render_functions(functions);
 
-   functions->QuerySamplesForFormat = brw_query_samples_for_format;
+   functions->QueryInternalFormat = brw_query_internal_format;
 
    functions->NewTransformFeedback = brw_new_transform_feedback;
    functions->DeleteTransformFeedback = brw_delete_transform_feedback;
@@ -682,6 +644,11 @@ brw_initialize_context_constants(struct brw_context *brw)
          brw->intelScreen->compiler->glsl_compiler_options[i];
    }
 
+   if (brw->gen >= 7) {
+      ctx->Const.MaxViewportWidth = 32768;
+      ctx->Const.MaxViewportHeight = 32768;
+   }
+
    /* ARB_viewport_array */
    if (brw->gen >= 6 && ctx->API == API_OPENGL_CORE) {
       ctx->Const.MaxViewports = GEN6_NUM_VIEWPORTS;
@@ -698,8 +665,8 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.MaxVertexStreams = MIN2(4, MAX_VERTEX_STREAMS);
 
    /* ARB_framebuffer_no_attachments */
-   ctx->Const.MaxFramebufferWidth = ctx->Const.MaxViewportWidth;
-   ctx->Const.MaxFramebufferHeight = ctx->Const.MaxViewportHeight;
+   ctx->Const.MaxFramebufferWidth = 16384;
+   ctx->Const.MaxFramebufferHeight = 16384;
    ctx->Const.MaxFramebufferLayers = ctx->Const.MaxArrayTextureLayers;
    ctx->Const.MaxFramebufferSamples = max_samples;
 }

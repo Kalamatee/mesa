@@ -112,7 +112,7 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
       return 256;
    case PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT:
-      return 1; /* 256 for binding as RT, but that's not possible in GL */
+      return 16; /* 256 for binding as RT, but that's not possible in GL */
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
       return 16;
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
@@ -225,6 +225,10 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
    case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
    case PIPE_CAP_QUERY_MEMORY_INFO:
+   case PIPE_CAP_PCI_GROUP:
+   case PIPE_CAP_PCI_BUS:
+   case PIPE_CAP_PCI_DEVICE:
+   case PIPE_CAP_PCI_FUNCTION:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
