@@ -179,6 +179,7 @@ ilo_get_video_param(struct pipe_screen *screen,
 
 static int
 ilo_get_compute_param(struct pipe_screen *screen,
+                      enum pipe_shader_ir ir_type,
                       enum pipe_compute_cap param,
                       void *ret)
 {
@@ -497,6 +498,8 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_PCI_BUS:
    case PIPE_CAP_PCI_DEVICE:
    case PIPE_CAP_PCI_FUNCTION:
+   case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
+   case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:

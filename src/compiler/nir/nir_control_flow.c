@@ -281,7 +281,8 @@ insert_phi_undef(nir_block *block, nir_block *pred)
       nir_phi_instr *phi = nir_instr_as_phi(instr);
       nir_ssa_undef_instr *undef =
          nir_ssa_undef_instr_create(ralloc_parent(phi),
-                                    phi->dest.ssa.num_components);
+                                    phi->dest.ssa.num_components,
+                                    phi->dest.ssa.bit_size);
       nir_instr_insert_before_cf_list(&impl->body, &undef->instr);
       nir_phi_src *src = ralloc(phi, nir_phi_src);
       src->pred = pred;
@@ -336,8 +337,7 @@ block_add_normal_succs(nir_block *block)
          nir_block *next_block = nir_cf_node_as_block(next);
 
          link_blocks(block, next_block, NULL);
-      } else {
-         assert(parent->type == nir_cf_node_loop);
+      } else if (parent->type == nir_cf_node_loop) {
          nir_loop *loop = nir_cf_node_as_loop(parent);
 
          nir_cf_node *head = nir_loop_first_cf_node(loop);
@@ -346,6 +346,10 @@ block_add_normal_succs(nir_block *block)
 
          link_blocks(block, head_block, NULL);
          insert_phi_undef(head_block, block);
+      } else {
+         assert(parent->type == nir_cf_node_function);
+         nir_function_impl *impl = nir_cf_node_as_function(parent);
+         link_blocks(block, impl->end_block, NULL);
       }
    } else {
       nir_cf_node *next = nir_cf_node_next(&block->cf_node);
@@ -688,7 +692,8 @@ replace_ssa_def_uses(nir_ssa_def *def, void *void_impl)
    void *mem_ctx = ralloc_parent(impl);
 
    nir_ssa_undef_instr *undef =
-      nir_ssa_undef_instr_create(mem_ctx, def->num_components);
+      nir_ssa_undef_instr_create(mem_ctx, def->num_components,
+                                 def->bit_size);
    nir_instr_insert_before_cf_list(&impl->body, &undef->instr);
    nir_ssa_def_rewrite_uses(def, nir_src_for_ssa(&undef->def));
    return true;
@@ -746,6 +751,12 @@ nir_cf_extract(nir_cf_list *extracted, nir_cursor begin, nir_cursor end)
 {
    nir_block *block_begin, *block_end, *block_before, *block_after;
 
+   if (nir_cursors_equal(begin, end)) {
+      exec_list_make_empty(&extracted->list);
+      extracted->impl = NULL; /* we shouldn't need this */
+      return;
+   }
+
    /* In the case where begin points to an instruction in some basic block and
     * end points to the end of the same basic block, we rely on the fact that
     * splitting on an instruction moves earlier instructions into a new basic
@@ -784,6 +795,9 @@ void
 nir_cf_reinsert(nir_cf_list *cf_list, nir_cursor cursor)
 {
    nir_block *before, *after;
+
+   if (exec_list_is_empty(&cf_list->list))
+      return;
 
    split_block_cursor(cursor, &before, &after);
 

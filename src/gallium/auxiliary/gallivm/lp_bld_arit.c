@@ -1492,14 +1492,20 @@ lp_build_abs(struct lp_build_context *bld,
       return a;
 
    if(type.floating) {
-      /* Mask out the sign bit */
-      LLVMTypeRef int_vec_type = lp_build_int_vec_type(bld->gallivm, type);
-      unsigned long long absMask = ~(1ULL << (type.width - 1));
-      LLVMValueRef mask = lp_build_const_int_vec(bld->gallivm, type, ((unsigned long long) absMask));
-      a = LLVMBuildBitCast(builder, a, int_vec_type, "");
-      a = LLVMBuildAnd(builder, a, mask, "");
-      a = LLVMBuildBitCast(builder, a, vec_type, "");
-      return a;
+      if (0x0306 <= HAVE_LLVM && HAVE_LLVM < 0x0309) {
+         /* Workaround llvm.org/PR27332 */
+         LLVMTypeRef int_vec_type = lp_build_int_vec_type(bld->gallivm, type);
+         unsigned long long absMask = ~(1ULL << (type.width - 1));
+         LLVMValueRef mask = lp_build_const_int_vec(bld->gallivm, type, ((unsigned long long) absMask));
+         a = LLVMBuildBitCast(builder, a, int_vec_type, "");
+         a = LLVMBuildAnd(builder, a, mask, "");
+         a = LLVMBuildBitCast(builder, a, vec_type, "");
+         return a;
+      } else {
+         char intrinsic[32];
+         lp_format_intrinsic(intrinsic, sizeof intrinsic, "llvm.fabs", vec_type);
+         return lp_build_intrinsic_unary(builder, intrinsic, vec_type, a);
+      }
    }
 
    if(type.width*type.length == 128 && util_cpu_caps.has_ssse3) {
@@ -1668,99 +1674,6 @@ enum lp_build_round_mode
    LP_BUILD_ROUND_TRUNCATE = 3
 };
 
-/**
- * Helper for SSE4.1's ROUNDxx instructions.
- *
- * NOTE: In the SSE4.1's nearest mode, if two values are equally close, the
- * result is the even value.  That is, rounding 2.5 will be 2.0, and not 3.0.
- */
-static inline LLVMValueRef
-lp_build_round_sse41(struct lp_build_context *bld,
-                     LLVMValueRef a,
-                     enum lp_build_round_mode mode)
-{
-   LLVMBuilderRef builder = bld->gallivm->builder;
-   const struct lp_type type = bld->type;
-   LLVMTypeRef i32t = LLVMInt32TypeInContext(bld->gallivm->context);
-   const char *intrinsic;
-   LLVMValueRef res;
-
-   assert(type.floating);
-
-   assert(lp_check_value(type, a));
-   assert(util_cpu_caps.has_sse4_1);
-
-   if (type.length == 1) {
-      LLVMTypeRef vec_type;
-      LLVMValueRef undef;
-      LLVMValueRef args[3];
-      LLVMValueRef index0 = LLVMConstInt(i32t, 0, 0);
-
-      switch(type.width) {
-      case 32:
-         intrinsic = "llvm.x86.sse41.round.ss";
-         break;
-      case 64:
-         intrinsic = "llvm.x86.sse41.round.sd";
-         break;
-      default:
-         assert(0);
-         return bld->undef;
-      }
-
-      vec_type = LLVMVectorType(bld->elem_type, 4);
-
-      undef = LLVMGetUndef(vec_type);
-
-      args[0] = undef;
-      args[1] = LLVMBuildInsertElement(builder, undef, a, index0, "");
-      args[2] = LLVMConstInt(i32t, mode, 0);
-
-      res = lp_build_intrinsic(builder, intrinsic,
-                               vec_type, args, Elements(args), 0);
-
-      res = LLVMBuildExtractElement(builder, res, index0, "");
-   }
-   else {
-      if (type.width * type.length == 128) {
-         switch(type.width) {
-         case 32:
-            intrinsic = "llvm.x86.sse41.round.ps";
-            break;
-         case 64:
-            intrinsic = "llvm.x86.sse41.round.pd";
-            break;
-         default:
-            assert(0);
-            return bld->undef;
-         }
-      }
-      else {
-         assert(type.width * type.length == 256);
-         assert(util_cpu_caps.has_avx);
-
-         switch(type.width) {
-         case 32:
-            intrinsic = "llvm.x86.avx.round.ps.256";
-            break;
-         case 64:
-            intrinsic = "llvm.x86.avx.round.pd.256";
-            break;
-         default:
-            assert(0);
-            return bld->undef;
-         }
-      }
-
-      res = lp_build_intrinsic_binary(builder, intrinsic,
-                                      bld->vec_type, a,
-                                      LLVMConstInt(i32t, mode, 0));
-   }
-
-   return res;
-}
-
-
 static inline LLVMValueRef
 lp_build_iround_nearest_sse2(struct lp_build_context *bld,
                              LLVMValueRef a)
@@ -1856,8 +1769,34 @@ lp_build_round_arch(struct lp_build_context *bld,
                     LLVMValueRef a,
                     enum lp_build_round_mode mode)
 {
-   if (util_cpu_caps.has_sse4_1)
-     return lp_build_round_sse41(bld, a, mode);
+   if (util_cpu_caps.has_sse4_1) {
+      LLVMBuilderRef builder = bld->gallivm->builder;
+      const struct lp_type type = bld->type;
+      const char *intrinsic_root;
+      char intrinsic[32];
+
+      assert(type.floating);
+      assert(lp_check_value(type, a));
+      (void)type;
+
+      switch (mode) {
+      case LP_BUILD_ROUND_NEAREST:
+         intrinsic_root = "llvm.nearbyint";
+         break;
+      case LP_BUILD_ROUND_FLOOR:
+         intrinsic_root = "llvm.floor";
+         break;
+      case LP_BUILD_ROUND_CEIL:
+         intrinsic_root = "llvm.ceil";
+         break;
+      case LP_BUILD_ROUND_TRUNCATE:
+         intrinsic_root = "llvm.trunc";
+         break;
+      }
+
+      lp_format_intrinsic(intrinsic, sizeof intrinsic, intrinsic_root, bld->vec_type);
+      return lp_build_intrinsic_unary(builder, intrinsic, bld->vec_type, a);
+   }
    else /* (util_cpu_caps.has_altivec) */
      return lp_build_round_altivec(bld, a, mode);
 }
@@ -1999,7 +1938,7 @@ lp_build_floor(struct lp_build_context *bld,
 
       if (type.width != 32) {
          char intrinsic[32];
-         util_snprintf(intrinsic, sizeof intrinsic, "llvm.floor.v%uf%u", type.length, type.width);
+         lp_format_intrinsic(intrinsic, sizeof intrinsic, "llvm.floor", vec_type);
          return lp_build_intrinsic_unary(builder, intrinsic, vec_type, a);
       }
 
@@ -2074,7 +2013,7 @@ lp_build_ceil(struct lp_build_context *bld,
 
       if (type.width != 32) {
          char intrinsic[32];
-         util_snprintf(intrinsic, sizeof intrinsic, "llvm.ceil.v%uf%u", type.length, type.width);
+         lp_format_intrinsic(intrinsic, sizeof intrinsic, "llvm.ceil", vec_type);
          return lp_build_intrinsic_unary(builder, intrinsic, vec_type, a);
       }
 
@@ -2411,15 +2350,8 @@ lp_build_sqrt(struct lp_build_context *bld,
 
    assert(lp_check_value(type, a));
 
-   /* TODO: optimize the constant case */
-
    assert(type.floating);
-   if (type.length == 1) {
-      util_snprintf(intrinsic, sizeof intrinsic, "llvm.sqrt.f%u", type.width);
-   }
-   else {
-      util_snprintf(intrinsic, sizeof intrinsic, "llvm.sqrt.v%uf%u", type.length, type.width);
-   }
+   lp_format_intrinsic(intrinsic, sizeof intrinsic, "llvm.sqrt", vec_type);
 
    return lp_build_intrinsic_unary(builder, intrinsic, vec_type, a);
 }

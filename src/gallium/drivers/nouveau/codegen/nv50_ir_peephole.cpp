@@ -1635,11 +1635,10 @@ AlgebraicOpt::tryADDToMADOrSAD(Instruction *add, operation toOp)
    if (src->getUniqueInsn() && src->getUniqueInsn()->bb != add->bb)
       return false;
 
-   if (src->getInsn()->saturate)
+   if (src->getInsn()->saturate || src->getInsn()->postFactor ||
+       src->getInsn()->dnz)
       return false;
 
-   if (src->getInsn()->postFactor)
-      return false;
    if (toOp == OP_SAD) {
       ImmediateValue imm;
       if (!src->getInsn()->src(2).getImmediate(imm))
@@ -2825,7 +2824,7 @@ FlatteningPass::visit(BasicBlock *bb)
              !isSurfaceOp(insn->op) && // not confirmed
              insn->op != OP_LINTERP && // probably just nve4
              insn->op != OP_PINTERP && // probably just nve4
-             ((insn->op != OP_LOAD && insn->op != OP_STORE) ||
+             ((insn->op != OP_LOAD && insn->op != OP_STORE && insn->op != OP_ATOM) ||
               (typeSizeof(insn->dType) <= 4 && !insn->src(0).isIndirect(0))) &&
              !insn->isNop()) {
             insn->join = 1;

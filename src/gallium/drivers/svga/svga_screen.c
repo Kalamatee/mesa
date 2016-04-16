@@ -364,6 +364,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_PCI_BUS:
    case PIPE_CAP_PCI_DEVICE:
    case PIPE_CAP_PCI_FUNCTION:
+   case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
       return 0;
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return 64;
@@ -404,6 +405,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
    case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
+   case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
       return 0;
    }
 
@@ -837,6 +839,16 @@ svga_get_driver_query_info(struct pipe_screen *screen,
             PIPE_DRIVER_QUERY_TYPE_MICROSECONDS),
       QUERY("surface-write-flushes", SVGA_QUERY_SURFACE_WRITE_FLUSHES,
             PIPE_DRIVER_QUERY_TYPE_UINT64),
+      QUERY("num-readbacks", SVGA_QUERY_NUM_READBACKS,
+            PIPE_DRIVER_QUERY_TYPE_UINT64),
+      QUERY("num-resource-updates", SVGA_QUERY_NUM_RESOURCE_UPDATES,
+            PIPE_DRIVER_QUERY_TYPE_UINT64),
+      QUERY("num-buffer-uploads", SVGA_QUERY_NUM_BUFFER_UPLOADS,
+            PIPE_DRIVER_QUERY_TYPE_UINT64),
+      QUERY("num-const-buf-updates", SVGA_QUERY_NUM_CONST_BUF_UPDATES,
+            PIPE_DRIVER_QUERY_TYPE_UINT64),
+      QUERY("num-const-updates", SVGA_QUERY_NUM_CONST_UPDATES,
+            PIPE_DRIVER_QUERY_TYPE_UINT64),
 
       /* running total counters */
       QUERY("memory-used", SVGA_QUERY_MEMORY_USED,
@@ -989,8 +1001,10 @@ svga_screen_create(struct svga_winsys_screen *sws)
       svgascreen->max_color_buffers = SVGA3D_DX_MAX_RENDER_TARGETS;
 
       /* Multisample samples per pixel */
-      svgascreen->ms_samples =
-         get_uint_cap(sws, SVGA3D_DEVCAP_MULTISAMPLE_MASKABLESAMPLES, 0);
+      if (debug_get_bool_option("SVGA_MSAA", TRUE)) {
+         svgascreen->ms_samples =
+            get_uint_cap(sws, SVGA3D_DEVCAP_MULTISAMPLE_MASKABLESAMPLES, 0);
+      }
 
       /* Maximum number of constant buffers */
       svgascreen->max_const_buffers =

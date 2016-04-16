@@ -110,7 +110,6 @@ process_glsl_ir(gl_shader_stage stage,
                       SUB_TO_ADD_NEG |
                       EXP_TO_EXP2 |
                       LOG_TO_LOG2 |
-                      LDEXP_TO_ARITH |
                       CARRY_TO_ARITH |
                       BORROW_TO_ARITH);
 
@@ -260,6 +259,6 @@ brw_link_shader(struct gl_context *ctx, struct gl_shader_program *shProg)
    if (brw->precompile && !brw_shader_precompile(ctx, shProg))
       return false;
 
-   build_program_resource_list(shProg);
+   build_program_resource_list(ctx, shProg);
    return true;
 }

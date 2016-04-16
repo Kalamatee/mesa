@@ -74,7 +74,7 @@ emit_output_copies_block(nir_block *block, void *state)
 }
 
 void
-nir_lower_outputs_to_temporaries(nir_shader *shader)
+nir_lower_outputs_to_temporaries(nir_shader *shader, nir_function *entrypoint)
 {
    struct lower_outputs_state state;
 
@@ -97,6 +97,9 @@ nir_lower_outputs_to_temporaries(nir_shader *shader)
       /* Reparent the name to the new variable */
       ralloc_steal(output, output->name);
 
+      /* Reparent the constant initializer (if any) */
+      ralloc_steal(output, output->constant_initializer);
+
       /* Give the output a new name with @out-temp appended */
       temp->name = ralloc_asprintf(var, "%s@out-temp", output->name);
       temp->data.mode = nir_var_global;
@@ -114,7 +117,7 @@ nir_lower_outputs_to_temporaries(nir_shader *shader)
           * before each EmitVertex call.
           */
          nir_foreach_block(function->impl, emit_output_copies_block, &state);
-      } else if (strcmp(function->name, "main") == 0) {
+      } else if (function == entrypoint) {
          /* For all other shader types, we need to do the copies right before
           * the jumps to the end block.
           */

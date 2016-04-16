@@ -389,7 +389,7 @@ public:
    unsigned num_output_arrays;
 
    int num_address_regs;
-   int samplers_used;
+   uint32_t samplers_used;
    glsl_base_type sampler_types[PIPE_MAX_SAMPLERS];
    int sampler_targets[PIPE_MAX_SAMPLERS];   /**< One of TGSI_TEXTURE_* */
    int buffers_used;
@@ -3158,8 +3158,8 @@ void
 glsl_to_tgsi_visitor::visit_atomic_counter_intrinsic(ir_call *ir)
 {
    const char *callee = ir->callee->function_name();
-   ir_dereference *deref = static_cast<ir_dereference *>(
-      ir->actual_parameters.get_head());
+   exec_node *param = ir->actual_parameters.get_head();
+   ir_dereference *deref = static_cast<ir_dereference *>(param);
    ir_variable *location = deref->variable_referenced();
 
    st_src_reg buffer(
@@ -3188,17 +3188,56 @@ glsl_to_tgsi_visitor::visit_atomic_counter_intrinsic(ir_call *ir)
 
    if (!strcmp("__intrinsic_atomic_read", callee)) {
       inst = emit_asm(ir, TGSI_OPCODE_LOAD, dst, offset);
-      inst->buffer = buffer;
    } else if (!strcmp("__intrinsic_atomic_increment", callee)) {
       inst = emit_asm(ir, TGSI_OPCODE_ATOMUADD, dst, offset,
                       st_src_reg_for_int(1));
-      inst->buffer = buffer;
    } else if (!strcmp("__intrinsic_atomic_predecrement", callee)) {
       inst = emit_asm(ir, TGSI_OPCODE_ATOMUADD, dst, offset,
                       st_src_reg_for_int(-1));
-      inst->buffer = buffer;
       emit_asm(ir, TGSI_OPCODE_ADD, dst, this->result, st_src_reg_for_int(-1));
+   } else {
+      param = param->get_next();
+      ir_rvalue *val = ((ir_instruction *)param)->as_rvalue();
+      val->accept(this);
+
+      st_src_reg data = this->result, data2 = undef_src;
+      unsigned opcode;
+      if (!strcmp("__intrinsic_atomic_add", callee))
+         opcode = TGSI_OPCODE_ATOMUADD;
+      else if (!strcmp("__intrinsic_atomic_min", callee))
+         opcode = TGSI_OPCODE_ATOMIMIN;
+      else if (!strcmp("__intrinsic_atomic_max", callee))
+         opcode = TGSI_OPCODE_ATOMIMAX;
+      else if (!strcmp("__intrinsic_atomic_and", callee))
+         opcode = TGSI_OPCODE_ATOMAND;
+      else if (!strcmp("__intrinsic_atomic_or", callee))
+         opcode = TGSI_OPCODE_ATOMOR;
+      else if (!strcmp("__intrinsic_atomic_xor", callee))
+         opcode = TGSI_OPCODE_ATOMXOR;
+      else if (!strcmp("__intrinsic_atomic_exchange", callee))
+         opcode = TGSI_OPCODE_ATOMXCHG;
+      else if (!strcmp("__intrinsic_atomic_comp_swap", callee)) {
+         opcode = TGSI_OPCODE_ATOMCAS;
+         param = param->get_next();
+         val = ((ir_instruction *)param)->as_rvalue();
+         val->accept(this);
+         data2 = this->result;
+      } else if (!strcmp("__intrinsic_atomic_sub", callee)) {
+         opcode = TGSI_OPCODE_ATOMUADD;
+         st_src_reg res = get_temp(glsl_type::uvec4_type);
+         st_dst_reg dstres = st_dst_reg(res);
+         dstres.writemask = dst.writemask;
+         emit_asm(ir, TGSI_OPCODE_INEG, dstres, data);
+         data = res;
+      } else {
+         assert(!"Unexpected intrinsic");
+         return;
+      }
+
+      inst = emit_asm(ir, opcode, dst, offset, data, data2);
    }
+
+   inst->buffer = buffer;
 }
 
 void
@@ -3577,6 +3616,13 @@ glsl_to_tgsi_visitor::visit_image_intrinsic(ir_call *ir)
 
    inst->image_format = st_mesa_format_to_pipe_format(st_context(ctx),
          _mesa_get_shader_image_format(imgvar->data.image_format));
+
+   if (imgvar->data.image_coherent)
+      inst->buffer_access |= TGSI_MEMORY_COHERENT;
+   if (imgvar->data.image_restrict)
+      inst->buffer_access |= TGSI_MEMORY_RESTRICT;
+   if (imgvar->data.image_volatile)
+      inst->buffer_access |= TGSI_MEMORY_VOLATILE;
 }
 
 void
@@ -3591,7 +3637,16 @@ glsl_to_tgsi_visitor::visit(ir_call *ir)
    /* Filter out intrinsics */
    if (!strcmp("__intrinsic_atomic_read", callee) ||
        !strcmp("__intrinsic_atomic_increment", callee) ||
-       !strcmp("__intrinsic_atomic_predecrement", callee)) {
+       !strcmp("__intrinsic_atomic_predecrement", callee) ||
+       !strcmp("__intrinsic_atomic_add", callee) ||
+       !strcmp("__intrinsic_atomic_sub", callee) ||
+       !strcmp("__intrinsic_atomic_min", callee) ||
+       !strcmp("__intrinsic_atomic_max", callee) ||
+       !strcmp("__intrinsic_atomic_and", callee) ||
+       !strcmp("__intrinsic_atomic_or", callee) ||
+       !strcmp("__intrinsic_atomic_xor", callee) ||
+       !strcmp("__intrinsic_atomic_exchange", callee) ||
+       !strcmp("__intrinsic_atomic_comp_swap", callee)) {
       visit_atomic_counter_intrinsic(ir);
       return;
    }
@@ -4235,6 +4290,8 @@ glsl_to_tgsi_visitor::visit(ir_barrier *ir)
 
 glsl_to_tgsi_visitor::glsl_to_tgsi_visitor()
 {
+   STATIC_ASSERT(sizeof(samplers_used) * 8 >= PIPE_MAX_SAMPLERS);
+
    result.file = PROGRAM_UNDEFINED;
    next_temp = 1;
    array_sizes = NULL;
@@ -4291,7 +4348,7 @@ count_resources(glsl_to_tgsi_visitor *v, gl_program *prog)
       if (inst->info->is_tex) {
          for (int i = 0; i < inst->sampler_array_size; i++) {
             unsigned idx = inst->sampler_base + i;
-            v->samplers_used |= 1 << idx;
+            v->samplers_used |= 1u << idx;
 
             debug_assert(idx < (int)ARRAY_SIZE(v->sampler_types));
             v->sampler_types[idx] = inst->tex_type;
@@ -5135,43 +5192,72 @@ struct st_translate {
 };
 
 /** Map Mesa's SYSTEM_VALUE_x to TGSI_SEMANTIC_x */
-const unsigned _mesa_sysval_to_semantic[SYSTEM_VALUE_MAX] = {
-   /* Vertex shader
-    */
-   TGSI_SEMANTIC_VERTEXID,
-   TGSI_SEMANTIC_INSTANCEID,
-   TGSI_SEMANTIC_VERTEXID_NOBASE,
-   TGSI_SEMANTIC_BASEVERTEX,
-   TGSI_SEMANTIC_BASEINSTANCE,
-   TGSI_SEMANTIC_DRAWID,
+unsigned
+_mesa_sysval_to_semantic(unsigned sysval)
+{
+   switch (sysval) {
+   /* Vertex shader */
+   case SYSTEM_VALUE_VERTEX_ID:
+      return TGSI_SEMANTIC_VERTEXID;
+   case SYSTEM_VALUE_INSTANCE_ID:
+      return TGSI_SEMANTIC_INSTANCEID;
+   case SYSTEM_VALUE_VERTEX_ID_ZERO_BASE:
+      return TGSI_SEMANTIC_VERTEXID_NOBASE;
+   case SYSTEM_VALUE_BASE_VERTEX:
+      return TGSI_SEMANTIC_BASEVERTEX;
+   case SYSTEM_VALUE_BASE_INSTANCE:
+      return TGSI_SEMANTIC_BASEINSTANCE;
+   case SYSTEM_VALUE_DRAW_ID:
+      return TGSI_SEMANTIC_DRAWID;
 
-   /* Geometry shader
-    */
-   TGSI_SEMANTIC_INVOCATIONID,
+   /* Geometry shader */
+   case SYSTEM_VALUE_INVOCATION_ID:
+      return TGSI_SEMANTIC_INVOCATIONID;
 
-   /* Fragment shader
-    */
-   TGSI_SEMANTIC_POSITION,
-   TGSI_SEMANTIC_FACE,
-   TGSI_SEMANTIC_SAMPLEID,
-   TGSI_SEMANTIC_SAMPLEPOS,
-   TGSI_SEMANTIC_SAMPLEMASK,
-   TGSI_SEMANTIC_HELPER_INVOCATION,
+   /* Fragment shader */
+   case SYSTEM_VALUE_FRAG_COORD:
+      return TGSI_SEMANTIC_POSITION;
+   case SYSTEM_VALUE_FRONT_FACE:
+      return TGSI_SEMANTIC_FACE;
+   case SYSTEM_VALUE_SAMPLE_ID:
+      return TGSI_SEMANTIC_SAMPLEID;
+   case SYSTEM_VALUE_SAMPLE_POS:
+      return TGSI_SEMANTIC_SAMPLEPOS;
+   case SYSTEM_VALUE_SAMPLE_MASK_IN:
+      return TGSI_SEMANTIC_SAMPLEMASK;
+   case SYSTEM_VALUE_HELPER_INVOCATION:
+      return TGSI_SEMANTIC_HELPER_INVOCATION;
 
-   /* Tessellation shaders
-    */
-   TGSI_SEMANTIC_TESSCOORD,
-   TGSI_SEMANTIC_VERTICESIN,
-   TGSI_SEMANTIC_PRIMID,
-   TGSI_SEMANTIC_TESSOUTER,
-   TGSI_SEMANTIC_TESSINNER,
+   /* Tessellation shader */
+   case SYSTEM_VALUE_TESS_COORD:
+      return TGSI_SEMANTIC_TESSCOORD;
+   case SYSTEM_VALUE_VERTICES_IN:
+      return TGSI_SEMANTIC_VERTICESIN;
+   case SYSTEM_VALUE_PRIMITIVE_ID:
+      return TGSI_SEMANTIC_PRIMID;
+   case SYSTEM_VALUE_TESS_LEVEL_OUTER:
+      return TGSI_SEMANTIC_TESSOUTER;
+   case SYSTEM_VALUE_TESS_LEVEL_INNER:
+      return TGSI_SEMANTIC_TESSINNER;
 
-   /* Compute shaders
-    */
-   TGSI_SEMANTIC_THREAD_ID,
-   TGSI_SEMANTIC_BLOCK_ID,
-   TGSI_SEMANTIC_GRID_SIZE,
-};
+   /* Compute shader */
+   case SYSTEM_VALUE_LOCAL_INVOCATION_ID:
+      return TGSI_SEMANTIC_THREAD_ID;
+   case SYSTEM_VALUE_WORK_GROUP_ID:
+      return TGSI_SEMANTIC_BLOCK_ID;
+   case SYSTEM_VALUE_NUM_WORK_GROUPS:
+      return TGSI_SEMANTIC_GRID_SIZE;
+
+   /* Unhandled */
+   case SYSTEM_VALUE_LOCAL_INVOCATION_INDEX:
+   case SYSTEM_VALUE_GLOBAL_INVOCATION_ID:
+   case SYSTEM_VALUE_VERTEX_CNT:
+   default:
+      assert(!"Unexpected SYSTEM_VALUE_ enum");
+      return TGSI_SEMANTIC_COUNT;
+   }
+}
+
 
 /**
  * Make note of a branch to a label in the TGSI code.
@@ -5524,7 +5610,7 @@ compile_tgsi_instruction(struct st_translate *t,
 
    int num_dst;
    int num_src;
-   unsigned tex_target;
+   unsigned tex_target = 0;
 
    num_dst = num_inst_dst_regs(inst);
    num_src = num_inst_src_regs(inst);
@@ -5599,32 +5685,38 @@ compile_tgsi_instruction(struct st_translate *t,
       for (i = num_src - 1; i >= 0; i--)
          src[i + 1] = src[i];
       num_src++;
-      if (inst->buffer.file == PROGRAM_MEMORY)
+      if (inst->buffer.file == PROGRAM_MEMORY) {
          src[0] = t->shared_memory;
-      else if (inst->buffer.file == PROGRAM_BUFFER)
+      } else if (inst->buffer.file == PROGRAM_BUFFER) {
          src[0] = t->buffers[inst->buffer.index];
-      else
+      } else {
          src[0] = t->images[inst->buffer.index];
+         tex_target = st_translate_texture_target(inst->tex_target, inst->tex_shadow);
+      }
       if (inst->buffer.reladdr)
          src[0] = ureg_src_indirect(src[0], ureg_src(t->address[2]));
       assert(src[0].File != TGSI_FILE_NULL);
       ureg_memory_insn(ureg, inst->op, dst, num_dst, src, num_src,
-                       inst->buffer_access);
+                       inst->buffer_access,
+                       tex_target, inst->image_format);
       break;
 
    case TGSI_OPCODE_STORE:
-      if (inst->buffer.file == PROGRAM_MEMORY)
+      if (inst->buffer.file == PROGRAM_MEMORY) {
          dst[0] = ureg_dst(t->shared_memory);
-      else if (inst->buffer.file == PROGRAM_BUFFER)
+      } else if (inst->buffer.file == PROGRAM_BUFFER) {
          dst[0] = ureg_dst(t->buffers[inst->buffer.index]);
-      else
+      } else {
          dst[0] = ureg_dst(t->images[inst->buffer.index]);
+         tex_target = st_translate_texture_target(inst->tex_target, inst->tex_shadow);
+      }
       dst[0] = ureg_writemask(dst[0], inst->dst[0].writemask);
       if (inst->buffer.reladdr)
          dst[0] = ureg_dst_indirect(dst[0], ureg_src(t->address[2]));
       assert(dst[0].File != TGSI_FILE_NULL);
       ureg_memory_insn(ureg, inst->op, dst, num_dst, src, num_src,
-                       inst->buffer_access);
+                       inst->buffer_access,
+                       tex_target, inst->image_format);
       break;
 
    case TGSI_OPCODE_SCS:
@@ -5874,6 +5966,20 @@ find_array(unsigned attr, struct array_decl *arrays, unsigned count,
    return false;
 }
 
+static void
+emit_compute_block_size(const struct gl_program *program,
+                        struct ureg_program *ureg) {
+   const struct gl_compute_program *cp =
+      (const struct gl_compute_program *)program;
+
+   ureg_property(ureg, TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH,
+                       cp->LocalSize[0]);
+   ureg_property(ureg, TGSI_PROPERTY_CS_FIXED_BLOCK_HEIGHT,
+                       cp->LocalSize[1]);
+   ureg_property(ureg, TGSI_PROPERTY_CS_FIXED_BLOCK_DEPTH,
+                       cp->LocalSize[2]);
+}
+
 /**
  * Translate intermediate IR (glsl_to_tgsi_instruction) to TGSI format.
  * \param program  the program to translate
@@ -5922,35 +6028,6 @@ st_translate_program(
 
    assert(numInputs <= ARRAY_SIZE(t->inputs));
    assert(numOutputs <= ARRAY_SIZE(t->outputs));
-
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_FRONT_FACE] ==
-          TGSI_SEMANTIC_FACE);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_VERTEX_ID] ==
-          TGSI_SEMANTIC_VERTEXID);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_INSTANCE_ID] ==
-          TGSI_SEMANTIC_INSTANCEID);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_SAMPLE_ID] ==
-          TGSI_SEMANTIC_SAMPLEID);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_SAMPLE_POS] ==
-          TGSI_SEMANTIC_SAMPLEPOS);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_SAMPLE_MASK_IN] ==
-          TGSI_SEMANTIC_SAMPLEMASK);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_INVOCATION_ID] ==
-          TGSI_SEMANTIC_INVOCATIONID);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_VERTEX_ID_ZERO_BASE] ==
-          TGSI_SEMANTIC_VERTEXID_NOBASE);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_BASE_VERTEX] ==
-          TGSI_SEMANTIC_BASEVERTEX);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_TESS_COORD] ==
-          TGSI_SEMANTIC_TESSCOORD);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_HELPER_INVOCATION] ==
-          TGSI_SEMANTIC_HELPER_INVOCATION);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_LOCAL_INVOCATION_ID] ==
-          TGSI_SEMANTIC_THREAD_ID);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_WORK_GROUP_ID] ==
-          TGSI_SEMANTIC_BLOCK_ID);
-   assert(_mesa_sysval_to_semantic[SYSTEM_VALUE_NUM_WORK_GROUPS] ==
-          TGSI_SEMANTIC_GRID_SIZE);
 
    t = CALLOC_STRUCT(st_translate);
    if (!t) {
@@ -6060,6 +6137,9 @@ st_translate_program(
    }
 
    if (procType == TGSI_PROCESSOR_FRAGMENT) {
+      if (program->shader->EarlyFragmentTests)
+         ureg_property(ureg, TGSI_PROPERTY_FS_EARLY_DEPTH_STENCIL, 1);
+
       if (proginfo->InputsRead & VARYING_BIT_POS) {
           /* Must do this after setting up t->inputs. */
           emit_wpos(st_context(ctx), t, proginfo, ureg,
@@ -6116,6 +6196,10 @@ st_translate_program(
       }
    }
 
+   if (procType == TGSI_PROCESSOR_COMPUTE) {
+      emit_compute_block_size(proginfo, ureg);
+   }
+
    /* Declare address register.
     */
    if (program->num_address_regs > 0) {
@@ -6131,7 +6215,7 @@ st_translate_program(
 
       for (i = 0; sysInputs; i++) {
          if (sysInputs & (1 << i)) {
-            unsigned semName = _mesa_sysval_to_semantic[i];
+            unsigned semName = _mesa_sysval_to_semantic(i);
 
             t->systemValues[i] = ureg_DECL_system_value(ureg, semName, 0);
 
@@ -6243,7 +6327,7 @@ st_translate_program(
 
    /* texture samplers */
    for (i = 0; i < frag_const->MaxTextureImageUnits; i++) {
-      if (program->samplers_used & (1 << i)) {
+      if (program->samplers_used & (1u << i)) {
          unsigned type;
 
          t->samplers[i] = ureg_DECL_sampler(ureg, i);
@@ -6281,7 +6365,7 @@ st_translate_program(
    }
 
    if (program->use_shared_memory)
-      t->shared_memory = ureg_DECL_shared_memory(ureg);
+      t->shared_memory = ureg_DECL_memory(ureg, TGSI_MEMORY_TYPE_SHARED);
 
    for (i = 0; i < program->shader->NumImages; i++) {
       if (program->images_used & (1 << i)) {
@@ -6304,6 +6388,42 @@ st_translate_program(
    for (i = 0; i < t->labels_count; i++) {
       ureg_fixup_label(ureg, t->labels[i].token,
                        t->insn[t->labels[i].branch_target]);
+   }
+
+   /* Set the next shader stage hint for VS and TES. */
+   switch (procType) {
+   case TGSI_PROCESSOR_VERTEX:
+   case TGSI_PROCESSOR_TESS_EVAL:
+      if (program->shader_program->SeparateShader)
+         break;
+
+      for (i = program->shader->Stage+1; i <= MESA_SHADER_FRAGMENT; i++) {
+         if (program->shader_program->_LinkedShaders[i]) {
+            unsigned next;
+
+            switch (i) {
+            case MESA_SHADER_TESS_CTRL:
+               next = TGSI_PROCESSOR_TESS_CTRL;
+               break;
+            case MESA_SHADER_TESS_EVAL:
+               next = TGSI_PROCESSOR_TESS_EVAL;
+               break;
+            case MESA_SHADER_GEOMETRY:
+               next = TGSI_PROCESSOR_GEOMETRY;
+               break;
+            case MESA_SHADER_FRAGMENT:
+               next = TGSI_PROCESSOR_FRAGMENT;
+               break;
+            default:
+               assert(0);
+               continue;
+            }
+
+            ureg_set_next_shader_processor(ureg, next);
+            break;
+         }
+      }
+      break;
    }
 
 out:
@@ -6711,7 +6831,7 @@ st_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       validate_ir_tree(ir);
    }
 
-   build_program_resource_list(prog);
+   build_program_resource_list(ctx, prog);
 
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
       struct gl_program *linked_prog;
@@ -6761,7 +6881,7 @@ st_translate_stream_output_info(glsl_to_tgsi_visitor *glsl_to_tgsi,
    }
 
    for (i = 0; i < PIPE_MAX_SO_BUFFERS; i++) {
-      so->stride[i] = info->BufferStride[i];
+      so->stride[i] = info->Buffers[i].Stride;
    }
    so->num_outputs = info->NumOutputs;
 }

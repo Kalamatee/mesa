@@ -56,15 +56,18 @@ nvc0_validate_zcull(struct nvc0_context *nvc0)
 #endif
 
 static inline void
-nvc0_fb_set_null_rt(struct nouveau_pushbuf *push, unsigned i)
+nvc0_fb_set_null_rt(struct nouveau_pushbuf *push, unsigned i, unsigned layers)
 {
-   BEGIN_NVC0(push, NVC0_3D(RT_ADDRESS_HIGH(i)), 6);
+   BEGIN_NVC0(push, NVC0_3D(RT_ADDRESS_HIGH(i)), 9);
    PUSH_DATA (push, 0);
    PUSH_DATA (push, 0);
-   PUSH_DATA (push, 64);
-   PUSH_DATA (push, 0);
-   PUSH_DATA (push, 0);
-   PUSH_DATA (push, 0);
+   PUSH_DATA (push, 64);     // width
+   PUSH_DATA (push, 0);      // height
+   PUSH_DATA (push, 0);      // format
+   PUSH_DATA (push, 0);      // tile mode
+   PUSH_DATA (push, layers); // layers
+   PUSH_DATA (push, 0);      // layer stride
+   PUSH_DATA (push, 0);      // base layer
 }
 
 static void
@@ -72,14 +75,14 @@ nvc0_validate_fb(struct nvc0_context *nvc0)
 {
     struct nouveau_pushbuf *push = nvc0->base.pushbuf;
     struct pipe_framebuffer_state *fb = &nvc0->framebuffer;
+    struct nvc0_screen *screen = nvc0->screen;
     unsigned i, ms;
     unsigned ms_mode = NVC0_3D_MULTISAMPLE_MODE_MS1;
+    unsigned nr_cbufs = fb->nr_cbufs;
     bool serialize = false;
 
     nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_FB);
 
-    BEGIN_NVC0(push, NVC0_3D(RT_CONTROL), 1);
-    PUSH_DATA (push, (076543210 << 4) | fb->nr_cbufs);
     BEGIN_NVC0(push, NVC0_3D(SCREEN_SCISSOR_HORIZ), 2);
     PUSH_DATA (push, fb->width << 16);
     PUSH_DATA (push, fb->height << 16);
@@ -90,7 +93,7 @@ nvc0_validate_fb(struct nvc0_context *nvc0)
         struct nouveau_bo *bo;
 
         if (!fb->cbufs[i]) {
-           nvc0_fb_set_null_rt(push, i);
+           nvc0_fb_set_null_rt(push, i, 0);
            continue;
         }
 
@@ -178,15 +181,28 @@ nvc0_validate_fb(struct nvc0_context *nvc0)
         PUSH_DATA (push, 0);
     }
 
+    if (nr_cbufs == 0 && !fb->zsbuf) {
+       assert(util_is_power_of_two(fb->samples));
+       assert(fb->samples <= 8);
+
+       nvc0_fb_set_null_rt(push, 0, fb->layers);
+
+       if (fb->samples > 1)
+          ms_mode = ffs(fb->samples) - 1;
+       nr_cbufs = 1;
+    }
+
+    BEGIN_NVC0(push, NVC0_3D(RT_CONTROL), 1);
+    PUSH_DATA (push, (076543210 << 4) | nr_cbufs);
     IMMED_NVC0(push, NVC0_3D(MULTISAMPLE_MODE), ms_mode);
 
     ms = 1 << ms_mode;
     BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
     PUSH_DATA (push, 1024);
-    PUSH_DATAh(push, nvc0->screen->uniform_bo->offset + (6 << 16) + (4 << 10));
-    PUSH_DATA (push, nvc0->screen->uniform_bo->offset + (6 << 16) + (4 << 10));
+    PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(4));
+    PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(4));
     BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 2 * ms);
-    PUSH_DATA (push, 256 + 128);
+    PUSH_DATA (push, NVC0_CB_AUX_SAMPLE_INFO);
     for (i = 0; i < ms; i++) {
        float xy[2];
        nvc0->base.pipe.get_sample_position(&nvc0->base.pipe, ms, i, xy);
@@ -313,14 +329,14 @@ static inline void
 nvc0_upload_uclip_planes(struct nvc0_context *nvc0, unsigned s)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   struct nouveau_bo *bo = nvc0->screen->uniform_bo;
+   struct nvc0_screen *screen = nvc0->screen;
 
    BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
    PUSH_DATA (push, 1024);
-   PUSH_DATAh(push, bo->offset + (6 << 16) + (s << 10));
-   PUSH_DATA (push, bo->offset + (6 << 16) + (s << 10));
+   PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
+   PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
    BEGIN_1IC0(push, NVC0_3D(CB_POS), PIPE_MAX_CLIP_PLANES * 4 + 1);
-   PUSH_DATA (push, 256);
+   PUSH_DATA (push, NVC0_CB_AUX_UCP_INFO);
    PUSH_DATAp(push, &nvc0->clip.ucp[0][0], PIPE_MAX_CLIP_PLANES * 4);
 }
 
@@ -424,7 +440,7 @@ nvc0_constbufs_validate(struct nvc0_context *nvc0)
 
          if (nvc0->constbuf[s][i].user) {
             struct nouveau_bo *bo = nvc0->screen->uniform_bo;
-            const unsigned base = s << 16;
+            const unsigned base = NVC0_CB_USR_INFO(s);
             const unsigned size = nvc0->constbuf[s][0].size;
             assert(i == 0); /* we really only want OpenGL uniforms here */
             assert(nvc0->constbuf[s][0].u.data);
@@ -478,15 +494,16 @@ static void
 nvc0_validate_buffers(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
+   struct nvc0_screen *screen = nvc0->screen;
    int i, s;
 
    for (s = 0; s < 5; s++) {
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
       PUSH_DATA (push, 1024);
-      PUSH_DATAh(push, nvc0->screen->uniform_bo->offset + (6 << 16) + (s << 10));
-      PUSH_DATA (push, nvc0->screen->uniform_bo->offset + (6 << 16) + (s << 10));
+      PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
+      PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
       BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 4 * NVC0_MAX_BUFFERS);
-      PUSH_DATA (push, 512);
+      PUSH_DATA (push, NVC0_CB_AUX_BUF_INFO(0));
       for (i = 0; i < NVC0_MAX_BUFFERS; i++) {
          if (nvc0->buffers[s][i].buffer) {
             struct nv04_resource *res =
@@ -550,8 +567,8 @@ nvc0_validate_driverconst(struct nvc0_context *nvc0)
    for (i = 0; i < 5; ++i) {
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
       PUSH_DATA (push, 1024);
-      PUSH_DATAh(push, screen->uniform_bo->offset + (6 << 16) + (i << 10));
-      PUSH_DATA (push, screen->uniform_bo->offset + (6 << 16) + (i << 10));
+      PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(i));
+      PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(i));
       BEGIN_NVC0(push, NVC0_3D(CB_BIND(i)), 1);
       PUSH_DATA (push, (15 << 4) | 1);
    }
@@ -590,8 +607,9 @@ nvc0_validate_derived_2(struct nvc0_context *nvc0)
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
 
    if (nvc0->zsa && nvc0->zsa->pipe.alpha.enabled &&
+       nvc0->framebuffer.zsbuf &&
        nvc0->framebuffer.nr_cbufs == 0) {
-      nvc0_fb_set_null_rt(push, 0);
+      nvc0_fb_set_null_rt(push, 0, 0);
       BEGIN_NVC0(push, NVC0_3D(RT_CONTROL), 1);
       PUSH_DATA (push, (076543210 << 4) | 1);
    }

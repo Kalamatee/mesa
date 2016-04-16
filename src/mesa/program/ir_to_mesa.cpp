@@ -2356,7 +2356,7 @@ add_uniform_to_shader::visit_field(const glsl_type *type, const char *name,
       file = PROGRAM_UNIFORM;
    }
 
-   int index = _mesa_lookup_parameter_index(params, -1, name);
+   int index = _mesa_lookup_parameter_index(params, name);
    if (index < 0) {
       index = _mesa_add_parameter(params, file, name, size, type->gl_type,
 				  NULL, NULL);
@@ -2976,7 +2976,7 @@ _mesa_ir_link_shader(struct gl_context *ctx, struct gl_shader_program *prog)
       _mesa_reference_program(ctx, &linked_prog, NULL);
    }
 
-   build_program_resource_list(prog);
+   build_program_resource_list(ctx, prog);
    return prog->LinkStatus;
 }
 

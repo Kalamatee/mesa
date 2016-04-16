@@ -456,6 +456,13 @@ nvc0_fp_gen_header(struct nvc0_program *fp, struct nv50_ir_prog_info *info)
          fp->hdr[18] |= 0xf << info->out[i].slot[0];
    }
 
+   /* There are no "regular" attachments, but the shader still needs to be
+    * executed. It seems like it wants to think that it has some color
+    * outputs in order to actually run.
+    */
+   if (info->prop.fp.numColourResults == 0 && !info->prop.fp.writesDepth)
+      fp->hdr[18] |= 0xf;
+
    fp->fp.early_z = info->prop.fp.earlyFragTests;
 
    return 0;
@@ -535,31 +542,29 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
 
    info->io.genUserClip = prog->vp.num_ucps;
    info->io.auxCBSlot = 15;
-   info->io.ucpBase = 256;
-   info->io.drawInfoBase = 256 + 128;
+   info->io.ucpBase = NVC0_CB_AUX_UCP_INFO;
+   info->io.drawInfoBase = NVC0_CB_AUX_DRAW_INFO;
 
    if (prog->type == PIPE_SHADER_COMPUTE) {
       if (chipset >= NVISA_GK104_CHIPSET) {
-         info->io.resInfoCBSlot = 0;
-         info->io.texBindBase = NVE4_CP_INPUT_TEX(0);
-         info->io.suInfoBase = NVE4_CP_INPUT_SUF(0);
-         info->prop.cp.gridInfoBase = NVE4_CP_INPUT_GRID_INFO(0);
-      } else {
-         info->io.resInfoCBSlot = 15;
-         info->io.suInfoBase = 512;
+         info->io.auxCBSlot = 7;
+         info->io.texBindBase = NVC0_CB_AUX_TEX_INFO(0);
+         info->prop.cp.gridInfoBase = NVC0_CB_AUX_GRID_INFO;
+         info->io.uboInfoBase = NVC0_CB_AUX_UBO_INFO(0);
       }
       info->io.msInfoCBSlot = 0;
-      info->io.msInfoBase = NVE4_CP_INPUT_MS_OFFSETS;
+      info->io.msInfoBase = NVC0_CB_AUX_MS_INFO;
+      info->io.bufInfoBase = NVC0_CB_AUX_BUF_INFO(0);
+      info->io.suInfoBase = 0; /* TODO */
    } else {
       if (chipset >= NVISA_GK104_CHIPSET) {
-         info->io.texBindBase = 0x20;
-         info->io.suInfoBase = 0; /* TODO */
+         info->io.texBindBase = NVC0_CB_AUX_TEX_INFO(0);
       }
-      info->io.resInfoCBSlot = 15;
-      info->io.sampleInfoBase = 256 + 128;
-      info->io.suInfoBase = 512;
+      info->io.sampleInfoBase = NVC0_CB_AUX_SAMPLE_INFO;
+      info->io.bufInfoBase = NVC0_CB_AUX_BUF_INFO(0);
       info->io.msInfoCBSlot = 15;
       info->io.msInfoBase = 0; /* TODO */
+      info->io.suInfoBase = 0; /* TODO */
    }
 
    info->assignSlots = nvc0_program_assign_varying_slots;

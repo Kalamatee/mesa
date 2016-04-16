@@ -43,9 +43,6 @@
 
 static const struct debug_named_value r600_debug_options[] = {
 	/* features */
-#if defined(R600_USE_LLVM)
-	{ "llvm", DBG_LLVM, "Enable the LLVM shader compiler" },
-#endif
 	{ "nocpdma", DBG_NO_CP_DMA, "Disable CP DMA" },
 
 	/* shader backend */
@@ -187,9 +184,7 @@ static struct pipe_context *r600_create_context(struct pipe_screen *screen,
 	}
 
 	rctx->b.gfx.cs = ws->cs_create(rctx->b.ctx, RING_GFX,
-				       r600_context_gfx_flush, rctx,
-				       rscreen->b.trace_bo ?
-					       rscreen->b.trace_bo->buf : NULL);
+				       r600_context_gfx_flush, rctx);
 	rctx->b.gfx.flush = r600_context_gfx_flush;
 
 	rctx->allocator_fetch_shader = u_suballocator_create(&rctx->b.b, 64 * 1024, 256,
@@ -286,6 +281,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_INVALIDATE_BUFFER:
 	case PIPE_CAP_SURFACE_REINTERPRET_BLOCKS:
 	case PIPE_CAP_QUERY_MEMORY_INFO:
+	case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
 		return 1;
 
 	case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
@@ -369,6 +365,7 @@ static int r600_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_GENERATE_MIPMAP:
 	case PIPE_CAP_STRING_MARKER:
 	case PIPE_CAP_QUERY_BUFFER_OBJECT:
+	case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
 		return 0;
 
 	case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
@@ -504,7 +501,7 @@ static int r600_get_shader_param(struct pipe_screen* pscreen, unsigned shader, e
 	case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
 		if (shader == PIPE_SHADER_COMPUTE) {
 			uint64_t max_const_buffer_size;
-			pscreen->get_compute_param(pscreen,
+			pscreen->get_compute_param(pscreen, PIPE_SHADER_IR_TGSI,
 				PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE,
 				&max_const_buffer_size);
 			return max_const_buffer_size;
@@ -622,8 +619,6 @@ struct pipe_screen *r600_screen_create(struct radeon_winsys *ws)
 		rscreen->b.debug_flags |= DBG_FS | DBG_VS | DBG_GS | DBG_PS | DBG_CS | DBG_TCS | DBG_TES;
 	if (!debug_get_bool_option("R600_HYPERZ", TRUE))
 		rscreen->b.debug_flags |= DBG_NO_HYPERZ;
-	if (debug_get_bool_option("R600_LLVM", FALSE))
-		rscreen->b.debug_flags |= DBG_LLVM;
 
 	if (rscreen->b.family == CHIP_UNKNOWN) {
 		fprintf(stderr, "r600: Unknown chipset 0x%04X\n", rscreen->b.info.pci_id);

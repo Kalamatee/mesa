@@ -63,7 +63,8 @@ lower_instr(nir_intrinsic_instr *instr,
    }
 
    if (instr->variables[0]->var->data.mode != nir_var_uniform &&
-       instr->variables[0]->var->data.mode != nir_var_shader_storage)
+       instr->variables[0]->var->data.mode != nir_var_shader_storage &&
+       instr->variables[0]->var->data.mode != nir_var_shared)
       return; /* atomics passed as function arguments can't be lowered */
 
    void *mem_ctx = ralloc_parent(instr);
@@ -73,8 +74,9 @@ lower_instr(nir_intrinsic_instr *instr,
    nir_intrinsic_set_base(new_instr,
       state->shader_program->UniformStorage[uniform_loc].opaque[state->shader->stage].index);
 
-   nir_load_const_instr *offset_const = nir_load_const_instr_create(mem_ctx, 1);
-   offset_const->value.u[0] = instr->variables[0]->var->data.offset;
+   nir_load_const_instr *offset_const =
+      nir_load_const_instr_create(mem_ctx, 1, 32);
+   offset_const->value.u32[0] = instr->variables[0]->var->data.offset;
 
    nir_instr_insert_before(&instr->instr, &offset_const->instr);
 
@@ -89,17 +91,17 @@ lower_instr(nir_intrinsic_instr *instr,
       unsigned child_array_elements = tail->child != NULL ?
          glsl_get_aoa_size(tail->type) : 1;
 
-      offset_const->value.u[0] += deref_array->base_offset *
+      offset_const->value.u32[0] += deref_array->base_offset *
          child_array_elements * ATOMIC_COUNTER_SIZE;
 
       if (deref_array->deref_array_type == nir_deref_array_type_indirect) {
          nir_load_const_instr *atomic_counter_size =
-               nir_load_const_instr_create(mem_ctx, 1);
-         atomic_counter_size->value.u[0] = child_array_elements * ATOMIC_COUNTER_SIZE;
+            nir_load_const_instr_create(mem_ctx, 1, 32);
+         atomic_counter_size->value.u32[0] = child_array_elements * ATOMIC_COUNTER_SIZE;
          nir_instr_insert_before(&instr->instr, &atomic_counter_size->instr);
 
          nir_alu_instr *mul = nir_alu_instr_create(mem_ctx, nir_op_imul);
-         nir_ssa_dest_init(&mul->instr, &mul->dest.dest, 1, NULL);
+         nir_ssa_dest_init(&mul->instr, &mul->dest.dest, 1, 32, NULL);
          mul->dest.write_mask = 0x1;
          nir_src_copy(&mul->src[0].src, &deref_array->indirect, mul);
          mul->src[1].src.is_ssa = true;
@@ -107,7 +109,7 @@ lower_instr(nir_intrinsic_instr *instr,
          nir_instr_insert_before(&instr->instr, &mul->instr);
 
          nir_alu_instr *add = nir_alu_instr_create(mem_ctx, nir_op_iadd);
-         nir_ssa_dest_init(&add->instr, &add->dest.dest, 1, NULL);
+         nir_ssa_dest_init(&add->instr, &add->dest.dest, 1, 32, NULL);
          add->dest.write_mask = 0x1;
          add->src[0].src.is_ssa = true;
          add->src[0].src.ssa = &mul->dest.dest.ssa;
@@ -124,7 +126,7 @@ lower_instr(nir_intrinsic_instr *instr,
 
    if (instr->dest.is_ssa) {
       nir_ssa_dest_init(&new_instr->instr, &new_instr->dest,
-                        instr->dest.ssa.num_components, NULL);
+                        instr->dest.ssa.num_components, 32, NULL);
       nir_ssa_def_rewrite_uses(&instr->dest.ssa,
                                nir_src_for_ssa(&new_instr->dest.ssa));
    } else {

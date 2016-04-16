@@ -2095,7 +2095,7 @@ after lookup.
 .. opcode:: SAMPLE
 
   Using provided address, sample data from the specified texture using the
-  filtering mode identified by the gven sampler. The source data may come from
+  filtering mode identified by the given sampler. The source data may come from
   any resource type other than buffers.
 
   Syntax: ``SAMPLE dst, address, sampler_view, sampler``
@@ -2710,7 +2710,7 @@ TGSI_SEMANTIC_COLOR
 """""""""""""""""""
 
 For vertex shader outputs or fragment shader inputs/outputs, this
-label indicates that the resister contains an R,G,B,A color.
+label indicates that the register contains an R,G,B,A color.
 
 Several shader inputs/outputs may contain colors so the semantic index
 is used to distinguish them.  For example, color[0] may be the diffuse
@@ -3206,6 +3206,26 @@ NUM_CULLDIST_ENABLED
 
 How many cull distance scalar outputs are enabled.
 
+FS_EARLY_DEPTH_STENCIL
+""""""""""""""""""""""
+
+Whether depth test, stencil test, and occlusion query should run before
+the fragment shader (regardless of fragment shader side effects). Corresponds
+to GLSL early_fragment_tests.
+
+NEXT_SHADER
+"""""""""""
+
+Which shader stage will MOST LIKELY follow after this shader when the shader
+is bound. This is only a hint to the driver and doesn't have to be precise.
+Only set for VS and TES.
+
+TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH / HEIGHT / DEPTH
+"""""""""""""""""""""""""""""""""""""""""""""""""""
+
+Threads per block in each dimension, if known at compile time. If the block size
+is known all three should be at least 1. If it is unknown they should all be set
+to 0 or not set.
 
 Texture Sampling and Texture Formats
 ------------------------------------

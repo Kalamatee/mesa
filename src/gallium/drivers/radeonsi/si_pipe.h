@@ -76,7 +76,6 @@
 #define SI_IS_TRACE_POINT(x)		(((x) & 0xcafe0000) == 0xcafe0000)
 #define SI_GET_TRACE_POINT_ID(x)	((x) & 0xffff)
 
-#define SI_MAX_VIEWPORTS	16
 #define SI_MAX_BORDER_COLORS	4096
 
 struct si_compute;
@@ -137,7 +136,13 @@ struct si_cs_shader_state {
 
 struct si_textures_info {
 	struct si_sampler_views		views;
-	uint32_t			depth_texture_mask; /* which textures are depth */
+	uint64_t			depth_texture_mask; /* which textures are depth */
+	uint64_t			compressed_colortex_mask;
+};
+
+struct si_images_info {
+	struct si_descriptors		desc;
+	struct pipe_image_view		views[SI_NUM_IMAGES];
 	uint32_t			compressed_colortex_mask;
 };
 
@@ -165,18 +170,6 @@ struct si_clip_state {
 struct si_sample_mask {
 	struct r600_atom	atom;
 	uint16_t		sample_mask;
-};
-
-struct si_scissors {
-	struct r600_atom		atom;
-	unsigned			dirty_mask;
-	struct pipe_scissor_state	states[SI_MAX_VIEWPORTS];
-};
-
-struct si_viewports {
-	struct r600_atom		atom;
-	unsigned			dirty_mask;
-	struct pipe_viewport_state	states[SI_MAX_VIEWPORTS];
 };
 
 /* A shader state consists of the shader selector, which is a constant state
@@ -222,8 +215,6 @@ struct si_context {
 	struct r600_atom		clip_regs;
 	struct si_clip_state		clip_state;
 	struct si_shader_data		shader_userdata;
-	struct si_scissors		scissors;
-	struct si_viewports		viewports;
 	struct si_stencil_ref		stencil_ref;
 	struct r600_atom		spi_map;
 
@@ -250,7 +241,9 @@ struct si_context {
 	struct si_descriptors		vertex_buffers;
 	struct si_buffer_resources	const_buffers[SI_NUM_SHADERS];
 	struct si_buffer_resources	rw_buffers[SI_NUM_SHADERS];
+	struct si_buffer_resources	shader_buffers[SI_NUM_SHADERS];
 	struct si_textures_info		samplers[SI_NUM_SHADERS];
+	struct si_images_info		images[SI_NUM_SHADERS];
 
 	/* other shader resources */
 	struct pipe_constant_buffer	null_const_buf; /* used for set_constant_buffer(NULL) on CIK */
@@ -282,6 +275,7 @@ struct si_context {
 	bool			db_stencil_clear;
 	bool			db_stencil_disable_expclear;
 	unsigned		ps_db_shader_control;
+	bool			occlusion_queries_disabled;
 
 	/* Emitted draw state. */
 	int			last_base_vertex;

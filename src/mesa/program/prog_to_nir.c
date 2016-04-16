@@ -59,7 +59,6 @@ struct ptn_compile {
 
 #define SWIZ(X, Y, Z, W) \
    (unsigned[4]){ SWIZZLE_##X, SWIZZLE_##Y, SWIZZLE_##Z, SWIZZLE_##W }
-#define ptn_swizzle(b, src, x, y, z, w) nir_swizzle(b, src, SWIZ(x, y, z, w), 4, true)
 #define ptn_channel(b, src, ch) nir_swizzle(b, src, SWIZ(ch, ch, ch, ch), 1, true)
 
 static nir_ssa_def *
@@ -142,7 +141,7 @@ ptn_get_src(struct ptn_compile *c, const struct prog_src_register *prog_src)
       load->num_components = 4;
       load->variables[0] = nir_deref_var_create(load, c->input_vars[prog_src->Index]);
 
-      nir_ssa_dest_init(&load->instr, &load->dest, 4, NULL);
+      nir_ssa_dest_init(&load->instr, &load->dest, 4, 32, NULL);
       nir_builder_instr_insert(b, &load->instr);
 
       src.src = nir_src_for_ssa(&load->dest.ssa);
@@ -171,7 +170,7 @@ ptn_get_src(struct ptn_compile *c, const struct prog_src_register *prog_src)
 
          nir_intrinsic_instr *load =
             nir_intrinsic_instr_create(b->shader, nir_intrinsic_load_var);
-         nir_ssa_dest_init(&load->instr, &load->dest, 4, NULL);
+         nir_ssa_dest_init(&load->instr, &load->dest, 4, 32, NULL);
          load->num_components = 4;
 
          load->variables[0] = nir_deref_var_create(load, c->parameters);
@@ -246,7 +245,7 @@ ptn_get_src(struct ptn_compile *c, const struct prog_src_register *prog_src)
          } else {
             assert(swizzle != SWIZZLE_NIL);
             nir_alu_instr *mov = nir_alu_instr_create(b->shader, nir_op_fmov);
-            nir_ssa_dest_init(&mov->instr, &mov->dest.dest, 1, NULL);
+            nir_ssa_dest_init(&mov->instr, &mov->dest.dest, 1, 32, NULL);
             mov->dest.write_mask = 0x1;
             mov->src[0] = src;
             mov->src[0].swizzle[0] = swizzle;
@@ -491,11 +490,11 @@ ptn_xpd(nir_builder *b, nir_alu_dest dest, nir_ssa_def **src)
    ptn_move_dest_masked(b, dest,
                         nir_fsub(b,
                                  nir_fmul(b,
-                                          ptn_swizzle(b, src[0], Y, Z, X, X),
-                                          ptn_swizzle(b, src[1], Z, X, Y, X)),
+                                          nir_swizzle(b, src[0], SWIZ(Y, Z, X, W), 3, true),
+                                          nir_swizzle(b, src[1], SWIZ(Z, X, Y, W), 3, true)),
                                  nir_fmul(b,
-                                          ptn_swizzle(b, src[1], Y, Z, X, X),
-                                          ptn_swizzle(b, src[0], Z, X, Y, X))),
+                                          nir_swizzle(b, src[1], SWIZ(Y, Z, X, W), 3, true),
+                                          nir_swizzle(b, src[0], SWIZ(Z, X, Y, W), 3, true))),
                         WRITEMASK_XYZ);
    ptn_move_dest_masked(b, dest, nir_imm_float(b, 1.0), WRITEMASK_W);
 }
@@ -545,7 +544,7 @@ ptn_lrp(nir_builder *b, nir_alu_dest dest, nir_ssa_def **src)
 }
 
 static void
-ptn_kil(nir_builder *b, nir_alu_dest dest, nir_ssa_def **src)
+ptn_kil(nir_builder *b, nir_ssa_def **src)
 {
    nir_ssa_def *cmp = b->shader->options->native_integers ?
       nir_bany_inequal4(b, nir_flt(b, src[0], nir_imm_float(b, 0.0)), nir_imm_int(b, 0)) :
@@ -642,7 +641,8 @@ ptn_tex(nir_builder *b, nir_alu_dest dest, nir_ssa_def **src,
    unsigned src_number = 0;
 
    instr->src[src_number].src =
-      nir_src_for_ssa(ptn_swizzle(b, src[0], X, Y, Z, W));
+      nir_src_for_ssa(nir_swizzle(b, src[0], SWIZ(X, Y, Z, W),
+                                  instr->coord_components, true));
    instr->src[src_number].src_type = nir_tex_src_coord;
    src_number++;
 
@@ -676,7 +676,7 @@ ptn_tex(nir_builder *b, nir_alu_dest dest, nir_ssa_def **src,
 
    assert(src_number == num_srcs);
 
-   nir_ssa_dest_init(&instr->instr, &instr->dest, 4, NULL);
+   nir_ssa_dest_init(&instr->instr, &instr->dest, 4, 32, NULL);
    nir_builder_instr_insert(b, &instr->instr);
 
    /* Resolve the writemask on the texture op. */
@@ -830,7 +830,7 @@ ptn_emit_instruction(struct ptn_compile *c, struct prog_instruction *prog_inst)
       break;
 
    case OPCODE_KIL:
-      ptn_kil(b, dest, src);
+      ptn_kil(b, src);
       break;
 
    case OPCODE_CMP:
@@ -974,7 +974,7 @@ setup_registers_and_variables(struct ptn_compile *c)
                nir_intrinsic_instr_create(shader, nir_intrinsic_load_var);
             load_x->num_components = 1;
             load_x->variables[0] = nir_deref_var_create(load_x, var);
-            nir_ssa_dest_init(&load_x->instr, &load_x->dest, 1, NULL);
+            nir_ssa_dest_init(&load_x->instr, &load_x->dest, 1, 32, NULL);
             nir_builder_instr_insert(b, &load_x->instr);
 
             nir_ssa_def *f001 = nir_vec4(b, &load_x->dest.ssa, nir_imm_float(b, 0.0),

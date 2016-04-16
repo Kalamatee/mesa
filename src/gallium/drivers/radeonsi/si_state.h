@@ -68,6 +68,7 @@ struct si_state_rasterizer {
 	bool			uses_poly_offset;
 	bool			clamp_fragment_color;
 	bool			rasterizer_discard;
+	bool			scissor_enable;
 };
 
 struct si_dsa_stencil_ref_part {
@@ -144,10 +145,10 @@ struct si_shader_data {
 	uint32_t		sh_base[SI_NUM_SHADERS];
 };
 
-/* User sampler views:   0..15
- * Polygon stipple tex:  16
+/* User sampler views:   0..31
+ * Polygon stipple tex:  32
  */
-#define SI_NUM_USER_SAMPLERS            16 /* AKA OpenGL textures units per shader */
+#define SI_NUM_USER_SAMPLERS            32 /* AKA OpenGL textures units per shader */
 #define SI_POLY_STIPPLE_SAMPLER         SI_NUM_USER_SAMPLERS
 #define SI_NUM_SAMPLERS                 (SI_POLY_STIPPLE_SAMPLER + 1)
 
@@ -157,6 +158,10 @@ struct si_shader_data {
 #define SI_NUM_USER_CONST_BUFFERS	16
 #define SI_DRIVER_STATE_CONST_BUF	SI_NUM_USER_CONST_BUFFERS
 #define SI_NUM_CONST_BUFFERS		(SI_DRIVER_STATE_CONST_BUF + 1)
+
+#define SI_NUM_IMAGES			16
+
+#define SI_NUM_SHADER_BUFFERS		16
 
 /* Read-write buffer slots.
  *
@@ -272,6 +277,23 @@ unsigned cik_tile_split(unsigned tile_split);
 unsigned si_array_mode(unsigned mode);
 uint32_t si_num_banks(struct si_screen *sscreen, struct r600_texture *tex);
 unsigned si_tile_mode_index(struct r600_texture *rtex, unsigned level, bool stencil);
+void
+si_make_buffer_descriptor(struct si_screen *screen, struct r600_resource *buf,
+			  enum pipe_format format,
+			  unsigned first_element, unsigned last_element,
+			  uint32_t *state);
+void
+si_make_texture_descriptor(struct si_screen *screen,
+			   struct r600_texture *tex,
+			   bool sampler,
+			   enum pipe_texture_target target,
+			   enum pipe_format pipe_format,
+			   const unsigned char state_swizzle[4],
+			   unsigned base_level, unsigned first_level, unsigned last_level,
+			   unsigned first_layer, unsigned last_layer,
+			   unsigned width, unsigned height, unsigned depth,
+			   uint32_t *state,
+			   uint32_t *fmask_state);
 struct pipe_sampler_view *
 si_create_sampler_view_custom(struct pipe_context *ctx,
 			      struct pipe_resource *texture,

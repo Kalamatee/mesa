@@ -525,6 +525,7 @@ nv50_ir::DataType Instruction::inferSrcType() const
    case TGSI_OPCODE_DRCP:
    case TGSI_OPCODE_DSQRT:
    case TGSI_OPCODE_DMAD:
+   case TGSI_OPCODE_DFMA:
    case TGSI_OPCODE_DFRAC:
    case TGSI_OPCODE_DRSQ:
    case TGSI_OPCODE_DTRUNC:
@@ -615,6 +616,7 @@ static nv50_ir::operation translateOpcode(uint opcode)
 
    NV50_IR_OPCODE_CASE(RCP, RCP);
    NV50_IR_OPCODE_CASE(RSQ, RSQ);
+   NV50_IR_OPCODE_CASE(SQRT, SQRT);
 
    NV50_IR_OPCODE_CASE(MUL, MUL);
    NV50_IR_OPCODE_CASE(ADD, ADD);
@@ -624,6 +626,7 @@ static nv50_ir::operation translateOpcode(uint opcode)
    NV50_IR_OPCODE_CASE(SLT, SET);
    NV50_IR_OPCODE_CASE(SGE, SET);
    NV50_IR_OPCODE_CASE(MAD, MAD);
+   NV50_IR_OPCODE_CASE(FMA, FMA);
    NV50_IR_OPCODE_CASE(SUB, SUB);
 
    NV50_IR_OPCODE_CASE(FLR, FLOOR);
@@ -723,6 +726,7 @@ static nv50_ir::operation translateOpcode(uint opcode)
    NV50_IR_OPCODE_CASE(DRCP, RCP);
    NV50_IR_OPCODE_CASE(DSQRT, SQRT);
    NV50_IR_OPCODE_CASE(DMAD, MAD);
+   NV50_IR_OPCODE_CASE(DFMA, FMA);
    NV50_IR_OPCODE_CASE(D2I, CVT);
    NV50_IR_OPCODE_CASE(D2U, CVT);
    NV50_IR_OPCODE_CASE(I2D, CVT);
@@ -852,15 +856,17 @@ public:
    };
    std::vector<TextureView> textureViews;
 
+   /*
    struct Resource {
       uint8_t target; // TGSI_TEXTURE_*
       bool raw;
       uint8_t slot; // $surface index
    };
    std::vector<Resource> resources;
+   */
 
    struct MemoryFile {
-      bool shared;
+      uint8_t mem_type; // TGSI_MEMORY_TYPE_*
    };
    std::vector<MemoryFile> memoryFiles;
 
@@ -1032,6 +1038,9 @@ void Source::scanProperty(const struct tgsi_full_property *prop)
       break;
    case TGSI_PROPERTY_NUM_CULLDIST_ENABLED:
       info->io.cullDistances = prop->u[0].Data;
+      break;
+   case TGSI_PROPERTY_NEXT_SHADER:
+      /* Do not need to know the next shader stage. */
       break;
    default:
       INFO("unhandled TGSI property %d\n", prop->Property.PropertyName);
@@ -1218,7 +1227,7 @@ bool Source::scanDeclaration(const struct tgsi_full_declaration *decl)
       break;
    case TGSI_FILE_MEMORY:
       for (i = first; i <= last; ++i)
-         memoryFiles[i].shared = decl->Declaration.Shared;
+         memoryFiles[i].mem_type = decl->Declaration.MemType;
       break;
    case TGSI_FILE_NULL:
    case TGSI_FILE_TEMPORARY:
@@ -1257,9 +1266,9 @@ bool Source::scanInstruction(const struct tgsi_full_instruction *inst)
       info->numBarriers = 1;
 
    if (insn.dstCount()) {
-      if (insn.getDst(0).getFile() == TGSI_FILE_OUTPUT) {
-         Instruction::DstRegister dst = insn.getDst(0);
+      Instruction::DstRegister dst = insn.getDst(0);
 
+      if (dst.getFile() == TGSI_FILE_OUTPUT) {
          if (dst.isIndirect(0))
             for (unsigned i = 0; i < info->numOutputs; ++i)
                info->out[i].mask = 0xf;
@@ -1276,11 +1285,11 @@ bool Source::scanInstruction(const struct tgsi_full_instruction *inst)
          if (isEdgeFlagPassthrough(insn))
             info->io.edgeFlagIn = insn.getSrc(0).getIndex(0);
       } else
-      if (insn.getDst(0).getFile() == TGSI_FILE_TEMPORARY) {
-         if (insn.getDst(0).isIndirect(0))
-            indirectTempArrays.insert(insn.getDst(0).getArrayId());
+      if (dst.getFile() == TGSI_FILE_TEMPORARY) {
+         if (dst.isIndirect(0))
+            indirectTempArrays.insert(dst.getArrayId());
       } else
-      if (insn.getDst(0).getFile() == TGSI_FILE_BUFFER) {
+      if (dst.getFile() == TGSI_FILE_BUFFER) {
          info->io.globalAccess |= 0x2;
       }
    }
@@ -1415,8 +1424,8 @@ private:
    void handleLIT(Value *dst0[4]);
    void handleUserClipPlanes();
 
-   Symbol *getResourceBase(int r);
-   void getResourceCoords(std::vector<Value *>&, int r, int s);
+   // Symbol *getResourceBase(int r);
+   // void getResourceCoords(std::vector<Value *>&, int r, int s);
 
    void handleLOAD(Value *dst0[4]);
    void handleSTORE();
@@ -1523,8 +1532,21 @@ Converter::makeSym(uint tgsiFile, int fileIdx, int idx, int c, uint32_t address)
 
    sym->reg.fileIndex = fileIdx;
 
-   if (tgsiFile == TGSI_FILE_MEMORY && code->memoryFiles[fileIdx].shared)
-      sym->setFile(FILE_MEMORY_SHARED);
+   if (tgsiFile == TGSI_FILE_MEMORY) {
+      switch (code->memoryFiles[fileIdx].mem_type) {
+      case TGSI_MEMORY_TYPE_SHARED:
+         sym->setFile(FILE_MEMORY_SHARED);
+         break;
+      case TGSI_MEMORY_TYPE_INPUT:
+         assert(prog->getType() == Program::TYPE_COMPUTE);
+         assert(idx == -1);
+         sym->setFile(FILE_SHADER_INPUT);
+         address += info->prop.cp.inputOffset;
+         break;
+      default:
+         assert(0); /* TODO: Add support for global and private memory */
+      }
+   }
 
    if (idx >= 0) {
       if (sym->reg.file == FILE_SHADER_INPUT)
@@ -1985,7 +2007,6 @@ Converter::loadProjTexCoords(Value *dst[4], Value *src[4], unsigned int mask)
 void
 Converter::handleTEX(Value *dst[4], int R, int S, int L, int C, int Dx, int Dy)
 {
-   Value *val;
    Value *arg[4], *src[8];
    Value *lod = NULL, *shd = NULL;
    unsigned int s, c, d;
@@ -2026,17 +2047,6 @@ Converter::handleTEX(Value *dst[4], int R, int S, int L, int C, int Dx, int Dy)
       loadProjTexCoords(src, arg, (1 << n) - 1);
       if (shd)
          shd = src[n - 1];
-   }
-
-   if (tgt.isCube()) {
-      for (c = 0; c < 3; ++c)
-         src[c] = mkOp1v(OP_ABS, TYPE_F32, getSSA(), arg[c]);
-      val = getScratch();
-      mkOp2(OP_MAX, TYPE_F32, val, src[0], src[1]);
-      mkOp2(OP_MAX, TYPE_F32, val, src[2], val);
-      mkOp1(OP_RCP, TYPE_F32, val, val);
-      for (c = 0; c < 3; ++c)
-         src[c] = mkOp2v(OP_MUL, TYPE_F32, getSSA(), arg[c], val);
    }
 
    for (c = 0, d = 0; c < 4; ++c) {
@@ -2144,6 +2154,7 @@ Converter::handleLIT(Value *dst0[4])
    }
 }
 
+/* Keep this around for now as reference when adding img support
 static inline bool
 isResourceSpecial(const int r)
 {
@@ -2174,7 +2185,8 @@ Converter::getResourceBase(const int r)
 
    switch (r) {
    case TGSI_RESOURCE_GLOBAL:
-      sym = new_Symbol(prog, nv50_ir::FILE_MEMORY_GLOBAL, 15);
+      sym = new_Symbol(prog, nv50_ir::FILE_MEMORY_GLOBAL,
+                       info->io.auxCBSlot);
       break;
    case TGSI_RESOURCE_LOCAL:
       assert(prog->getType() == Program::TYPE_COMPUTE);
@@ -2239,6 +2251,7 @@ partitionLoadStore(uint8_t comp[2], uint8_t size[2], uint8_t mask)
    }
    return n + 1;
 }
+*/
 
 // For raw loads, granularity is 4 byte.
 // Usage of the texture read mask on OP_SULDP is not allowed.
@@ -2249,8 +2262,9 @@ Converter::handleLOAD(Value *dst0[4])
    int c;
    std::vector<Value *> off, src, ldv, def;
 
-   if (tgsi.getSrc(0).getFile() == TGSI_FILE_BUFFER ||
-       tgsi.getSrc(0).getFile() == TGSI_FILE_MEMORY) {
+   switch (tgsi.getSrc(0).getFile()) {
+   case TGSI_FILE_BUFFER:
+   case TGSI_FILE_MEMORY:
       for (c = 0; c < 4; ++c) {
          if (!dst0[c])
             continue;
@@ -2270,9 +2284,12 @@ Converter::handleLOAD(Value *dst0[4])
          if (tgsi.getSrc(0).isIndirect(0))
             ld->setIndirect(0, 1, fetchSrc(tgsi.getSrc(0).getIndirect(0), 0, 0));
       }
-      return;
+      break;
+   default:
+      assert(!"Unsupported srcFile for LOAD");
    }
 
+/* Keep this around for now as reference when adding img support
    getResourceCoords(off, r, 1);
 
    if (isResourceRaw(code, r)) {
@@ -2338,6 +2355,7 @@ Converter::handleLOAD(Value *dst0[4])
    FOR_EACH_DST_ENABLED_CHANNEL(0, c, tgsi)
       if (dst0[c] != def[c])
          mkMov(dst0[c], def[tgsi.getSrc(0).getSwizzle(c)]);
+*/
 }
 
 // For formatted stores, the write mask on OP_SUSTP can be used.
@@ -2349,8 +2367,9 @@ Converter::handleSTORE()
    int c;
    std::vector<Value *> off, src, dummy;
 
-   if (tgsi.getDst(0).getFile() == TGSI_FILE_BUFFER ||
-       tgsi.getDst(0).getFile() == TGSI_FILE_MEMORY) {
+   switch (tgsi.getDst(0).getFile()) {
+   case TGSI_FILE_BUFFER:
+   case TGSI_FILE_MEMORY:
       for (c = 0; c < 4; ++c) {
          if (!(tgsi.getDst(0).getMask() & (1 << c)))
             continue;
@@ -2371,9 +2390,12 @@ Converter::handleSTORE()
          if (tgsi.getDst(0).isIndirect(0))
             st->setIndirect(0, 1, fetchSrc(tgsi.getDst(0).getIndirect(0), 0, 0));
       }
-      return;
+      break;
+   default:
+      assert(!"Unsupported dstFile for STORE");
    }
 
+/* Keep this around for now as reference when adding img support
    getResourceCoords(off, r, 0);
    src = off;
    const int s = src.size();
@@ -2421,6 +2443,7 @@ Converter::handleSTORE()
       mkTex(OP_SUSTP, getResourceTarget(code, r), code->resources[r].slot, 0,
             dummy, src)->tex.mask = tgsi.getDst(0).getMask();
    }
+*/
 }
 
 // XXX: These only work on resources with the single-component u32/s32 formats.
@@ -2435,8 +2458,9 @@ Converter::handleATOM(Value *dst0[4], DataType ty, uint16_t subOp)
    std::vector<Value *> defv;
    LValue *dst = getScratch();
 
-   if (tgsi.getSrc(0).getFile() == TGSI_FILE_BUFFER ||
-       tgsi.getSrc(0).getFile() == TGSI_FILE_MEMORY) {
+   switch (tgsi.getSrc(0).getFile()) {
+   case TGSI_FILE_BUFFER:
+   case TGSI_FILE_MEMORY:
       for (int c = 0; c < 4; ++c) {
          if (!dst0[c])
             continue;
@@ -2464,10 +2488,12 @@ Converter::handleATOM(Value *dst0[4], DataType ty, uint16_t subOp)
       for (int c = 0; c < 4; ++c)
          if (dst0[c])
             dst0[c] = dst; // not equal to rDst so handleInstruction will do mkMov
-      return;
+      break;
+   default:
+      assert(!"Unsupported srcFile for ATOM");
    }
 
-
+/* Keep this around for now as reference when adding img support
    getResourceCoords(srcv, r, 1);
 
    if (isResourceSpecial(r)) {
@@ -2495,6 +2521,7 @@ Converter::handleATOM(Value *dst0[4], DataType ty, uint16_t subOp)
    for (int c = 0; c < 4; ++c)
       if (dst0[c])
          dst0[c] = dst; // not equal to rDst so handleInstruction will do mkMov
+*/
 }
 
 void
@@ -2672,6 +2699,7 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
    case TGSI_OPCODE_MAD:
    case TGSI_OPCODE_UMAD:
    case TGSI_OPCODE_SAD:
+   case TGSI_OPCODE_FMA:
       FOR_EACH_DST_ENABLED_CHANNEL(0, c, tgsi) {
          src0 = fetchSrc(0, c);
          src1 = fetchSrc(1, c);
@@ -2685,6 +2713,7 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
    case TGSI_OPCODE_FLR:
    case TGSI_OPCODE_TRUNC:
    case TGSI_OPCODE_RCP:
+   case TGSI_OPCODE_SQRT:
    case TGSI_OPCODE_IABS:
    case TGSI_OPCODE_INEG:
    case TGSI_OPCODE_NOT:
@@ -3395,6 +3424,7 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
       }
       break;
    case TGSI_OPCODE_DMAD:
+   case TGSI_OPCODE_DFMA:
       FOR_EACH_DST_ENABLED_CHANNEL(0, c, tgsi) {
          src0 = getSSA(8);
          src1 = getSSA(8);
@@ -3506,8 +3536,11 @@ Converter::exportOutputs()
          Symbol *sym = mkSymbol(FILE_SHADER_OUTPUT, 0, TYPE_F32,
                                 info->out[i].slot[c] * 4);
          Value *val = oData.load(sub.cur->values, i, c, NULL);
-         if (val)
+         if (val) {
+            if (info->out[i].sn == TGSI_SEMANTIC_POSITION)
+               mkOp1(OP_SAT, TYPE_F32, val, val);
             mkStore(OP_EXPORT, TYPE_F32, sym, NULL, val);
+         }
       }
    }
 }

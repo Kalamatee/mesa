@@ -130,12 +130,6 @@ v130_fs_only(const _mesa_glsl_parse_state *state)
 }
 
 static bool
-v140(const _mesa_glsl_parse_state *state)
-{
-   return state->is_version(140, 0);
-}
-
-static bool
 v140_or_es3(const _mesa_glsl_parse_state *state)
 {
    return state->is_version(140, 300);
@@ -184,6 +178,14 @@ v110_lod(const _mesa_glsl_parse_state *state)
 }
 
 static bool
+texture_buffer(const _mesa_glsl_parse_state *state)
+{
+   return state->is_version(140, 320) ||
+      state->EXT_texture_buffer_enable ||
+      state->OES_texture_buffer_enable;
+}
+
+static bool
 shader_texture_lod(const _mesa_glsl_parse_state *state)
 {
    return state->ARB_shader_texture_lod_enable;
@@ -208,6 +210,7 @@ static bool
 shader_integer_mix(const _mesa_glsl_parse_state *state)
 {
    return state->is_version(450, 310) ||
+          state->ARB_ES3_1_compatibility_enable ||
           (v130(state) && state->EXT_shader_integer_mix_enable);
 }
 
@@ -262,10 +265,12 @@ shader_packing_or_es31_or_gpu_shader5(const _mesa_glsl_parse_state *state)
 }
 
 static bool
-fs_gpu_shader5(const _mesa_glsl_parse_state *state)
+fs_interpolate_at(const _mesa_glsl_parse_state *state)
 {
    return state->stage == MESA_SHADER_FRAGMENT &&
-          (state->is_version(400, 0) || state->ARB_gpu_shader5_enable);
+          (state->is_version(400, 320) ||
+           state->ARB_gpu_shader5_enable ||
+           state->OES_shader_multisample_interpolation_enable);
 }
 
 
@@ -432,6 +437,12 @@ shader_atomic_counters(const _mesa_glsl_parse_state *state)
 }
 
 static bool
+shader_atomic_counter_ops(const _mesa_glsl_parse_state *state)
+{
+   return state->ARB_shader_atomic_counter_ops_enable;
+}
+
+static bool
 shader_clock(const _mesa_glsl_parse_state *state)
 {
    return state->ARB_shader_clock_enable;
@@ -468,6 +479,7 @@ static bool
 shader_image_atomic_exchange_float(const _mesa_glsl_parse_state *state)
 {
    return (state->is_version(450, 320) ||
+           state->ARB_ES3_1_compatibility_enable ||
            state->OES_shader_image_atomic_enable);
 }
 
@@ -792,8 +804,14 @@ private:
    B1(interpolateAtSample)
 
    ir_function_signature *_atomic_counter_intrinsic(builtin_available_predicate avail);
+   ir_function_signature *_atomic_counter_intrinsic1(builtin_available_predicate avail);
+   ir_function_signature *_atomic_counter_intrinsic2(builtin_available_predicate avail);
    ir_function_signature *_atomic_counter_op(const char *intrinsic,
                                              builtin_available_predicate avail);
+   ir_function_signature *_atomic_counter_op1(const char *intrinsic,
+                                              builtin_available_predicate avail);
+   ir_function_signature *_atomic_counter_op2(const char *intrinsic,
+                                              builtin_available_predicate avail);
 
    ir_function_signature *_atomic_intrinsic2(builtin_available_predicate avail,
                                              const glsl_type *type);
@@ -968,48 +986,59 @@ builtin_builder::create_intrinsics()
                                    glsl_type::uint_type),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type),
+                _atomic_counter_intrinsic1(shader_atomic_counter_ops),
+                NULL);
+   add_function("__intrinsic_atomic_sub",
+                _atomic_counter_intrinsic1(shader_atomic_counter_ops),
                 NULL);
    add_function("__intrinsic_atomic_min",
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::uint_type),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type),
+                _atomic_counter_intrinsic1(shader_atomic_counter_ops),
                 NULL);
    add_function("__intrinsic_atomic_max",
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::uint_type),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type),
+                _atomic_counter_intrinsic1(shader_atomic_counter_ops),
                 NULL);
    add_function("__intrinsic_atomic_and",
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::uint_type),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type),
+                _atomic_counter_intrinsic1(shader_atomic_counter_ops),
                 NULL);
    add_function("__intrinsic_atomic_or",
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::uint_type),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type),
+                _atomic_counter_intrinsic1(shader_atomic_counter_ops),
                 NULL);
    add_function("__intrinsic_atomic_xor",
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::uint_type),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type),
+                _atomic_counter_intrinsic1(shader_atomic_counter_ops),
                 NULL);
    add_function("__intrinsic_atomic_exchange",
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::uint_type),
                 _atomic_intrinsic2(buffer_atomics_supported,
                                    glsl_type::int_type),
+                _atomic_counter_intrinsic1(shader_atomic_counter_ops),
                 NULL);
    add_function("__intrinsic_atomic_comp_swap",
                 _atomic_intrinsic3(buffer_atomics_supported,
                                    glsl_type::uint_type),
                 _atomic_intrinsic3(buffer_atomics_supported,
                                    glsl_type::int_type),
+                _atomic_counter_intrinsic2(shader_atomic_counter_ops),
                 NULL);
 
    add_image_functions(false);
@@ -1558,9 +1587,9 @@ builtin_builder::create_builtins()
                 _textureSize(v130, glsl_type::ivec2_type, glsl_type::usampler2DRect_type),
                 _textureSize(v130, glsl_type::ivec2_type, glsl_type::sampler2DRectShadow_type),
 
-                _textureSize(v140, glsl_type::int_type,   glsl_type::samplerBuffer_type),
-                _textureSize(v140, glsl_type::int_type,   glsl_type::isamplerBuffer_type),
-                _textureSize(v140, glsl_type::int_type,   glsl_type::usamplerBuffer_type),
+                _textureSize(texture_buffer, glsl_type::int_type,   glsl_type::samplerBuffer_type),
+                _textureSize(texture_buffer, glsl_type::int_type,   glsl_type::isamplerBuffer_type),
+                _textureSize(texture_buffer, glsl_type::int_type,   glsl_type::usamplerBuffer_type),
                 _textureSize(texture_multisample, glsl_type::ivec2_type, glsl_type::sampler2DMS_type),
                 _textureSize(texture_multisample, glsl_type::ivec2_type, glsl_type::isampler2DMS_type),
                 _textureSize(texture_multisample, glsl_type::ivec2_type, glsl_type::usampler2DMS_type),
@@ -1832,9 +1861,9 @@ builtin_builder::create_builtins()
                 _texelFetch(v130, glsl_type::ivec4_type, glsl_type::isampler2DArray_type, glsl_type::ivec3_type),
                 _texelFetch(v130, glsl_type::uvec4_type, glsl_type::usampler2DArray_type, glsl_type::ivec3_type),
 
-                _texelFetch(v140, glsl_type::vec4_type,  glsl_type::samplerBuffer_type,  glsl_type::int_type),
-                _texelFetch(v140, glsl_type::ivec4_type, glsl_type::isamplerBuffer_type, glsl_type::int_type),
-                _texelFetch(v140, glsl_type::uvec4_type, glsl_type::usamplerBuffer_type, glsl_type::int_type),
+                _texelFetch(texture_buffer, glsl_type::vec4_type,  glsl_type::samplerBuffer_type,  glsl_type::int_type),
+                _texelFetch(texture_buffer, glsl_type::ivec4_type, glsl_type::isamplerBuffer_type, glsl_type::int_type),
+                _texelFetch(texture_buffer, glsl_type::uvec4_type, glsl_type::usamplerBuffer_type, glsl_type::int_type),
 
                 _texelFetch(texture_multisample, glsl_type::vec4_type,  glsl_type::sampler2DMS_type,  glsl_type::ivec2_type),
                 _texelFetch(texture_multisample, glsl_type::ivec4_type, glsl_type::isampler2DMS_type, glsl_type::ivec2_type),
@@ -2712,6 +2741,43 @@ builtin_builder::create_builtins()
    add_function("atomicCounterDecrement",
                 _atomic_counter_op("__intrinsic_atomic_predecrement",
                                    shader_atomic_counters),
+                NULL);
+
+   add_function("atomicCounterAddARB",
+                _atomic_counter_op1("__intrinsic_atomic_add",
+                                    shader_atomic_counter_ops),
+                NULL);
+   add_function("atomicCounterSubtractARB",
+                _atomic_counter_op1("__intrinsic_atomic_sub",
+                                    shader_atomic_counter_ops),
+                NULL);
+   add_function("atomicCounterMinARB",
+                _atomic_counter_op1("__intrinsic_atomic_min",
+                                    shader_atomic_counter_ops),
+                NULL);
+   add_function("atomicCounterMaxARB",
+                _atomic_counter_op1("__intrinsic_atomic_max",
+                                    shader_atomic_counter_ops),
+                NULL);
+   add_function("atomicCounterAndARB",
+                _atomic_counter_op1("__intrinsic_atomic_and",
+                                    shader_atomic_counter_ops),
+                NULL);
+   add_function("atomicCounterOrARB",
+                _atomic_counter_op1("__intrinsic_atomic_or",
+                                    shader_atomic_counter_ops),
+                NULL);
+   add_function("atomicCounterXorARB",
+                _atomic_counter_op1("__intrinsic_atomic_xor",
+                                    shader_atomic_counter_ops),
+                NULL);
+   add_function("atomicCounterExchangeARB",
+                _atomic_counter_op1("__intrinsic_atomic_exchange",
+                                    shader_atomic_counter_ops),
+                NULL);
+   add_function("atomicCounterCompSwapARB",
+                _atomic_counter_op2("__intrinsic_atomic_comp_swap",
+                                    shader_atomic_counter_ops),
                 NULL);
 
    add_function("atomicAdd",
@@ -5103,7 +5169,7 @@ builtin_builder::_interpolateAtCentroid(const glsl_type *type)
 {
    ir_variable *interpolant = in_var(type, "interpolant");
    interpolant->data.must_be_shader_input = 1;
-   MAKE_SIG(type, fs_gpu_shader5, 1, interpolant);
+   MAKE_SIG(type, fs_interpolate_at, 1, interpolant);
 
    body.emit(ret(interpolate_at_centroid(interpolant)));
 
@@ -5116,7 +5182,7 @@ builtin_builder::_interpolateAtOffset(const glsl_type *type)
    ir_variable *interpolant = in_var(type, "interpolant");
    interpolant->data.must_be_shader_input = 1;
    ir_variable *offset = in_var(glsl_type::vec2_type, "offset");
-   MAKE_SIG(type, fs_gpu_shader5, 2, interpolant, offset);
+   MAKE_SIG(type, fs_interpolate_at, 2, interpolant, offset);
 
    body.emit(ret(interpolate_at_offset(interpolant, offset)));
 
@@ -5129,7 +5195,7 @@ builtin_builder::_interpolateAtSample(const glsl_type *type)
    ir_variable *interpolant = in_var(type, "interpolant");
    interpolant->data.must_be_shader_input = 1;
    ir_variable *sample_num = in_var(glsl_type::int_type, "sample_num");
-   MAKE_SIG(type, fs_gpu_shader5, 2, interpolant, sample_num);
+   MAKE_SIG(type, fs_interpolate_at, 2, interpolant, sample_num);
 
    body.emit(ret(interpolate_at_sample(interpolant, sample_num)));
 
@@ -5141,6 +5207,25 @@ builtin_builder::_atomic_counter_intrinsic(builtin_available_predicate avail)
 {
    ir_variable *counter = in_var(glsl_type::atomic_uint_type, "counter");
    MAKE_INTRINSIC(glsl_type::uint_type, avail, 1, counter);
+   return sig;
+}
+
+ir_function_signature *
+builtin_builder::_atomic_counter_intrinsic1(builtin_available_predicate avail)
+{
+   ir_variable *counter = in_var(glsl_type::atomic_uint_type, "counter");
+   ir_variable *data = in_var(glsl_type::uint_type, "data");
+   MAKE_INTRINSIC(glsl_type::uint_type, avail, 2, counter, data);
+   return sig;
+}
+
+ir_function_signature *
+builtin_builder::_atomic_counter_intrinsic2(builtin_available_predicate avail)
+{
+   ir_variable *counter = in_var(glsl_type::atomic_uint_type, "counter");
+   ir_variable *compare = in_var(glsl_type::uint_type, "compare");
+   ir_variable *data = in_var(glsl_type::uint_type, "data");
+   MAKE_INTRINSIC(glsl_type::uint_type, avail, 3, counter, compare, data);
    return sig;
 }
 
@@ -5171,6 +5256,37 @@ builtin_builder::_atomic_counter_op(const char *intrinsic,
 {
    ir_variable *counter = in_var(glsl_type::atomic_uint_type, "atomic_counter");
    MAKE_SIG(glsl_type::uint_type, avail, 1, counter);
+
+   ir_variable *retval = body.make_temp(glsl_type::uint_type, "atomic_retval");
+   body.emit(call(shader->symbols->get_function(intrinsic), retval,
+                  sig->parameters));
+   body.emit(ret(retval));
+   return sig;
+}
+
+ir_function_signature *
+builtin_builder::_atomic_counter_op1(const char *intrinsic,
+                                     builtin_available_predicate avail)
+{
+   ir_variable *counter = in_var(glsl_type::atomic_uint_type, "atomic_counter");
+   ir_variable *data = in_var(glsl_type::uint_type, "data");
+   MAKE_SIG(glsl_type::uint_type, avail, 2, counter, data);
+
+   ir_variable *retval = body.make_temp(glsl_type::uint_type, "atomic_retval");
+   body.emit(call(shader->symbols->get_function(intrinsic), retval,
+                  sig->parameters));
+   body.emit(ret(retval));
+   return sig;
+}
+
+ir_function_signature *
+builtin_builder::_atomic_counter_op2(const char *intrinsic,
+                                    builtin_available_predicate avail)
+{
+   ir_variable *counter = in_var(glsl_type::atomic_uint_type, "atomic_counter");
+   ir_variable *compare = in_var(glsl_type::uint_type, "compare");
+   ir_variable *data = in_var(glsl_type::uint_type, "data");
+   MAKE_SIG(glsl_type::uint_type, avail, 3, counter, compare, data);
 
    ir_variable *retval = body.make_temp(glsl_type::uint_type, "atomic_retval");
    body.emit(call(shader->symbols->get_function(intrinsic), retval,

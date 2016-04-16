@@ -30,10 +30,6 @@
 
 #define SWR_API __cdecl
 
-#ifndef _CRT_SECURE_NO_WARNINGS
-#define _CRT_SECURE_NO_WARNINGS
-#endif
-
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -47,19 +43,19 @@
 #define DEBUGBREAK __debugbreak()
 
 #define PRAGMA_WARNING_PUSH_DISABLE(...) \
-	__pragma(warning(push));\
-	__pragma(warning(disable:__VA_ARGS__));
+    __pragma(warning(push));\
+    __pragma(warning(disable:__VA_ARGS__));
 
 #define PRAGMA_WARNING_POP() __pragma(warning(pop))
 
-#if defined(_WIN32)
 #if defined(_WIN64)
+#define BitScanReverseSizeT BitScanReverse64
 #define BitScanForwardSizeT BitScanForward64
 #define _mm_popcount_sizeT _mm_popcnt_u64
 #else
+#define BitScanReverseSizeT BitScanReverse
 #define BitScanForwardSizeT BitScanForward
 #define _mm_popcount_sizeT _mm_popcnt_u32
-#endif
 #endif
 
 #elif defined(FORCE_LINUX) || defined(__linux__) || defined(__gnu_linux__)
@@ -68,29 +64,20 @@
 
 #include <stdlib.h>
 #include <string.h>
-#include <X11/Xmd.h>
 #include <x86intrin.h>
 #include <stdint.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <stdio.h>
 
-typedef void			VOID;
+typedef void            VOID;
 typedef void*           LPVOID;
-typedef CARD8			BOOL;
-typedef wchar_t			WCHAR;
-typedef uint16_t		UINT16;
-typedef int				INT;
-typedef unsigned int	UINT;
-typedef uint32_t		UINT32;
-typedef uint64_t		UINT64;
-typedef int64_t		    INT64;
-typedef void*			HANDLE;
-typedef float			FLOAT;
-typedef int			    LONG;
-typedef CARD8		    BYTE;
-typedef unsigned char   UCHAR;
-typedef unsigned int	DWORD;
+typedef int             INT;
+typedef unsigned int    UINT;
+typedef void*           HANDLE;
+typedef int             LONG;
+typedef unsigned int    DWORD;
 
 #undef FALSE
 #define FALSE 0
@@ -104,8 +91,11 @@ typedef unsigned int	DWORD;
 #define INLINE __inline
 #endif
 #define DEBUGBREAK asm ("int $3")
+#if !defined(__CYGWIN__)
 #define __cdecl
+#define __stdcall
 #define __declspec(X)
+#endif
 
 #define GCC_VERSION (__GNUC__ * 10000 \
                      + __GNUC_MINOR__ * 100 \
@@ -180,21 +170,13 @@ unsigned char _bittest(const LONG *a, LONG b)
 
 #define CreateDirectory(name, pSecurity) mkdir(name, 0777)
 
-#if defined(_WIN32)
-static inline
-unsigned int _mm_popcnt_u32(unsigned int v)
-{
-    return __builtin_popcount(v);
-}
-#endif
-
 #define _aligned_free free
 #define InterlockedCompareExchange(Dest, Exchange, Comparand) __sync_val_compare_and_swap(Dest, Comparand, Exchange)
 #define InterlockedExchangeAdd(Addend, Value) __sync_fetch_and_add(Addend, Value)
 #define InterlockedDecrement(Append) __sync_sub_and_fetch(Append, 1)
+#define InterlockedDecrement64(Append) __sync_sub_and_fetch(Append, 1)
 #define InterlockedIncrement(Append) __sync_add_and_fetch(Append, 1)
 #define _ReadWriteBarrier() asm volatile("" ::: "memory")
-#define __stdcall
 
 #define PRAGMA_WARNING_PUSH_DISABLE(...)
 #define PRAGMA_WARNING_POP()
@@ -206,14 +188,12 @@ unsigned int _mm_popcnt_u32(unsigned int v)
 #endif
 
 // Universal types
-typedef BYTE        KILOBYTE[1024];
+typedef uint8_t     KILOBYTE[1024];
 typedef KILOBYTE    MEGABYTE[1024];
 typedef MEGABYTE    GIGABYTE[1024];
 
 #define OSALIGNLINE(RWORD) OSALIGN(RWORD, 64)
-#if KNOB_SIMD_WIDTH == 8
-#define OSALIGNSIMD(RWORD) OSALIGN(RWORD, 32)
-#endif
+#define OSALIGNSIMD(RWORD) OSALIGN(RWORD, KNOB_SIMD_BYTES)
 
 #include "common/swr_assert.h"
 

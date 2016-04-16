@@ -477,6 +477,7 @@ hud_draw(struct hud_context *hud, struct pipe_resource *tex)
                         CSO_BIT_VERTEX_SHADER |
                         CSO_BIT_VERTEX_ELEMENTS |
                         CSO_BIT_AUX_VERTEX_BUFFER_SLOT |
+                        CSO_BIT_PAUSE_QUERIES |
                         CSO_BIT_RENDER_CONDITION));
    cso_save_constant_buffer_slot0(cso, PIPE_SHADER_VERTEX);
 
@@ -1191,6 +1192,7 @@ hud_create(struct pipe_context *pipe, struct cso_context *cso)
          "FRAG\n"
          "DCL IN[0], GENERIC[0], LINEAR\n"
          "DCL SAMP[0]\n"
+         "DCL SVIEW[0], RECT, FLOAT\n"
          "DCL OUT[0], COLOR[0]\n"
          "DCL TEMP[0]\n"
 

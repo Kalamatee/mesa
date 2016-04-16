@@ -250,6 +250,7 @@ gf100_create_texture_view(struct pipe_context *pipe,
    uint32_t swz[4];
    uint32_t width, height;
    uint32_t depth;
+   uint32_t tex_fmt;
    struct nv50_tic_entry *view;
    struct nv50_miptree *mt;
    bool tex_int;
@@ -275,12 +276,13 @@ gf100_create_texture_view(struct pipe_context *pipe,
    fmt = &nvc0_format_table[view->pipe.format];
 
    tex_int = util_format_is_pure_integer(view->pipe.format);
+   tex_fmt = fmt->tic.format & 0x3f;
 
    swz[0] = nv50_tic_swizzle(fmt, view->pipe.swizzle_r, tex_int);
    swz[1] = nv50_tic_swizzle(fmt, view->pipe.swizzle_g, tex_int);
    swz[2] = nv50_tic_swizzle(fmt, view->pipe.swizzle_b, tex_int);
    swz[3] = nv50_tic_swizzle(fmt, view->pipe.swizzle_a, tex_int);
-   tic[0] = (fmt->tic.format << G80_TIC_0_COMPONENTS_SIZES__SHIFT) |
+   tic[0] = (tex_fmt << G80_TIC_0_COMPONENTS_SIZES__SHIFT) |
             (fmt->tic.type_r << G80_TIC_0_R_DATA_TYPE__SHIFT) |
             (fmt->tic.type_g << G80_TIC_0_G_DATA_TYPE__SHIFT) |
             (fmt->tic.type_b << G80_TIC_0_B_DATA_TYPE__SHIFT) |
@@ -288,7 +290,8 @@ gf100_create_texture_view(struct pipe_context *pipe,
             (swz[0] << G80_TIC_0_X_SOURCE__SHIFT) |
             (swz[1] << G80_TIC_0_Y_SOURCE__SHIFT) |
             (swz[2] << G80_TIC_0_Z_SOURCE__SHIFT) |
-            (swz[3] << G80_TIC_0_W_SOURCE__SHIFT);
+            (swz[3] << G80_TIC_0_W_SOURCE__SHIFT) |
+            ((fmt->tic.format & 0x40) << (GK20A_TIC_0_USE_COMPONENT_SIZES_EXTENDED__SHIFT - 6));
 
    address = mt->base.address;
 
@@ -707,21 +710,20 @@ void
 nve4_set_tex_handles(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   uint64_t address;
+   struct nvc0_screen *screen = nvc0->screen;
    unsigned s;
 
    if (nvc0->screen->base.class_3d < NVE4_3D_CLASS)
       return;
-   address = nvc0->screen->uniform_bo->offset + (6 << 16);
 
-   for (s = 0; s < 5; ++s, address += (1 << 10)) {
+   for (s = 0; s < 5; ++s) {
       uint32_t dirty = nvc0->textures_dirty[s] | nvc0->samplers_dirty[s];
       if (!dirty)
          continue;
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
       PUSH_DATA (push, 1024);
-      PUSH_DATAh(push, address);
-      PUSH_DATA (push, address);
+      PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
+      PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
       do {
          int i = ffs(dirty) - 1;
          dirty &= ~(1 << i);

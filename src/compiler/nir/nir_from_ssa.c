@@ -342,7 +342,8 @@ isolate_phi_nodes_block(nir_block *block, void *void_state)
          nir_parallel_copy_entry *entry = rzalloc(state->dead_ctx,
                                                   nir_parallel_copy_entry);
          nir_ssa_dest_init(&pcopy->instr, &entry->dest,
-                           phi->dest.ssa.num_components, src->src.ssa->name);
+                           phi->dest.ssa.num_components,
+                           phi->dest.ssa.bit_size, src->src.ssa->name);
          exec_list_push_tail(&pcopy->entries, &entry->node);
 
          assert(src->src.is_ssa);
@@ -355,7 +356,8 @@ isolate_phi_nodes_block(nir_block *block, void *void_state)
       nir_parallel_copy_entry *entry = rzalloc(state->dead_ctx,
                                                nir_parallel_copy_entry);
       nir_ssa_dest_init(&block_pcopy->instr, &entry->dest,
-                        phi->dest.ssa.num_components, phi->dest.ssa.name);
+                        phi->dest.ssa.num_components, phi->dest.ssa.bit_size,
+                        phi->dest.ssa.name);
       exec_list_push_tail(&block_pcopy->entries, &entry->node);
 
       nir_ssa_def_rewrite_uses(&phi->dest.ssa,
@@ -472,6 +474,7 @@ rewrite_ssa_def(nir_ssa_def *def, void *void_state)
          node->set->reg = nir_local_reg_create(state->impl);
          node->set->reg->name = def->name;
          node->set->reg->num_components = def->num_components;
+         node->set->reg->bit_size = def->bit_size;
          node->set->reg->num_array_elems = 0;
       }
 
@@ -489,6 +492,7 @@ rewrite_ssa_def(nir_ssa_def *def, void *void_state)
       reg = nir_local_reg_create(state->impl);
       reg->name = def->name;
       reg->num_components = def->num_components;
+      reg->bit_size = def->bit_size;
       reg->num_array_elems = 0;
    }
 

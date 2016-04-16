@@ -312,7 +312,7 @@ static const struct brw_device_info brw_device_info_chv = {
    .max_ds_threads = 80,
    .max_gs_threads = 80,
    .max_wm_threads = 128,
-   .max_cs_threads = 28,
+   .max_cs_threads = 6 * 7,
    .urb = {
       .size = 192,
       .min_vs_entries = 34,
@@ -481,4 +481,16 @@ brw_get_device_info(int devid)
    }
 
    return devinfo;
+}
+
+const char *
+brw_get_device_name(int devid)
+{
+   switch (devid) {
+#undef CHIPSET
+#define CHIPSET(id, family, name) case id: return name;
+#include "pci_ids/i965_pci_ids.h"
+   default:
+      return NULL;
+   }
 }

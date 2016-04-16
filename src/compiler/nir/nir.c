@@ -39,6 +39,7 @@ nir_shader_create(void *mem_ctx,
    exec_list_make_empty(&shader->uniforms);
    exec_list_make_empty(&shader->inputs);
    exec_list_make_empty(&shader->outputs);
+   exec_list_make_empty(&shader->shared);
 
    shader->options = options;
    memset(&shader->info, 0, sizeof(shader->info));
@@ -52,6 +53,7 @@ nir_shader_create(void *mem_ctx,
    shader->num_inputs = 0;
    shader->num_outputs = 0;
    shader->num_uniforms = 0;
+   shader->num_shared = 0;
 
    shader->stage = stage;
 
@@ -68,6 +70,7 @@ reg_create(void *mem_ctx, struct exec_list *list)
    list_inithead(&reg->if_uses);
 
    reg->num_components = 0;
+   reg->bit_size = 32;
    reg->num_array_elems = 0;
    reg->is_packed = false;
    reg->name = NULL;
@@ -115,6 +118,10 @@ nir_shader_add_variable(nir_shader *shader, nir_variable *var)
       assert(!"nir_shader_add_variable cannot be used for local variables");
       break;
 
+   case nir_var_param:
+      assert(!"nir_shader_add_variable cannot be used for function parameters");
+      break;
+
    case nir_var_global:
       exec_list_push_tail(&shader->globals, &var->node);
       break;
@@ -130,6 +137,11 @@ nir_shader_add_variable(nir_shader *shader, nir_variable *var)
    case nir_var_uniform:
    case nir_var_shader_storage:
       exec_list_push_tail(&shader->uniforms, &var->node);
+      break;
+
+   case nir_var_shared:
+      assert(shader->stage == MESA_SHADER_COMPUTE);
+      exec_list_push_tail(&shader->shared, &var->node);
       break;
 
    case nir_var_system_value:
@@ -254,16 +266,11 @@ cf_init(nir_cf_node *node, nir_cf_node_type type)
 }
 
 nir_function_impl *
-nir_function_impl_create(nir_function *function)
+nir_function_impl_create_bare(nir_shader *shader)
 {
-   assert(function->impl == NULL);
+   nir_function_impl *impl = ralloc(shader, nir_function_impl);
 
-   void *mem_ctx = ralloc_parent(function);
-
-   nir_function_impl *impl = ralloc(mem_ctx, nir_function_impl);
-
-   function->impl = impl;
-   impl->function = function;
+   impl->function = NULL;
 
    cf_init(&impl->cf_node, nir_cf_node_function);
 
@@ -278,8 +285,8 @@ nir_function_impl_create(nir_function *function)
    impl->valid_metadata = nir_metadata_none;
 
    /* create start & end blocks */
-   nir_block *start_block = nir_block_create(mem_ctx);
-   nir_block *end_block = nir_block_create(mem_ctx);
+   nir_block *start_block = nir_block_create(shader);
+   nir_block *end_block = nir_block_create(shader);
    start_block->cf_node.parent = &impl->cf_node;
    end_block->cf_node.parent = &impl->cf_node;
    impl->end_block = end_block;
@@ -288,6 +295,39 @@ nir_function_impl_create(nir_function *function)
 
    start_block->successors[0] = end_block;
    _mesa_set_add(end_block->predecessors, start_block);
+   return impl;
+}
+
+nir_function_impl *
+nir_function_impl_create(nir_function *function)
+{
+   assert(function->impl == NULL);
+
+   nir_function_impl *impl = nir_function_impl_create_bare(function->shader);
+
+   function->impl = impl;
+   impl->function = function;
+
+   impl->num_params = function->num_params;
+   impl->params = ralloc_array(function->shader,
+                               nir_variable *, impl->num_params);
+
+   for (unsigned i = 0; i < impl->num_params; i++) {
+      impl->params[i] = rzalloc(function->shader, nir_variable);
+      impl->params[i]->type = function->params[i].type;
+      impl->params[i]->data.mode = nir_var_param;
+      impl->params[i]->data.location = i;
+   }
+
+   if (!glsl_type_is_void(function->return_type)) {
+      impl->return_var = rzalloc(function->shader, nir_variable);
+      impl->return_var->type = function->return_type;
+      impl->return_var->data.mode = nir_var_param;
+      impl->return_var->data.location = -1;
+   } else {
+      impl->return_var = NULL;
+   }
+
    return impl;
 }
 
@@ -429,12 +469,13 @@ nir_jump_instr_create(nir_shader *shader, nir_jump_type type)
 }
 
 nir_load_const_instr *
-nir_load_const_instr_create(nir_shader *shader, unsigned num_components)
+nir_load_const_instr_create(nir_shader *shader, unsigned num_components,
+                            unsigned bit_size)
 {
    nir_load_const_instr *instr = ralloc(shader, nir_load_const_instr);
    instr_init(&instr->instr, nir_instr_type_load_const);
 
-   nir_ssa_def_init(&instr->instr, &instr->def, num_components, NULL);
+   nir_ssa_def_init(&instr->instr, &instr->def, num_components, bit_size, NULL);
 
    return instr;
 }
@@ -518,12 +559,14 @@ nir_parallel_copy_instr_create(nir_shader *shader)
 }
 
 nir_ssa_undef_instr *
-nir_ssa_undef_instr_create(nir_shader *shader, unsigned num_components)
+nir_ssa_undef_instr_create(nir_shader *shader,
+                           unsigned num_components,
+                           unsigned bit_size)
 {
    nir_ssa_undef_instr *instr = ralloc(shader, nir_ssa_undef_instr);
    instr_init(&instr->instr, nir_instr_type_ssa_undef);
 
-   nir_ssa_def_init(&instr->instr, &instr->def, num_components, NULL);
+   nir_ssa_def_init(&instr->instr, &instr->def, num_components, bit_size, NULL);
 
    return instr;
 }
@@ -651,8 +694,10 @@ nir_deref_get_const_initializer_load(nir_shader *shader, nir_deref_var *deref)
       tail = tail->child;
    }
 
+   unsigned bit_size = glsl_get_bit_size(glsl_get_base_type(tail->type));
    nir_load_const_instr *load =
-      nir_load_const_instr_create(shader, glsl_get_vector_elements(tail->type));
+      nir_load_const_instr_create(shader, glsl_get_vector_elements(tail->type),
+                                  bit_size);
 
    matrix_offset *= load->def.num_components;
    for (unsigned i = 0; i < load->def.num_components; i++) {
@@ -660,10 +705,13 @@ nir_deref_get_const_initializer_load(nir_shader *shader, nir_deref_var *deref)
       case GLSL_TYPE_FLOAT:
       case GLSL_TYPE_INT:
       case GLSL_TYPE_UINT:
-         load->value.u[i] = constant->value.u[matrix_offset + i];
+         load->value.u32[i] = constant->value.u[matrix_offset + i];
+         break;
+      case GLSL_TYPE_DOUBLE:
+         load->value.f64[i] = constant->value.d[matrix_offset + i];
          break;
       case GLSL_TYPE_BOOL:
-         load->value.u[i] = constant->value.b[matrix_offset + i] ?
+         load->value.u32[i] = constant->value.b[matrix_offset + i] ?
                              NIR_TRUE : NIR_FALSE;
          break;
       default:
@@ -682,6 +730,62 @@ nir_cf_node_get_function(nir_cf_node *node)
    }
 
    return nir_cf_node_as_function(node);
+}
+
+/* Reduces a cursor by trying to convert everything to after and trying to
+ * go up to block granularity when possible.
+ */
+static nir_cursor
+reduce_cursor(nir_cursor cursor)
+{
+   switch (cursor.option) {
+   case nir_cursor_before_block:
+      assert(nir_cf_node_prev(&cursor.block->cf_node) == NULL ||
+             nir_cf_node_prev(&cursor.block->cf_node)->type != nir_cf_node_block);
+      if (exec_list_is_empty(&cursor.block->instr_list)) {
+         /* Empty block.  After is as good as before. */
+         cursor.option = nir_cursor_after_block;
+      }
+      return cursor;
+
+   case nir_cursor_after_block:
+      return cursor;
+
+   case nir_cursor_before_instr: {
+      nir_instr *prev_instr = nir_instr_prev(cursor.instr);
+      if (prev_instr) {
+         /* Before this instruction is after the previous */
+         cursor.instr = prev_instr;
+         cursor.option = nir_cursor_after_instr;
+      } else {
+         /* No previous instruction.  Switch to before block */
+         cursor.block = cursor.instr->block;
+         cursor.option = nir_cursor_before_block;
+      }
+      return reduce_cursor(cursor);
+   }
+
+   case nir_cursor_after_instr:
+      if (nir_instr_next(cursor.instr) == NULL) {
+         /* This is the last instruction, switch to after block */
+         cursor.option = nir_cursor_after_block;
+         cursor.block = cursor.instr->block;
+      }
+      return cursor;
+
+   default:
+      unreachable("Inavlid cursor option");
+   }
+}
+
+bool
+nir_cursors_equal(nir_cursor a, nir_cursor b)
+{
+   /* Reduced cursors should be unique */
+   a = reduce_cursor(a);
+   b = reduce_cursor(b);
+
+   return a.block == b.block && a.option == b.option;
 }
 
 static bool
@@ -1277,15 +1381,18 @@ nir_instr_rewrite_dest(nir_instr *instr, nir_dest *dest, nir_dest new_dest)
       src_add_all_uses(dest->reg.indirect, instr, NULL);
 }
 
+/* note: does *not* take ownership of 'name' */
 void
 nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
-                 unsigned num_components, const char *name)
+                 unsigned num_components,
+                 unsigned bit_size, const char *name)
 {
-   def->name = name;
+   def->name = ralloc_strdup(instr, name);
    def->parent_instr = instr;
    list_inithead(&def->uses);
    list_inithead(&def->if_uses);
    def->num_components = num_components;
+   def->bit_size = bit_size;
 
    if (instr->block) {
       nir_function_impl *impl =
@@ -1297,12 +1404,14 @@ nir_ssa_def_init(nir_instr *instr, nir_ssa_def *def,
    }
 }
 
+/* note: does *not* take ownership of 'name' */
 void
 nir_ssa_dest_init(nir_instr *instr, nir_dest *dest,
-                 unsigned num_components, const char *name)
+                 unsigned num_components, unsigned bit_size,
+                 const char *name)
 {
    dest->is_ssa = true;
-   nir_ssa_def_init(instr, &dest->ssa, num_components, name);
+   nir_ssa_def_init(instr, &dest->ssa, num_components, bit_size, name);
 }
 
 void

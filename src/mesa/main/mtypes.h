@@ -667,7 +667,6 @@ struct gl_list_attrib
 struct gl_multisample_attrib
 {
    GLboolean Enabled;
-   GLboolean _Enabled;   /**< true if Enabled and multisample buffer */
    GLboolean SampleAlphaToCoverage;
    GLboolean SampleAlphaToOne;
    GLboolean SampleCoverage;
@@ -1619,7 +1618,9 @@ struct gl_transform_feedback_varying_info
 {
    char *Name;
    GLenum Type;
+   GLint BufferIndex;
    GLint Size;
+   GLint Offset;
 };
 
 
@@ -1645,15 +1646,33 @@ struct gl_transform_feedback_output
 };
 
 
+struct gl_transform_feedback_buffer
+{
+   unsigned Binding;
+
+   unsigned NumVaryings;
+
+   /**
+    * Total number of components stored in each buffer.  This may be used by
+    * hardware back-ends to determine the correct stride when interleaving
+    * multiple transform feedback outputs in the same buffer.
+    */
+   unsigned Stride;
+
+   /**
+    * Which transform feedback stream this buffer binding is associated with.
+    */
+   unsigned Stream;
+};
+
+
 /** Post-link transform feedback info. */
 struct gl_transform_feedback_info
 {
    unsigned NumOutputs;
 
-   /**
-    * Number of transform feedback buffers in use by this program.
-    */
-   unsigned NumBuffers;
+   /* Bitmask of active buffer indices. */
+   unsigned ActiveBuffers;
 
    struct gl_transform_feedback_output *Outputs;
 
@@ -1664,17 +1683,7 @@ struct gl_transform_feedback_info
    struct gl_transform_feedback_varying_info *Varyings;
    GLint NumVarying;
 
-   /**
-    * Total number of components stored in each buffer.  This may be used by
-    * hardware back-ends to determine the correct stride when interleaving
-    * multiple transform feedback outputs in the same buffer.
-    */
-   unsigned BufferStride[MAX_FEEDBACK_BUFFERS];
-
-   /**
-    * Which transform feedback stream this buffer binding is associated with.
-    */
-   unsigned BufferStream[MAX_FEEDBACK_BUFFERS];
+   struct gl_transform_feedback_buffer Buffers[MAX_FEEDBACK_BUFFERS];
 };
 
 
@@ -2197,6 +2206,7 @@ struct ati_fragment_shader
    GLboolean interpinp1;
    GLboolean isValid;
    GLuint swizzlerq;
+   struct gl_program *Program;
 };
 
 /**
@@ -2285,30 +2295,6 @@ struct gl_shader
     */
    unsigned num_combined_uniform_components;
 
-   /**
-    * This shader's uniform/ssbo block information.
-    *
-    * These fields are only set post-linking.
-    *
-    * BufferInterfaceBlocks is a list containing both UBOs and SSBOs. This is
-    * useful during the linking process so that we don't have to handle SSBOs
-    * specifically.
-    *
-    * UniformBlocks is a list of UBOs. This is useful for backends that need
-    * or prefer to see separate index spaces for UBOS and SSBOs like the GL
-    * API specifies.
-    *
-    * ShaderStorageBlocks is a list of SSBOs. This is useful for backends that
-    * need or prefer to see separate index spaces for UBOS and SSBOs like the
-    * GL API specifies.
-    *
-    * UniformBlocks and ShaderStorageBlocks only have pointers into
-    * BufferInterfaceBlocks so the actual resource information is not
-    * duplicated.
-    */
-   unsigned NumBufferInterfaceBlocks;
-   struct gl_uniform_block *BufferInterfaceBlocks;
-
    unsigned NumUniformBlocks;
    struct gl_uniform_block **UniformBlocks;
 
@@ -2330,6 +2316,11 @@ struct gl_shader
     */
    bool origin_upper_left;
    bool pixel_center_integer;
+
+   struct {
+      /** Global xfb_stride out qualifier if any */
+      GLuint BufferStride[MAX_FEEDBACK_BUFFERS];
+   } TransformFeedback;
 
    /**
     * Tessellation Control shader state from layout qualifiers.
@@ -2509,10 +2500,8 @@ struct gl_uniform_block
     */
    GLuint UniformBufferSize;
 
-   /**
-    * Is this actually an interface block for a shader storage buffer?
-    */
-   bool IsShaderStorage;
+   /** Stages that reference this block */
+   uint8_t stageref;
 
    /**
     * Layout specified in the shader
@@ -2668,6 +2657,8 @@ struct gl_shader_program
     */
    struct {
       GLenum BufferMode;
+      /** Global xfb_stride out qualifier if any */
+      GLuint BufferStride[MAX_FEEDBACK_BUFFERS];
       GLuint NumVarying;
       GLchar **VaryingNames;  /**< Array [NumVarying] of char * */
    } TransformFeedback;
@@ -2784,50 +2775,11 @@ struct gl_shader_program
     */
    unsigned LastClipDistanceArraySize;
 
-   /**
-    * This shader's uniform/ssbo block information.
-    *
-    * BufferInterfaceBlocks is a list containing both UBOs and SSBOs. This is
-    * useful during the linking process so that we don't have to handle SSBOs
-    * specifically.
-    *
-    * UniformBlocks is a list of UBOs. This is useful for backends that need
-    * or prefer to see separate index spaces for UBOS and SSBOs like the GL
-    * API specifies.
-    *
-    * ShaderStorageBlocks is a list of SSBOs. This is useful for backends that
-    * need or prefer to see separate index spaces for UBOS and SSBOs like the
-    * GL API specifies.
-    *
-    * UniformBlocks and ShaderStorageBlocks only have pointers into
-    * BufferInterfaceBlocks so the actual resource information is not
-    * duplicated and are only set after linking.
-    */
-   unsigned NumBufferInterfaceBlocks;
-   struct gl_uniform_block *BufferInterfaceBlocks;
-
    unsigned NumUniformBlocks;
-   struct gl_uniform_block **UniformBlocks;
+   struct gl_uniform_block *UniformBlocks;
 
    unsigned NumShaderStorageBlocks;
-   struct gl_uniform_block **ShaderStorageBlocks;
-
-   /**
-    * Indices into the BufferInterfaceBlocks[] array for each stage they're
-    * used in, or -1.
-    *
-    * This is used to maintain the Binding values of the stage's
-    * BufferInterfaceBlocks[] and to answer the
-    * GL_UNIFORM_BLOCK_REFERENCED_BY_*_SHADER queries.
-    */
-   int *InterfaceBlockStageIndex[MESA_SHADER_STAGES];
-
-   /**
-    * Indices into the BufferInterfaceBlocks[] array for Uniform Buffer
-    * Objects and Shader Storage Buffer Objects.
-    */
-   unsigned *UboInterfaceBlockIndex;
-   unsigned *SsboInterfaceBlockIndex;
+   struct gl_uniform_block *ShaderStorageBlocks;
 
    /**
     * Map of active uniform names to locations
@@ -3771,6 +3723,7 @@ struct gl_extensions
    GLboolean ANGLE_texture_compression_dxt;
    GLboolean ARB_ES2_compatibility;
    GLboolean ARB_ES3_compatibility;
+   GLboolean ARB_ES3_1_compatibility;
    GLboolean ARB_arrays_of_arrays;
    GLboolean ARB_base_instance;
    GLboolean ARB_blend_func_extended;
@@ -3813,8 +3766,10 @@ struct gl_extensions
    GLboolean ARB_pipeline_statistics_query;
    GLboolean ARB_point_sprite;
    GLboolean ARB_query_buffer_object;
+   GLboolean ARB_robust_buffer_access_behavior;
    GLboolean ARB_sample_shading;
    GLboolean ARB_seamless_cube_map;
+   GLboolean ARB_shader_atomic_counter_ops;
    GLboolean ARB_shader_atomic_counters;
    GLboolean ARB_shader_bit_encoding;
    GLboolean ARB_shader_clock;
@@ -3900,7 +3855,10 @@ struct gl_extensions
    GLboolean EXT_transform_feedback;
    GLboolean EXT_timer_query;
    GLboolean EXT_vertex_array_bgra;
+   GLboolean OES_copy_image;
+   GLboolean OES_sample_variables;
    GLboolean OES_standard_derivatives;
+   GLboolean OES_texture_buffer;
    /* vendor extensions */
    GLboolean AMD_performance_monitor;
    GLboolean AMD_pinned_memory;

@@ -92,6 +92,12 @@ struct brw_compiler {
 
    bool scalar_stage[MESA_SHADER_STAGES];
    struct gl_shader_compiler_options glsl_compiler_options[MESA_SHADER_STAGES];
+
+   /**
+    * Apply workarounds for SIN and COS output range problems.
+    * This can negatively impact performance.
+    */
+   bool precise_trig;
 };
 
 
@@ -395,6 +401,12 @@ struct brw_wm_prog_data {
     * Used in hardware setup on gen6+.
     */
    uint32_t barycentric_interp_modes;
+
+   /**
+    * Mask of which FS inputs are marked flat by the shader source.  This is
+    * needed for setting up 3DSTATE_SF/SBE.
+    */
+   uint32_t flat_inputs;
 
    /**
     * Map from gl_varying_slot to the position within the FS setup data

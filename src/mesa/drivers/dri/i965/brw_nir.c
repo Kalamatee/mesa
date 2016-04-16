@@ -77,7 +77,7 @@ add_const_offset_to_base_block(nir_block *block, void *closure)
          nir_const_value *const_offset = nir_src_as_const_value(*offset);
 
          if (const_offset) {
-            intrin->const_index[0] += const_offset->u[0];
+            intrin->const_index[0] += const_offset->u32[0];
             b->cursor = nir_before_instr(&intrin->instr);
             nir_instr_rewrite_src(&intrin->instr, offset,
                                   nir_src_for_ssa(nir_imm_int(b, 0)));
@@ -175,7 +175,7 @@ remap_patch_urb_offsets(nir_block *block, void *closure)
          if (vertex) {
             nir_const_value *const_vertex = nir_src_as_const_value(*vertex);
             if (const_vertex) {
-               intrin->const_index[0] += const_vertex->u[0] *
+               intrin->const_index[0] += const_vertex->u32[0] *
                                          state->vue_map->num_per_vertex_slots;
             } else {
                state->b.cursor = nir_before_instr(&intrin->instr);
@@ -377,6 +377,14 @@ brw_nir_lower_uniforms(nir_shader *nir, bool is_scalar)
    }
 }
 
+void
+brw_nir_lower_cs_shared(nir_shader *nir)
+{
+   nir_assign_var_locations(&nir->shared, &nir->num_shared,
+                            type_size_scalar_bytes);
+   nir_lower_io(nir, nir_var_shared, type_size_scalar_bytes);
+}
+
 #define OPT(pass, ...) ({                                  \
    bool this_progress = false;                             \
    NIR_PASS(this_progress, nir, pass, ##__VA_ARGS__);      \
@@ -429,13 +437,18 @@ nir_optimize(nir_shader *nir, bool is_scalar)
  * is_scalar = true to scalarize everything prior to code gen.
  */
 nir_shader *
-brw_preprocess_nir(nir_shader *nir, bool is_scalar)
+brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir)
 {
    bool progress; /* Written by OPT and OPT_V */
    (void)progress;
 
+   const bool is_scalar = compiler->scalar_stage[nir->stage];
+
    if (nir->stage == MESA_SHADER_GEOMETRY)
       OPT(nir_lower_gs_intrinsics);
+
+   if (compiler->precise_trig)
+      OPT(brw_nir_apply_trig_workarounds);
 
    static const nir_lower_tex_options tex_options = {
       .lower_txp = ~0,
@@ -460,7 +473,7 @@ brw_preprocess_nir(nir_shader *nir, bool is_scalar)
    /* Get rid of split copies */
    nir = nir_optimize(nir, is_scalar);
 
-   OPT(nir_remove_dead_variables);
+   OPT(nir_remove_dead_variables, nir_var_local);
 
    return nir;
 }
@@ -560,7 +573,7 @@ brw_create_nir(struct brw_context *brw,
 
    (void)progress;
 
-   nir = brw_preprocess_nir(nir, is_scalar);
+   nir = brw_preprocess_nir(brw->intelScreen->compiler, nir);
 
    OPT(nir_lower_system_values);
    OPT_V(brw_nir_lower_uniforms, is_scalar);
@@ -615,12 +628,24 @@ brw_type_for_nir_type(nir_alu_type type)
 {
    switch (type) {
    case nir_type_uint:
+   case nir_type_uint32:
       return BRW_REGISTER_TYPE_UD;
    case nir_type_bool:
    case nir_type_int:
+   case nir_type_bool32:
+   case nir_type_int32:
       return BRW_REGISTER_TYPE_D;
    case nir_type_float:
+   case nir_type_float32:
       return BRW_REGISTER_TYPE_F;
+   case nir_type_float64:
+      return BRW_REGISTER_TYPE_DF;
+   case nir_type_int64:
+   case nir_type_uint64:
+      /* TODO we should only see these in moves, so for now it's ok, but when
+       * we add actual 64-bit integer support we should fix this.
+       */
+      return BRW_REGISTER_TYPE_DF;
    default:
       unreachable("unknown type");
    }
@@ -636,12 +661,18 @@ brw_glsl_base_type_for_nir_type(nir_alu_type type)
 {
    switch (type) {
    case nir_type_float:
+   case nir_type_float32:
       return GLSL_TYPE_FLOAT;
 
+   case nir_type_float64:
+      return GLSL_TYPE_DOUBLE;
+
    case nir_type_int:
+   case nir_type_int32:
       return GLSL_TYPE_INT;
 
    case nir_type_uint:
+   case nir_type_uint32:
       return GLSL_TYPE_UINT;
 
    default:

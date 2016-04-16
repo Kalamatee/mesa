@@ -360,6 +360,15 @@ enum pipe_flush_flags
 #define PIPE_BARRIER_MAPPED_BUFFER     (1 << 0)
 #define PIPE_BARRIER_SHADER_BUFFER     (1 << 1)
 #define PIPE_BARRIER_QUERY_BUFFER      (1 << 2)
+#define PIPE_BARRIER_VERTEX_BUFFER     (1 << 3)
+#define PIPE_BARRIER_INDEX_BUFFER      (1 << 4)
+#define PIPE_BARRIER_CONSTANT_BUFFER   (1 << 5)
+#define PIPE_BARRIER_INDIRECT_BUFFER   (1 << 6)
+#define PIPE_BARRIER_TEXTURE           (1 << 7)
+#define PIPE_BARRIER_IMAGE             (1 << 8)
+#define PIPE_BARRIER_FRAMEBUFFER       (1 << 9)
+#define PIPE_BARRIER_STREAMOUT_BUFFER  (1 << 10)
+#define PIPE_BARRIER_GLOBAL_BUFFER     (1 << 11)
 
 /**
  * Resource binding flags -- state tracker must specify in advance all
@@ -541,6 +550,14 @@ enum pipe_reset_status
                                            PIPE_HANDLE_USAGE_WRITE)
 
 /**
+ * pipe_image_view access flags.
+ */
+#define PIPE_IMAGE_ACCESS_READ       (1 << 0)
+#define PIPE_IMAGE_ACCESS_WRITE      (1 << 1)
+#define PIPE_IMAGE_ACCESS_READ_WRITE (PIPE_IMAGE_ACCESS_READ | \
+                                      PIPE_IMAGE_ACCESS_WRITE)
+
+/**
  * Implementation capabilities/limits which are queried through
  * pipe_screen::get_param()
  */
@@ -673,6 +690,8 @@ enum pipe_cap
    PIPE_CAP_PCI_BUS,
    PIPE_CAP_PCI_DEVICE,
    PIPE_CAP_PCI_FUNCTION,
+   PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT,
+   PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR,
 };
 
 #define PIPE_QUIRK_TEXTURE_BORDER_COLOR_SWIZZLE_NV50 (1 << 0)

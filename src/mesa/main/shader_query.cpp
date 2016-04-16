@@ -60,7 +60,8 @@ DECL_RESOURCE_FUNC(VAR, gl_shader_variable);
 DECL_RESOURCE_FUNC(UBO, gl_uniform_block);
 DECL_RESOURCE_FUNC(UNI, gl_uniform_storage);
 DECL_RESOURCE_FUNC(ATC, gl_active_atomic_buffer);
-DECL_RESOURCE_FUNC(XFB, gl_transform_feedback_varying_info);
+DECL_RESOURCE_FUNC(XFV, gl_transform_feedback_varying_info);
+DECL_RESOURCE_FUNC(XFB, gl_transform_feedback_buffer);
 DECL_RESOURCE_FUNC(SUB, gl_subroutine_function);
 
 void GLAPIENTRY
@@ -98,31 +99,6 @@ _mesa_BindAttribLocation(GLuint program, GLuint index,
     * Note that this attribute binding won't go into effect until
     * glLinkProgram is called again.
     */
-}
-
-static bool
-is_active_attrib(const gl_shader_variable *var)
-{
-   if (!var)
-      return false;
-
-   switch (var->mode) {
-   case ir_var_shader_in:
-      return var->location != -1;
-
-   case ir_var_system_value:
-      /* From GL 4.3 core spec, section 11.1.1 (Vertex Attributes):
-       * "For GetActiveAttrib, all active vertex shader input variables
-       * are enumerated, including the special built-in inputs gl_VertexID
-       * and gl_InstanceID."
-       */
-      return var->location == SYSTEM_VALUE_VERTEX_ID ||
-             var->location == SYSTEM_VALUE_VERTEX_ID_ZERO_BASE ||
-             var->location == SYSTEM_VALUE_INSTANCE_ID;
-
-   default:
-      return false;
-   }
 }
 
 void GLAPIENTRY
@@ -165,19 +141,7 @@ _mesa_GetActiveAttrib(GLuint program, GLuint desired_index,
 
    const gl_shader_variable *const var = RESOURCE_VAR(res);
 
-   if (!is_active_attrib(var))
-      return;
-
    const char *var_name = var->name;
-
-   /* Since gl_VertexID may be lowered to gl_VertexIDMESA, we need to
-    * consider gl_VertexIDMESA as gl_VertexID for purposes of checking
-    * active attributes.
-    */
-   if (var->mode == ir_var_system_value &&
-       var->location == SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) {
-      var_name = "gl_VertexID";
-   }
 
    _mesa_copy_string(name, maxLength, length, var_name);
 
@@ -223,19 +187,7 @@ _mesa_GetAttribLocation(GLuint program, const GLchar * name)
    if (!res)
       return -1;
 
-   GLint loc = program_resource_location(shProg, res, name, array_index);
-
-   /* The extra check against against 0 is made because of builtin-attribute
-    * locations that have offset applied. Function program_resource_location
-    * can return built-in attribute locations < 0 and glGetAttribLocation
-    * cannot be used on "conventional" attributes.
-    *
-    * From page 95 of the OpenGL 3.0 spec:
-    *
-    *     "If name is not an active attribute, if name is a conventional
-    *     attribute, or if an error occurs, -1 will be returned."
-    */
-   return (loc >= 0) ? loc : -1;
+   return program_resource_location(shProg, res, name, array_index);
 }
 
 unsigned
@@ -250,8 +202,7 @@ _mesa_count_active_attribs(struct gl_shader_program *shProg)
    unsigned count = 0;
    for (unsigned j = 0; j < shProg->NumProgramResourceList; j++, res++) {
       if (res->Type == GL_PROGRAM_INPUT &&
-          res->StageReferences & (1 << MESA_SHADER_VERTEX) &&
-          is_active_attrib(RESOURCE_VAR(res)))
+          res->StageReferences & (1 << MESA_SHADER_VERTEX))
          count++;
    }
    return count;
@@ -409,39 +360,19 @@ _mesa_GetFragDataLocation(GLuint program, const GLchar *name)
    if (!res)
       return -1;
 
-   GLint loc = program_resource_location(shProg, res, name, array_index);
-
-   /* The extra check against against 0 is made because of builtin-attribute
-    * locations that have offset applied. Function program_resource_location
-    * can return built-in attribute locations < 0 and glGetFragDataLocation
-    * cannot be used on "conventional" attributes.
-    *
-    * From page 95 of the OpenGL 3.0 spec:
-    *
-    *     "If name is not an active attribute, if name is a conventional
-    *     attribute, or if an error occurs, -1 will be returned."
-    */
-   return (loc >= 0) ? loc : -1;
+   return program_resource_location(shProg, res, name, array_index);
 }
 
 const char*
 _mesa_program_resource_name(struct gl_program_resource *res)
 {
-   const gl_shader_variable *var;
    switch (res->Type) {
    case GL_UNIFORM_BLOCK:
    case GL_SHADER_STORAGE_BLOCK:
       return RESOURCE_UBO(res)->Name;
    case GL_TRANSFORM_FEEDBACK_VARYING:
-      return RESOURCE_XFB(res)->Name;
+      return RESOURCE_XFV(res)->Name;
    case GL_PROGRAM_INPUT:
-      var = RESOURCE_VAR(res);
-      /* Special case gl_VertexIDMESA -> gl_VertexID. */
-      if (var->mode == ir_var_system_value &&
-          var->location == SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) {
-         return "gl_VertexID";
-      }
-   /* fallthrough */
    case GL_PROGRAM_OUTPUT:
       return RESOURCE_VAR(res)->name;
    case GL_UNIFORM:
@@ -473,8 +404,8 @@ _mesa_program_resource_array_size(struct gl_program_resource *res)
 {
    switch (res->Type) {
    case GL_TRANSFORM_FEEDBACK_VARYING:
-      return RESOURCE_XFB(res)->Size > 1 ?
-             RESOURCE_XFB(res)->Size : 0;
+      return RESOURCE_XFV(res)->Size > 1 ?
+             RESOURCE_XFV(res)->Size : 0;
    case GL_PROGRAM_INPUT:
    case GL_PROGRAM_OUTPUT:
       return RESOURCE_VAR(res)->type->length;
@@ -670,6 +601,7 @@ _mesa_program_resource_index(struct gl_shader_program *shProg,
       return RESOURCE_SUB(res)->index;
    case GL_UNIFORM_BLOCK:
    case GL_SHADER_STORAGE_BLOCK:
+   case GL_TRANSFORM_FEEDBACK_BUFFER:
    case GL_TRANSFORM_FEEDBACK_VARYING:
    default:
       return calc_resource_index(shProg, res);
@@ -707,6 +639,7 @@ _mesa_program_resource_find_index(struct gl_shader_program *shProg,
       case GL_UNIFORM_BLOCK:
       case GL_ATOMIC_COUNTER_BUFFER:
       case GL_SHADER_STORAGE_BLOCK:
+      case GL_TRANSFORM_FEEDBACK_BUFFER:
          if (_mesa_program_resource_index(shProg, res) == index)
             return res;
          break;
@@ -847,34 +780,31 @@ program_resource_location(struct gl_shader_program *shProg,
                           struct gl_program_resource *res, const char *name,
                           unsigned array_index)
 {
-   /* Built-in locations should report GL_INVALID_INDEX. */
-   if (is_gl_identifier(name))
-      return GL_INVALID_INDEX;
-
-   /* VERT_ATTRIB_GENERIC0 and FRAG_RESULT_DATA0 are decremented as these
-    * offsets are used internally to differentiate between built-in attributes
-    * and user-defined attributes.
-    */
    switch (res->Type) {
    case GL_PROGRAM_INPUT: {
       const gl_shader_variable *var = RESOURCE_VAR(res);
+
+      if (var->location == -1)
+         return -1;
 
       /* If the input is an array, fail if the index is out of bounds. */
       if (array_index > 0
           && array_index >= var->type->length) {
          return -1;
       }
-      return (var->location +
-	      (array_index * var->type->without_array()->matrix_columns) -
-	      VERT_ATTRIB_GENERIC0);
+      return var->location +
+	     (array_index * var->type->without_array()->matrix_columns);
    }
    case GL_PROGRAM_OUTPUT:
+      if (RESOURCE_VAR(res)->location == -1)
+         return -1;
+
       /* If the output is an array, fail if the index is out of bounds. */
       if (array_index > 0
           && array_index >= RESOURCE_VAR(res)->type->length) {
          return -1;
       }
-      return RESOURCE_VAR(res)->location + array_index - FRAG_RESULT_DATA0;
+      return RESOURCE_VAR(res)->location + array_index;
    case GL_UNIFORM:
       /* If the uniform is built-in, fail. */
       if (RESOURCE_UNI(res)->builtin)
@@ -995,8 +925,11 @@ is_resource_referenced(struct gl_shader_program *shProg,
    if (res->Type == GL_ATOMIC_COUNTER_BUFFER)
       return RESOURCE_ATC(res)->StageReferences[stage];
 
-   if (res->Type == GL_UNIFORM_BLOCK || res->Type == GL_SHADER_STORAGE_BLOCK)
-      return shProg->InterfaceBlockStageIndex[stage][index] != -1;
+   if (res->Type == GL_UNIFORM_BLOCK)
+      return shProg->UniformBlocks[index].stageref & (1 << stage);
+
+   if (res->Type == GL_SHADER_STORAGE_BLOCK)
+      return shProg->ShaderStorageBlocks[index].stageref & (1 << stage);
 
    return res->StageReferences & (1 << stage);
 }
@@ -1009,7 +942,8 @@ get_buffer_property(struct gl_shader_program *shProg,
    GET_CURRENT_CONTEXT(ctx);
    if (res->Type != GL_UNIFORM_BLOCK &&
        res->Type != GL_ATOMIC_COUNTER_BUFFER &&
-       res->Type != GL_SHADER_STORAGE_BLOCK)
+       res->Type != GL_SHADER_STORAGE_BLOCK &&
+       res->Type != GL_TRANSFORM_FEEDBACK_BUFFER)
       goto invalid_operation;
 
    if (res->Type == GL_UNIFORM_BLOCK) {
@@ -1110,6 +1044,30 @@ get_buffer_property(struct gl_shader_program *shProg,
          }
          return RESOURCE_ATC(res)->NumUniforms;
       }
+   } else if (res->Type == GL_TRANSFORM_FEEDBACK_BUFFER) {
+      switch (prop) {
+      case GL_BUFFER_BINDING:
+         *val = RESOURCE_XFB(res)->Binding;
+         return 1;
+      case GL_NUM_ACTIVE_VARIABLES:
+         *val = RESOURCE_XFB(res)->NumVaryings;
+         return 1;
+      case GL_ACTIVE_VARIABLES:
+         int i = 0;
+         for ( ; i < shProg->LinkedTransformFeedback.NumVarying; i++) {
+            unsigned index =
+               shProg->LinkedTransformFeedback.Varyings[i].BufferIndex;
+            struct gl_program_resource *buf_res =
+               _mesa_program_resource_find_index(shProg,
+                                                 GL_TRANSFORM_FEEDBACK_BUFFER,
+                                                 index);
+            assert(buf_res);
+            if (res == buf_res) {
+               *val++ = i;
+            }
+         }
+         return RESOURCE_XFB(res)->NumVaryings;
+      }
    }
    assert(!"support for property type not implemented");
 
@@ -1140,6 +1098,7 @@ _mesa_program_resource_prop(struct gl_shader_program *shProg,
    case GL_NAME_LENGTH:
       switch (res->Type) {
       case GL_ATOMIC_COUNTER_BUFFER:
+      case GL_TRANSFORM_FEEDBACK_BUFFER:
          goto invalid_operation;
       default:
          /* Resource name length + terminator. */
@@ -1157,7 +1116,7 @@ _mesa_program_resource_prop(struct gl_shader_program *shProg,
          *val = RESOURCE_VAR(res)->type->gl_type;
          return 1;
       case GL_TRANSFORM_FEEDBACK_VARYING:
-         *val = RESOURCE_XFB(res)->Type;
+         *val = RESOURCE_XFV(res)->Type;
          return 1;
       default:
          goto invalid_operation;
@@ -1180,15 +1139,23 @@ _mesa_program_resource_prop(struct gl_shader_program *shProg,
          *val = MAX2(_mesa_program_resource_array_size(res), 1);
          return 1;
       case GL_TRANSFORM_FEEDBACK_VARYING:
-         *val = MAX2(RESOURCE_XFB(res)->Size, 1);
+         *val = MAX2(RESOURCE_XFV(res)->Size, 1);
          return 1;
       default:
          goto invalid_operation;
       }
    case GL_OFFSET:
-      VALIDATE_TYPE_2(GL_UNIFORM, GL_BUFFER_VARIABLE);
-      *val = RESOURCE_UNI(res)->offset;
-      return 1;
+      switch (res->Type) {
+      case GL_UNIFORM:
+      case GL_BUFFER_VARIABLE:
+         *val = RESOURCE_UNI(res)->offset;
+         return 1;
+      case GL_TRANSFORM_FEEDBACK_VARYING:
+         *val = RESOURCE_XFV(res)->Offset;
+         return 1;
+      default:
+         goto invalid_operation;
+      }
    case GL_BLOCK_INDEX:
       VALIDATE_TYPE_2(GL_UNIFORM, GL_BUFFER_VARIABLE);
       *val = RESOURCE_UNI(res)->block_index;
@@ -1314,6 +1281,16 @@ _mesa_program_resource_prop(struct gl_shader_program *shProg,
       default:
          goto invalid_operation;
       }
+
+   case GL_TRANSFORM_FEEDBACK_BUFFER_INDEX:
+      VALIDATE_TYPE(GL_TRANSFORM_FEEDBACK_VARYING);
+      *val = RESOURCE_XFV(res)->BufferIndex;
+      return 1;
+   case GL_TRANSFORM_FEEDBACK_BUFFER_STRIDE:
+      VALIDATE_TYPE(GL_TRANSFORM_FEEDBACK_BUFFER);
+      *val = RESOURCE_XFB(res)->Stride * 4;
+      return 1;
+
    default:
       goto invalid_enum;
    }

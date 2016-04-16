@@ -183,7 +183,7 @@ vc4_nir_lower_vertex_attr(struct vc4_compile *c, nir_builder *b,
          * with an offset value of 0.
          */
         assert(nir_src_as_const_value(intr->src[0]) &&
-               nir_src_as_const_value(intr->src[0])->u[0] == 0);
+               nir_src_as_const_value(intr->src[0])->u32[0] == 0);
 
         /* Generate dword loads for the VPM values (Since these intrinsics may
          * be reordered, the actual reads will be generated at the top of the
@@ -197,7 +197,7 @@ vc4_nir_lower_vertex_attr(struct vc4_compile *c, nir_builder *b,
                 intr_comp->num_components = 1;
                 intr_comp->const_index[0] = intr->const_index[0] * 4 + i;
                 intr_comp->src[0] = nir_src_for_ssa(nir_imm_int(b, 0));
-                nir_ssa_dest_init(&intr_comp->instr, &intr_comp->dest, 1, NULL);
+                nir_ssa_dest_init(&intr_comp->instr, &intr_comp->dest, 1, 32, NULL);
                 nir_builder_instr_insert(b, &intr_comp->instr);
 
                 vpm_reads[i] = &intr_comp->dest.ssa;
@@ -256,7 +256,7 @@ vc4_nir_lower_fs_input(struct vc4_compile *c, nir_builder *b,
          * with an offset value of 0.
          */
         assert(nir_src_as_const_value(intr->src[0]) &&
-               nir_src_as_const_value(intr->src[0])->u[0] == 0);
+               nir_src_as_const_value(intr->src[0])->u32[0] == 0);
 
         /* Generate scalar loads equivalent to the original VEC4. */
         nir_ssa_def *dests[4];
@@ -267,7 +267,7 @@ vc4_nir_lower_fs_input(struct vc4_compile *c, nir_builder *b,
                 intr_comp->const_index[0] = intr->const_index[0] * 4 + i;
                 intr_comp->src[0] = nir_src_for_ssa(nir_imm_int(b, 0));
 
-                nir_ssa_dest_init(&intr_comp->instr, &intr_comp->dest, 1, NULL);
+                nir_ssa_dest_init(&intr_comp->instr, &intr_comp->dest, 1, 32, NULL);
                 nir_builder_instr_insert(b, &intr_comp->instr);
 
                 dests[i] = &intr_comp->dest.ssa;
@@ -339,7 +339,7 @@ vc4_nir_lower_output(struct vc4_compile *c, nir_builder *b,
          * with an offset value of 0.
          */
         assert(nir_src_as_const_value(intr->src[1]) &&
-               nir_src_as_const_value(intr->src[1])->u[0] == 0);
+               nir_src_as_const_value(intr->src[1])->u32[0] == 0);
 
         b->cursor = nir_before_instr(&intr->instr);
 
@@ -378,26 +378,16 @@ vc4_nir_lower_uniform(struct vc4_compile *c, nir_builder *b,
                 nir_intrinsic_instr *intr_comp =
                         nir_intrinsic_instr_create(c->s, intr->intrinsic);
                 intr_comp->num_components = 1;
-                nir_ssa_dest_init(&intr_comp->instr, &intr_comp->dest, 1, NULL);
+                nir_ssa_dest_init(&intr_comp->instr, &intr_comp->dest, 1, 32, NULL);
 
-                /* Convert the uniform (not user_clip_plane) offset to bytes.
-                 * If it happens to be a constant, constant-folding will clean
-                 * up the shift for us.
+                /* Convert the uniform offset to bytes.  If it happens to be a
+                 * constant, constant-folding will clean up the shift for us.
                  */
-                if (intr->intrinsic == nir_intrinsic_load_uniform) {
-                        /* Convert the base offset to bytes and add the
-                         * component
-                         */
-                        intr_comp->const_index[0] = (intr->const_index[0] * 16 + i * 4);
+                intr_comp->const_index[0] = (intr->const_index[0] * 16 + i * 4);
 
-                        intr_comp->src[0] =
-                                nir_src_for_ssa(nir_ishl(b, intr->src[0].ssa,
-                                                         nir_imm_int(b, 4)));
-                } else {
-                        assert(intr->intrinsic ==
-                               nir_intrinsic_load_user_clip_plane);
-                        intr_comp->const_index[0] = intr->const_index[0] * 4 + i;
-                }
+                intr_comp->src[0] =
+                        nir_src_for_ssa(nir_ishl(b, intr->src[0].ssa,
+                                                 nir_imm_int(b, 4)));
 
                 dests[i] = &intr_comp->dest.ssa;
 
@@ -428,10 +418,10 @@ vc4_nir_lower_io_instr(struct vc4_compile *c, nir_builder *b,
                 break;
 
         case nir_intrinsic_load_uniform:
-        case nir_intrinsic_load_user_clip_plane:
                 vc4_nir_lower_uniform(c, b, intr);
                 break;
 
+        case nir_intrinsic_load_user_clip_plane:
         default:
                 break;
         }
@@ -465,9 +455,9 @@ vc4_nir_lower_io_impl(struct vc4_compile *c, nir_function_impl *impl)
 }
 
 void
-vc4_nir_lower_io(struct vc4_compile *c)
+vc4_nir_lower_io(nir_shader *s, struct vc4_compile *c)
 {
-        nir_foreach_function(c->s, function) {
+        nir_foreach_function(s, function) {
                 if (function->impl)
                         vc4_nir_lower_io_impl(c, function->impl);
         }

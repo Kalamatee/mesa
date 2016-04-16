@@ -1369,6 +1369,11 @@ _mesa_BindRenderbufferEXT(GLenum target, GLuint renderbuffer)
    bind_renderbuffer(target, renderbuffer, true);
 }
 
+/**
+ * ARB_framebuffer_no_attachment - Application passes requested param's
+ * here. NOTE: NumSamples requested need not be _NumSamples which is
+ * what the hw supports.
+ */
 static void
 framebuffer_parameteri(struct gl_context *ctx, struct gl_framebuffer *fb,
                        GLenum pname, GLint param, const char *func)
@@ -3623,6 +3628,23 @@ _mesa_get_framebuffer_attachment_parameter(struct gl_context *ctx,
                      _mesa_enum_to_string(attachment));
          return;
       }
+
+      /* The specs are not clear about how to handle
+       * GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME with the default framebuffer,
+       * but dEQP-GLES3 expects an INVALID_ENUM error. This has also been
+       * discussed in:
+       *
+       * https://cvs.khronos.org/bugzilla/show_bug.cgi?id=12928#c1
+       * and https://bugs.freedesktop.org/show_bug.cgi?id=31947
+       */
+      if (pname == GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME) {
+         _mesa_error(ctx, GL_INVALID_ENUM,
+                     "%s(requesting GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME "
+                     "when GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE is "
+                     "GL_FRAMEBUFFER_DEFAULT is not allowed)", caller);
+         return;
+      }
+
       /* the default / window-system FBO */
       att = _mesa_get_fb0_attachment(ctx, buffer, attachment);
    }

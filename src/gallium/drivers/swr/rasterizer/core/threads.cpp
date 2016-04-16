@@ -24,7 +24,6 @@
 #include <stdio.h>
 #include <thread>
 #include <algorithm>
-#include <unordered_set>
 #include <float.h>
 #include <vector>
 #include <utility>
@@ -44,7 +43,6 @@
 #include "rasterizer.h"
 #include "rdtsc_core.h"
 #include "tilemgr.h"
-#include "core/multisample.h"
 
 
 
@@ -70,7 +68,10 @@ void CalculateProcessorTopology(CPUNumaNodes& out_nodes, uint32_t& out_numThread
 
 #if defined(_WIN32)
 
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX buffer[KNOB_MAX_NUM_THREADS];
+    static std::mutex m;
+    std::lock_guard<std::mutex> l(m);
+
+    static SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX buffer[KNOB_MAX_NUM_THREADS];
     DWORD bufSize = sizeof(buffer);
 
     BOOL ret = GetLogicalProcessorInformationEx(RelationProcessorCore, buffer, &bufSize);
@@ -265,9 +266,7 @@ void bindThread(uint32_t threadId, uint32_t procGroupId = 0, bool bindProcGroup=
 INLINE
 uint64_t GetEnqueuedDraw(SWR_CONTEXT *pContext)
 {
-    //uint64_t result = _InterlockedCompareExchange64((volatile __int64*)&pContext->DrawEnqueued, 0, 0);
-    //return result;
-    return pContext->DrawEnqueued;
+    return pContext->dcRing.GetHead();
 }
 
 INLINE
@@ -283,176 +282,36 @@ bool CheckDependency(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint64_t lastReti
     return (pDC->dependency > lastRetiredDraw);
 }
 
-void ClearColorHotTile(const HOTTILE* pHotTile)  // clear a macro tile from float4 clear data.
+INLINE int64_t CompleteDrawContext(SWR_CONTEXT* pContext, DRAW_CONTEXT* pDC)
 {
-    // Load clear color into SIMD register...
-    float *pClearData = (float*)(pHotTile->clearData);
-    simdscalar valR = _simd_broadcast_ss(&pClearData[0]);
-    simdscalar valG = _simd_broadcast_ss(&pClearData[1]);
-    simdscalar valB = _simd_broadcast_ss(&pClearData[2]);
-    simdscalar valA = _simd_broadcast_ss(&pClearData[3]);
+    int64_t result = InterlockedDecrement64(&pDC->threadsDone);
+    SWR_ASSERT(result >= 0);
 
-    float *pfBuf = (float*)pHotTile->pBuffer;
-    uint32_t numSamples = pHotTile->numSamples;
-
-    for (uint32_t row = 0; row < KNOB_MACROTILE_Y_DIM; row += KNOB_TILE_Y_DIM)
+    if (result == 0)
     {
-        for (uint32_t col = 0; col < KNOB_MACROTILE_X_DIM; col += KNOB_TILE_X_DIM)
+        // Cleanup memory allocations
+        pDC->pArena->Reset(true);
+        if (!pDC->isCompute)
         {
-            for (uint32_t si = 0; si < (KNOB_TILE_X_DIM * KNOB_TILE_Y_DIM * numSamples); si += SIMD_TILE_X_DIM * SIMD_TILE_Y_DIM) //SIMD_TILE_X_DIM * SIMD_TILE_Y_DIM); si++)
-            {
-                _simd_store_ps(pfBuf, valR);
-                pfBuf += KNOB_SIMD_WIDTH;
-                _simd_store_ps(pfBuf, valG);
-                pfBuf += KNOB_SIMD_WIDTH;
-                _simd_store_ps(pfBuf, valB);
-                pfBuf += KNOB_SIMD_WIDTH;
-                _simd_store_ps(pfBuf, valA);
-                pfBuf += KNOB_SIMD_WIDTH;
-            }
+            pDC->pTileMgr->initialize();
         }
+        if (pDC->cleanupState)
+        {
+            pDC->pState->pArena->Reset(true);
+        }
+
+        _ReadWriteBarrier();
+
+        pContext->dcRing.Dequeue();  // Remove from tail
     }
+
+    return result;
 }
 
-void ClearDepthHotTile(const HOTTILE* pHotTile)  // clear a macro tile from float4 clear data.
-{
-    // Load clear color into SIMD register...
-    float *pClearData = (float*)(pHotTile->clearData);
-    simdscalar valZ = _simd_broadcast_ss(&pClearData[0]);
-
-    float *pfBuf = (float*)pHotTile->pBuffer;
-    uint32_t numSamples = pHotTile->numSamples;
-
-    for (uint32_t row = 0; row < KNOB_MACROTILE_Y_DIM; row += KNOB_TILE_Y_DIM)
-    {
-        for (uint32_t col = 0; col < KNOB_MACROTILE_X_DIM; col += KNOB_TILE_X_DIM)
-        {
-            for (uint32_t si = 0; si < (KNOB_TILE_X_DIM * KNOB_TILE_Y_DIM * numSamples); si += SIMD_TILE_X_DIM * SIMD_TILE_Y_DIM)
-            {
-                _simd_store_ps(pfBuf, valZ);
-                pfBuf += KNOB_SIMD_WIDTH;
-            }
-        }
-    }
-}
-
-void ClearStencilHotTile(const HOTTILE* pHotTile)
-{
-    // convert from F32 to U8.
-    uint8_t clearVal = (uint8_t)(pHotTile->clearData[0]);
-    //broadcast 32x into __m256i...
-    simdscalari valS = _simd_set1_epi8(clearVal);
-
-    simdscalari* pBuf = (simdscalari*)pHotTile->pBuffer;
-    uint32_t numSamples = pHotTile->numSamples;
-
-    for (uint32_t row = 0; row < KNOB_MACROTILE_Y_DIM; row += KNOB_TILE_Y_DIM)
-    {
-        for (uint32_t col = 0; col < KNOB_MACROTILE_X_DIM; col += KNOB_TILE_X_DIM)
-        {
-            // We're putting 4 pixels in each of the 32-bit slots, so increment 4 times as quickly.
-            for (uint32_t si = 0; si < (KNOB_TILE_X_DIM * KNOB_TILE_Y_DIM * numSamples); si += SIMD_TILE_X_DIM * SIMD_TILE_Y_DIM * 4)
-            {
-                _simd_store_si(pBuf, valS);
-                pBuf += 1;
-            }
-        }
-    }
-}
-
-// for draw calls, we initialize the active hot tiles and perform deferred
-// load on them if tile is in invalid state. we do this in the outer thread loop instead of inside
-// the draw routine itself mainly for performance, to avoid unnecessary setup
-// every triangle
-// @todo support deferred clear
-INLINE
-void InitializeHotTiles(SWR_CONTEXT* pContext, DRAW_CONTEXT* pDC, uint32_t macroID, const TRIANGLE_WORK_DESC* pWork)
-{
-    const API_STATE& state = GetApiState(pDC);
-    HotTileMgr *pHotTileMgr = pContext->pHotTileMgr;
-
-    uint32_t x, y;
-    MacroTileMgr::getTileIndices(macroID, x, y);
-    x *= KNOB_MACROTILE_X_DIM;
-    y *= KNOB_MACROTILE_Y_DIM;
-
-    uint32_t numSamples = GetNumSamples(state.rastState.sampleCount);
-
-    // check RT if enabled
-    unsigned long rtSlot = 0;
-    uint32_t colorHottileEnableMask = state.colorHottileEnable;
-    while(_BitScanForward(&rtSlot, colorHottileEnableMask))
-    {
-        HOTTILE* pHotTile = pHotTileMgr->GetHotTile(pContext, pDC, macroID, (SWR_RENDERTARGET_ATTACHMENT)(SWR_ATTACHMENT_COLOR0 + rtSlot), true, numSamples);
-
-        if (pHotTile->state == HOTTILE_INVALID)
-        {
-            RDTSC_START(BELoadTiles);
-            // invalid hottile before draw requires a load from surface before we can draw to it
-            pContext->pfnLoadTile(GetPrivateState(pDC), KNOB_COLOR_HOT_TILE_FORMAT, (SWR_RENDERTARGET_ATTACHMENT)(SWR_ATTACHMENT_COLOR0 + rtSlot), x, y, pHotTile->renderTargetArrayIndex, pHotTile->pBuffer);
-            pHotTile->state = HOTTILE_DIRTY;
-            RDTSC_STOP(BELoadTiles, 0, 0);
-        }
-        else if (pHotTile->state == HOTTILE_CLEAR)
-        {
-            RDTSC_START(BELoadTiles);
-            // Clear the tile.
-            ClearColorHotTile(pHotTile);
-            pHotTile->state = HOTTILE_DIRTY;
-            RDTSC_STOP(BELoadTiles, 0, 0);
-        }
-        colorHottileEnableMask &= ~(1 << rtSlot);
-    }
-
-    // check depth if enabled
-    if (state.depthHottileEnable)
-    {
-        HOTTILE* pHotTile = pHotTileMgr->GetHotTile(pContext, pDC, macroID, SWR_ATTACHMENT_DEPTH, true, numSamples);
-        if (pHotTile->state == HOTTILE_INVALID)
-        {
-            RDTSC_START(BELoadTiles);
-            // invalid hottile before draw requires a load from surface before we can draw to it
-            pContext->pfnLoadTile(GetPrivateState(pDC), KNOB_DEPTH_HOT_TILE_FORMAT, SWR_ATTACHMENT_DEPTH, x, y, pHotTile->renderTargetArrayIndex, pHotTile->pBuffer);
-            pHotTile->state = HOTTILE_DIRTY;
-            RDTSC_STOP(BELoadTiles, 0, 0);
-        }
-        else if (pHotTile->state == HOTTILE_CLEAR)
-        {
-            RDTSC_START(BELoadTiles);
-            // Clear the tile.
-            ClearDepthHotTile(pHotTile);
-            pHotTile->state = HOTTILE_DIRTY;
-            RDTSC_STOP(BELoadTiles, 0, 0);
-        }
-    }
-
-    // check stencil if enabled
-    if (state.stencilHottileEnable)
-    {
-        HOTTILE* pHotTile = pHotTileMgr->GetHotTile(pContext, pDC, macroID, SWR_ATTACHMENT_STENCIL, true, numSamples);
-        if (pHotTile->state == HOTTILE_INVALID)
-        {
-            RDTSC_START(BELoadTiles);
-            // invalid hottile before draw requires a load from surface before we can draw to it
-            pContext->pfnLoadTile(GetPrivateState(pDC), KNOB_STENCIL_HOT_TILE_FORMAT, SWR_ATTACHMENT_STENCIL, x, y, pHotTile->renderTargetArrayIndex, pHotTile->pBuffer);
-            pHotTile->state = HOTTILE_DIRTY;
-            RDTSC_STOP(BELoadTiles, 0, 0);
-        }
-        else if (pHotTile->state == HOTTILE_CLEAR)
-        {
-            RDTSC_START(BELoadTiles);
-            // Clear the tile.
-            ClearStencilHotTile(pHotTile);
-            pHotTile->state = HOTTILE_DIRTY;
-            RDTSC_STOP(BELoadTiles, 0, 0);
-        }
-    }
-}
-
-INLINE bool FindFirstIncompleteDraw(SWR_CONTEXT* pContext, uint64_t& curDrawBE)
+INLINE bool FindFirstIncompleteDraw(SWR_CONTEXT* pContext, uint64_t& curDrawBE, uint64_t& drawEnqueued)
 {
     // increment our current draw id to the first incomplete draw
-    uint64_t drawEnqueued = GetEnqueuedDraw(pContext);
+    drawEnqueued = GetEnqueuedDraw(pContext);
     while (curDrawBE < drawEnqueued)
     {
         DRAW_CONTEXT *pDC = &pContext->dcRing[curDrawBE % KNOB_MAX_DRAWS_IN_FLIGHT];
@@ -460,13 +319,14 @@ INLINE bool FindFirstIncompleteDraw(SWR_CONTEXT* pContext, uint64_t& curDrawBE)
         // If its not compute and FE is not done then break out of loop.
         if (!pDC->doneFE && !pDC->isCompute) break;
 
-        bool isWorkComplete = (pDC->isCompute) ?
-            pDC->pDispatch->isWorkComplete() : pDC->pTileMgr->isWorkComplete();
+        bool isWorkComplete = pDC->isCompute ?
+            pDC->pDispatch->isWorkComplete() :
+            pDC->pTileMgr->isWorkComplete();
 
         if (isWorkComplete)
         {
             curDrawBE++;
-            InterlockedIncrement(&pDC->threadsDoneBE);
+            CompleteDrawContext(pContext, pDC);
         }
         else
         {
@@ -496,11 +356,14 @@ void WorkOnFifoBE(
     SWR_CONTEXT *pContext,
     uint32_t workerId,
     uint64_t &curDrawBE,
-    std::unordered_set<uint32_t>& lockedTiles)
+    TileSet& lockedTiles,
+    uint32_t numaNode,
+    uint32_t numaMask)
 {
     // Find the first incomplete draw that has pending work. If no such draw is found then
     // return. FindFirstIncompleteDraw is responsible for incrementing the curDrawBE.
-    if (FindFirstIncompleteDraw(pContext, curDrawBE) == false)
+    uint64_t drawEnqueued = 0;
+    if (FindFirstIncompleteDraw(pContext, curDrawBE, drawEnqueued) == false)
     {
         return;
     }
@@ -515,7 +378,7 @@ void WorkOnFifoBE(
     //   2. If we're trying to work on draws after curDrawBE, we are restricted to 
     //      working on those macrotiles that are known to be complete in the prior draw to
     //      maintain order. The locked tiles provides the history to ensures this.
-    for (uint64_t i = curDrawBE; i < GetEnqueuedDraw(pContext); ++i)
+    for (uint64_t i = curDrawBE; i < drawEnqueued; ++i)
     {
         DRAW_CONTEXT *pDC = &pContext->dcRing[i % KNOB_MAX_DRAWS_IN_FLIGHT];
 
@@ -537,68 +400,78 @@ void WorkOnFifoBE(
 
         for (uint32_t tileID : macroTiles)
         {
+            // Only work on tiles for for this numa node
+            uint32_t x, y;
+            pDC->pTileMgr->getTileIndices(tileID, x, y);
+            if (((x ^ y) & numaMask) != numaNode)
+            {
+                continue;
+            }
+
             MacroTileQueue &tile = pDC->pTileMgr->getMacroTileQueue(tileID);
             
-            // can only work on this draw if it's not in use by other threads
-            if (lockedTiles.find(tileID) == lockedTiles.end())
+            if (!tile.getNumQueued())
             {
-                if (tile.getNumQueued())
+                continue;
+            }
+
+            // can only work on this draw if it's not in use by other threads
+            if (lockedTiles.find(tileID) != lockedTiles.end())
+            {
+                continue;
+            }
+
+            if (tile.tryLock())
+            {
+                BE_WORK *pWork;
+
+                RDTSC_START(WorkerFoundWork);
+
+                uint32_t numWorkItems = tile.getNumQueued();
+                SWR_ASSERT(numWorkItems);
+
+                pWork = tile.peek();
+                SWR_ASSERT(pWork);
+                if (pWork->type == DRAW)
                 {
-                    if (tile.tryLock())
-                    {
-                        BE_WORK *pWork;
-
-                        RDTSC_START(WorkerFoundWork);
-
-                        uint32_t numWorkItems = tile.getNumQueued();
-
-                        if (numWorkItems != 0)
-                        {
-                            pWork = tile.peek();
-                            SWR_ASSERT(pWork);
-                            if (pWork->type == DRAW)
-                            {
-                                InitializeHotTiles(pContext, pDC, tileID, (const TRIANGLE_WORK_DESC*)&pWork->desc);
-                            }
-                        }
-
-                        while ((pWork = tile.peek()) != nullptr)
-                        {
-                            pWork->pfnWork(pDC, workerId, tileID, &pWork->desc);
-                            tile.dequeue();
-                        }
-                        RDTSC_STOP(WorkerFoundWork, numWorkItems, pDC->drawId);
-
-                        _ReadWriteBarrier();
-
-                        pDC->pTileMgr->markTileComplete(tileID);
-
-                        // Optimization: If the draw is complete and we're the last one to have worked on it then
-                        // we can reset the locked list as we know that all previous draws before the next are guaranteed to be complete.
-                        if ((curDrawBE == i) && pDC->pTileMgr->isWorkComplete())
-                        {
-                            // We can increment the current BE and safely move to next draw since we know this draw is complete.
-                            curDrawBE++;
-                            InterlockedIncrement(&pDC->threadsDoneBE);
-
-                            lastRetiredDraw++;
-
-                            lockedTiles.clear();
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        // This tile is already locked. So let's add it to our locked tiles set. This way we don't try locking this one again.
-                        lockedTiles.insert(tileID);
-                    }
+                    pContext->pHotTileMgr->InitializeHotTiles(pContext, pDC, tileID);
                 }
+
+                while ((pWork = tile.peek()) != nullptr)
+                {
+                    pWork->pfnWork(pDC, workerId, tileID, &pWork->desc);
+                    tile.dequeue();
+                }
+                RDTSC_STOP(WorkerFoundWork, numWorkItems, pDC->drawId);
+
+                _ReadWriteBarrier();
+
+                pDC->pTileMgr->markTileComplete(tileID);
+
+                // Optimization: If the draw is complete and we're the last one to have worked on it then
+                // we can reset the locked list as we know that all previous draws before the next are guaranteed to be complete.
+                if ((curDrawBE == i) && pDC->pTileMgr->isWorkComplete())
+                {
+                    // We can increment the current BE and safely move to next draw since we know this draw is complete.
+                    curDrawBE++;
+                    CompleteDrawContext(pContext, pDC);
+
+                    lastRetiredDraw++;
+
+                    lockedTiles.clear();
+                    break;
+                }
+            }
+            else
+            {
+                // This tile is already locked. So let's add it to our locked tiles set. This way we don't try locking this one again.
+                lockedTiles.insert(tileID);
             }
         }
     }
 }
 
-void WorkOnFifoFE(SWR_CONTEXT *pContext, uint32_t workerId, uint64_t &curDrawFE, UCHAR numaNode)
+void WorkOnFifoFE(SWR_CONTEXT *pContext, uint32_t workerId, uint64_t &curDrawFE)
 {
     // Try to grab the next DC from the ring
     uint64_t drawEnqueued = GetEnqueuedDraw(pContext);
@@ -608,8 +481,8 @@ void WorkOnFifoFE(SWR_CONTEXT *pContext, uint32_t workerId, uint64_t &curDrawFE,
         DRAW_CONTEXT *pDC = &pContext->dcRing[dcSlot];
         if (pDC->isCompute || pDC->doneFE || pDC->FeLock)
         {
+            CompleteDrawContext(pContext, pDC);
             curDrawFE++;
-            InterlockedIncrement(&pDC->threadsDoneFE);
         }
         else
         {
@@ -651,48 +524,44 @@ void WorkOnCompute(
     uint32_t workerId,
     uint64_t& curDrawBE)
 {
-    if (FindFirstIncompleteDraw(pContext, curDrawBE) == false)
+    uint64_t drawEnqueued = 0;
+    if (FindFirstIncompleteDraw(pContext, curDrawBE, drawEnqueued) == false)
     {
         return;
     }
 
     uint64_t lastRetiredDraw = pContext->dcRing[curDrawBE % KNOB_MAX_DRAWS_IN_FLIGHT].drawId - 1;
 
-    DRAW_CONTEXT *pDC = &pContext->dcRing[curDrawBE % KNOB_MAX_DRAWS_IN_FLIGHT];
-    if (pDC->isCompute == false) return;
-
-    // check dependencies
-    if (CheckDependency(pContext, pDC, lastRetiredDraw))
+    for (uint64_t i = curDrawBE; curDrawBE < drawEnqueued; ++i)
     {
-        return;
-    }
+        DRAW_CONTEXT *pDC = &pContext->dcRing[i % KNOB_MAX_DRAWS_IN_FLIGHT];
+        if (pDC->isCompute == false) return;
 
-    SWR_ASSERT(pDC->pDispatch != nullptr);
-    DispatchQueue& queue = *pDC->pDispatch;
-
-    // Is there any work remaining?
-    if (queue.getNumQueued() > 0)
-    {
-        bool lastToComplete = false;
-
-        uint32_t threadGroupId = 0;
-        while (queue.getWork(threadGroupId))
+        // check dependencies
+        if (CheckDependency(pContext, pDC, lastRetiredDraw))
         {
-            ProcessComputeBE(pDC, workerId, threadGroupId);
-
-            lastToComplete = queue.finishedWork();
+            return;
         }
 
-        _ReadWriteBarrier();
+        SWR_ASSERT(pDC->pDispatch != nullptr);
+        DispatchQueue& queue = *pDC->pDispatch;
 
-        if (lastToComplete)
+        // Is there any work remaining?
+        if (queue.getNumQueued() > 0)
         {
-            SWR_ASSERT(queue.isWorkComplete() == true);
-            pDC->doneCompute = true;
+            void* pSpillFillBuffer = nullptr;
+            uint32_t threadGroupId = 0;
+            while (queue.getWork(threadGroupId))
+            {
+                ProcessComputeBE(pDC, workerId, threadGroupId, pSpillFillBuffer);
+
+                queue.finishedWork();
+            }
         }
     }
 }
 
+template<bool IsFEThread, bool IsBEThread>
 DWORD workerThreadMain(LPVOID pData)
 {
     THREAD_DATA *pThreadData = (THREAD_DATA*)pData;
@@ -704,14 +573,15 @@ DWORD workerThreadMain(LPVOID pData)
 
     RDTSC_INIT(threadId);
 
-    int numaNode = (int)pThreadData->numaId;
+    uint32_t numaNode = pThreadData->numaId;
+    uint32_t numaMask = pContext->threadPool.numaMask;
 
     // flush denormals to 0
     _mm_setcsr(_mm_getcsr() | _MM_FLUSH_ZERO_ON | _MM_DENORMALS_ZERO_ON);
 
     // Track tiles locked by other threads. If we try to lock a macrotile and find its already
     // locked then we'll add it to this list so that we don't try and lock it again.
-    std::unordered_set<uint32_t> lockedTiles;
+    TileSet lockedTiles;
 
     // each worker has the ability to work on any of the queued draws as long as certain
     // conditions are met. the data associated
@@ -732,10 +602,10 @@ DWORD workerThreadMain(LPVOID pData)
     //    the worker can safely increment its oldestDraw counter and move on to the next draw.
     std::unique_lock<std::mutex> lock(pContext->WaitLock, std::defer_lock);
 
-    auto threadHasWork = [&](uint64_t curDraw) { return curDraw != pContext->DrawEnqueued; };
+    auto threadHasWork = [&](uint64_t curDraw) { return curDraw != pContext->dcRing.GetHead(); };
 
-    uint64_t curDrawBE = 1;
-    uint64_t curDrawFE = 1;
+    uint64_t curDrawBE = 0;
+    uint64_t curDrawFE = 0;
 
     while (pContext->threadPool.inThreadShutdown == false)
     {
@@ -775,25 +645,38 @@ DWORD workerThreadMain(LPVOID pData)
             }
         }
 
-        RDTSC_START(WorkerWorkOnFifoBE);
-        WorkOnFifoBE(pContext, workerId, curDrawBE, lockedTiles);
-        RDTSC_STOP(WorkerWorkOnFifoBE, 0, 0);
+        if (IsBEThread)
+        {
+            RDTSC_START(WorkerWorkOnFifoBE);
+            WorkOnFifoBE(pContext, workerId, curDrawBE, lockedTiles, numaNode, numaMask);
+            RDTSC_STOP(WorkerWorkOnFifoBE, 0, 0);
 
-        WorkOnCompute(pContext, workerId, curDrawBE);
+            WorkOnCompute(pContext, workerId, curDrawBE);
+        }
 
-        WorkOnFifoFE(pContext, workerId, curDrawFE, numaNode);
+        if (IsFEThread)
+        {
+            WorkOnFifoFE(pContext, workerId, curDrawFE);
+
+            if (!IsBEThread)
+            {
+                curDrawBE = curDrawFE;
+            }
+        }
     }
 
     return 0;
 }
+template<> DWORD workerThreadMain<false, false>(LPVOID) = delete;
 
+template <bool IsFEThread, bool IsBEThread>
 DWORD workerThreadInit(LPVOID pData)
 {
 #if defined(_WIN32)
     __try
 #endif // _WIN32
     {
-        return workerThreadMain(pData);
+        return workerThreadMain<IsFEThread, IsBEThread>(pData);
     }
 
 #if defined(_WIN32)
@@ -805,6 +688,7 @@ DWORD workerThreadInit(LPVOID pData)
 
     return 1;
 }
+template<> DWORD workerThreadInit<false, false>(LPVOID pData) = delete;
 
 void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
 {
@@ -822,6 +706,16 @@ void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
     uint32_t numCoresPerNode    = numHWCoresPerNode;
     uint32_t numHyperThreads    = numHWHyperThreads;
 
+    if (KNOB_MAX_WORKER_THREADS)
+    {
+        SET_KNOB(HYPERTHREADED_FE, false);
+    }
+
+    if (KNOB_HYPERTHREADED_FE)
+    {
+        SET_KNOB(MAX_THREADS_PER_CORE, 0);
+    }
+
     if (KNOB_MAX_NUMA_NODES)
     {
         numNodes = std::min(numNodes, KNOB_MAX_NUMA_NODES);
@@ -835,6 +729,11 @@ void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
     if (KNOB_MAX_THREADS_PER_CORE)
     {
         numHyperThreads = std::min(numHyperThreads, KNOB_MAX_THREADS_PER_CORE);
+    }
+
+    if (numHyperThreads < 2)
+    {
+        SET_KNOB(HYPERTHREADED_FE, false);
     }
 
     // Calculate numThreads
@@ -853,9 +752,12 @@ void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
             numThreads, KNOB_MAX_NUM_THREADS);
     }
 
+    uint32_t numAPIReservedThreads = 1;
+
+
     if (numThreads == 1)
     {
-        // If only 1 worker thread, try to move it to an available
+        // If only 1 worker threads, try to move it to an available
         // HW thread.  If that fails, use the API thread.
         if (numCoresPerNode < numHWCoresPerNode)
         {
@@ -878,8 +780,15 @@ void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
     }
     else
     {
-        // Save a HW thread for the API thread.
-        numThreads--;
+        // Save HW threads for the API if we can
+        if (numThreads > numAPIReservedThreads)
+        {
+            numThreads -= numAPIReservedThreads;
+        }
+        else
+        {
+            numAPIReservedThreads = 0;
+        }
     }
 
     pPool->numThreads = numThreads;
@@ -887,6 +796,7 @@ void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
 
     pPool->inThreadShutdown = false;
     pPool->pThreadData = (THREAD_DATA *)malloc(pPool->numThreads * sizeof(THREAD_DATA));
+    pPool->numaMask = 0;
 
     if (KNOB_MAX_WORKER_THREADS)
     {
@@ -900,17 +810,28 @@ void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
             pPool->pThreadData[workerId].procGroupId = workerId % numProcGroups;
             pPool->pThreadData[workerId].threadId = 0;
             pPool->pThreadData[workerId].numaId = 0;
+            pPool->pThreadData[workerId].coreId = 0;
+            pPool->pThreadData[workerId].htId = 0;
             pPool->pThreadData[workerId].pContext = pContext;
             pPool->pThreadData[workerId].forceBindProcGroup = bForceBindProcGroup;
-            pPool->threads[workerId] = new std::thread(workerThreadInit, &pPool->pThreadData[workerId]);
+            pPool->threads[workerId] = new std::thread(workerThreadInit<true, true>, &pPool->pThreadData[workerId]);
+
+            pContext->NumBEThreads++;
+            pContext->NumFEThreads++;
         }
     }
     else
     {
+        pPool->numaMask = numNodes - 1; // Only works for 2**n numa nodes (1, 2, 4, etc.)
+
         uint32_t workerId = 0;
         for (uint32_t n = 0; n < numNodes; ++n)
         {
             auto& node = nodes[n];
+            if (node.cores.size() == 0)
+            {
+               continue;
+            }
 
             uint32_t numCores = numCoresPerNode;
             for (uint32_t c = 0; c < numCores; ++c)
@@ -918,9 +839,9 @@ void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
                 auto& core = node.cores[c];
                 for (uint32_t t = 0; t < numHyperThreads; ++t)
                 {
-                    if (c == 0 && n == 0 && t == 0)
+                    if (numAPIReservedThreads)
                     {
-                        // Skip core 0, thread0  on node 0 to reserve for API thread
+                        --numAPIReservedThreads;
                         continue;
                     }
 
@@ -928,8 +849,29 @@ void CreateThreadPool(SWR_CONTEXT *pContext, THREAD_POOL *pPool)
                     pPool->pThreadData[workerId].procGroupId = core.procGroup;
                     pPool->pThreadData[workerId].threadId = core.threadIds[t];
                     pPool->pThreadData[workerId].numaId = n;
+                    pPool->pThreadData[workerId].coreId = c;
+                    pPool->pThreadData[workerId].htId = t;
                     pPool->pThreadData[workerId].pContext = pContext;
-                    pPool->threads[workerId] = new std::thread(workerThreadInit, &pPool->pThreadData[workerId]);
+
+                    if (KNOB_HYPERTHREADED_FE)
+                    {
+                        if (t == 0)
+                        {
+                            pContext->NumBEThreads++;
+                            pPool->threads[workerId] = new std::thread(workerThreadInit<false, true>, &pPool->pThreadData[workerId]);
+                        }
+                        else
+                        {
+                            pContext->NumFEThreads++;
+                            pPool->threads[workerId] = new std::thread(workerThreadInit<true, false>, &pPool->pThreadData[workerId]);
+                        }
+                    }
+                    else
+                    {
+                        pPool->threads[workerId] = new std::thread(workerThreadInit<true, true>, &pPool->pThreadData[workerId]);
+                        pContext->NumBEThreads++;
+                        pContext->NumFEThreads++;
+                    }
 
                     ++workerId;
                 }

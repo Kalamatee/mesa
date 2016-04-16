@@ -786,7 +786,7 @@ load_unswizzled_block(struct gallivm_state *gallivm,
 
       dst[i] = LLVMBuildLoad(builder, dst_ptr, "");
 
-      lp_set_load_alignment(dst[i], dst_alignment);
+      LLVMSetAlignment(dst[i], dst_alignment);
    }
 }
 
@@ -830,7 +830,7 @@ store_unswizzled_block(struct gallivm_state *gallivm,
 
       src_ptr = LLVMBuildStore(builder, src[i], src_ptr);
 
-      lp_set_store_alignment(src_ptr, src_alignment);
+      LLVMSetAlignment(src_ptr, src_alignment);
    }
 }
 
@@ -1601,7 +1601,7 @@ generate_unswizzled_blend(struct gallivm_state *gallivm,
    LLVMValueRef fs_src[4][TGSI_NUM_CHANNELS];
    LLVMValueRef fs_src1[4][TGSI_NUM_CHANNELS];
    LLVMValueRef src_alpha[4 * 4];
-   LLVMValueRef src1_alpha[4 * 4];
+   LLVMValueRef src1_alpha[4 * 4] = { NULL };
    LLVMValueRef src_mask[4 * 4];
    LLVMValueRef src[4 * 4];
    LLVMValueRef src1[4 * 4];

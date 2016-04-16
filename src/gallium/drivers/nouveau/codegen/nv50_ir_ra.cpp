@@ -853,7 +853,7 @@ isShortRegOp(Instruction *insn)
 static bool
 isShortRegVal(LValue *lval)
 {
-   if (lval->defs.size() == 0)
+   if (lval->getInsn() == NULL)
       return false;
    for (Value::DefCIterator def = lval->defs.begin();
         def != lval->defs.end(); ++def)
@@ -1327,7 +1327,11 @@ GCRA::simplify()
                bestScore = score;
             }
          }
+#if __cplusplus >= 201103L
+         if (std::isinf(bestScore)) {
+#else
          if (isinf(bestScore)) {
+#endif
             ERROR("no viable spill candidates left\n");
             break;
          }
@@ -1467,7 +1471,7 @@ GCRA::allocateRegisters(ArrayList& insns)
          nodes[i].init(regs, lval);
          RIG.insert(&nodes[i]);
 
-         if (lval->inFile(FILE_GPR) && lval->defs.size() > 0 &&
+         if (lval->inFile(FILE_GPR) && lval->getInsn() != NULL &&
              prog->getTarget()->getChipset() < 0xc0) {
             Instruction *insn = lval->getInsn();
             if (insn->op == OP_MAD || insn->op == OP_SAD)

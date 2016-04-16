@@ -3797,6 +3797,9 @@ svga_shader_emit_helpers(struct svga_shader_emitter *emit)
    }
 
    if (emit->unit == PIPE_SHADER_FRAGMENT) {
+      if (!svga_shader_emit_samplers_decl( emit ))
+         return FALSE;
+
       if (!emit_ps_preamble( emit ))
          return FALSE;
 
@@ -3849,7 +3852,7 @@ svga_shader_emit_instructions(struct svga_shader_emitter *emit,
 
       if (new_tokens) {
          /* Setup texture state for stipple */
-         emit->key.tex[unit].texture_target = PIPE_TEXTURE_2D;
+         emit->sampler_target[unit] = TGSI_TEXTURE_2D;
          emit->key.tex[unit].swizzle_r = TGSI_SWIZZLE_X;
          emit->key.tex[unit].swizzle_g = TGSI_SWIZZLE_Y;
          emit->key.tex[unit].swizzle_b = TGSI_SWIZZLE_Z;

@@ -156,14 +156,8 @@ static void r600_memory_barrier(struct pipe_context *ctx, unsigned flags)
 void r600_preflush_suspend_features(struct r600_common_context *ctx)
 {
 	/* suspend queries */
-	if (ctx->num_cs_dw_nontimer_queries_suspend) {
-		/* Since non-timer queries are suspended during blits,
-		 * we have to guard against double-suspends. */
-		r600_suspend_nontimer_queries(ctx);
-		ctx->nontimer_queries_suspended_by_flush = true;
-	}
-	if (!LIST_IS_EMPTY(&ctx->active_timer_queries))
-		r600_suspend_timer_queries(ctx);
+	if (!LIST_IS_EMPTY(&ctx->active_queries))
+		r600_suspend_queries(ctx);
 
 	ctx->streamout.suspended = false;
 	if (ctx->streamout.begin_emitted) {
@@ -180,12 +174,8 @@ void r600_postflush_resume_features(struct r600_common_context *ctx)
 	}
 
 	/* resume queries */
-	if (!LIST_IS_EMPTY(&ctx->active_timer_queries))
-		r600_resume_timer_queries(ctx);
-	if (ctx->nontimer_queries_suspended_by_flush) {
-		ctx->nontimer_queries_suspended_by_flush = false;
-		r600_resume_nontimer_queries(ctx);
-	}
+	if (!LIST_IS_EMPTY(&ctx->active_queries))
+		r600_resume_queries(ctx);
 }
 
 static void r600_flush_from_st(struct pipe_context *ctx,
@@ -229,7 +219,7 @@ static void r600_flush_dma_ring(void *ctx, unsigned flags,
 	struct radeon_winsys_cs *cs = rctx->dma.cs;
 
 	if (cs->cdw)
-		rctx->ws->cs_flush(cs, flags, &rctx->last_sdma_fence, 0);
+		rctx->ws->cs_flush(cs, flags, &rctx->last_sdma_fence);
 	if (fence)
 		rctx->ws->fence_reference(fence, rctx->last_sdma_fence);
 }
@@ -296,6 +286,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	LIST_INITHEAD(&rctx->texture_buffers);
 
 	r600_init_context_texture_functions(rctx);
+	r600_init_viewport_functions(rctx);
 	r600_streamout_init(rctx);
 	r600_query_init(rctx);
 	cayman_init_msaa(&rctx->b);
@@ -318,7 +309,7 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	if (rscreen->info.has_sdma && !(rscreen->debug_flags & DBG_NO_ASYNC_DMA)) {
 		rctx->dma.cs = rctx->ws->cs_create(rctx->ctx, RING_DMA,
 						   r600_flush_dma_ring,
-						   rctx, NULL);
+						   rctx);
 		rctx->dma.flush = r600_flush_dma_ring;
 	}
 
@@ -379,7 +370,6 @@ static const struct debug_named_value common_debug_options[] = {
 	{ "tex", DBG_TEX, "Print texture info" },
 	{ "compute", DBG_COMPUTE, "Print compute info" },
 	{ "vm", DBG_VM, "Print virtual addresses when creating resources" },
-	{ "trace_cs", DBG_TRACE_CS, "Trace cs and write rlockup_<csid>.c file with faulty cs" },
 	{ "info", DBG_INFO, "Print driver information" },
 
 	/* shaders */
@@ -468,6 +458,8 @@ static const char* r600_get_chip_name(struct r600_common_screen *rscreen)
 	case CHIP_ICELAND: return "AMD ICELAND";
 	case CHIP_CARRIZO: return "AMD CARRIZO";
 	case CHIP_FIJI: return "AMD FIJI";
+	case CHIP_POLARIS10: return "AMD POLARIS10";
+	case CHIP_POLARIS11: return "AMD POLARIS11";
 	case CHIP_STONEY: return "AMD STONEY";
 	default: return "AMD unknown";
 	}
@@ -599,11 +591,19 @@ const char *r600_get_llvm_processor_name(enum radeon_family family)
 	case CHIP_FIJI: return "fiji";
 	case CHIP_STONEY: return "stoney";
 #endif
+#if HAVE_LLVM <= 0x0308
+	case CHIP_POLARIS10: return "tonga";
+	case CHIP_POLARIS11: return "tonga";
+#else
+	case CHIP_POLARIS10: return "polaris10";
+	case CHIP_POLARIS11: return "polaris11";
+#endif
 	default: return "";
 	}
 }
 
 static int r600_get_compute_param(struct pipe_screen *screen,
+        enum pipe_shader_ir ir_type,
         enum pipe_compute_cap param,
         void *ret)
 {
@@ -670,7 +670,7 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 			uint64_t *max_global_size = ret;
 			uint64_t max_mem_alloc_size;
 
-			r600_get_compute_param(screen,
+			r600_get_compute_param(screen, ir_type,
 				PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE,
 				&max_mem_alloc_size);
 
@@ -889,22 +889,16 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 	rscreen->chip_class = rscreen->info.chip_class;
 	rscreen->debug_flags = debug_get_flags_option("R600_DEBUG", common_debug_options, 0);
 
+	rscreen->force_aniso = MIN2(16, debug_get_num_option("R600_TEX_ANISO", -1));
+	if (rscreen->force_aniso >= 0) {
+		printf("radeon: Forcing anisotropy filter to %ix\n",
+		       /* round down to a power of two */
+		       1 << util_logbase2(rscreen->force_aniso));
+	}
+
 	util_format_s3tc_init();
 	pipe_mutex_init(rscreen->aux_context_lock);
 	pipe_mutex_init(rscreen->gpu_load_mutex);
-
-	if (((rscreen->info.drm_major == 2 && rscreen->info.drm_minor >= 28) ||
-	     rscreen->info.drm_major == 3) &&
-	    (rscreen->debug_flags & DBG_TRACE_CS)) {
-		rscreen->trace_bo = (struct r600_resource*)pipe_buffer_create(&rscreen->b,
-										PIPE_BIND_CUSTOM,
-										PIPE_USAGE_STAGING,
-										4096);
-		if (rscreen->trace_bo) {
-			rscreen->trace_ptr = rscreen->ws->buffer_map(rscreen->trace_bo->buf, NULL,
-									PIPE_TRANSFER_UNSYNCHRONIZED);
-		}
-	}
 
 	if (rscreen->debug_flags & DBG_INFO) {
 		printf("pci_id = 0x%x\n", rscreen->info.pci_id);
@@ -951,9 +945,6 @@ void r600_destroy_common_screen(struct r600_common_screen *rscreen)
 	pipe_mutex_destroy(rscreen->aux_context_lock);
 	rscreen->aux_context->destroy(rscreen->aux_context);
 
-	if (rscreen->trace_bo)
-		pipe_resource_reference((struct pipe_resource**)&rscreen->trace_bo, NULL);
-
 	rscreen->ws->destroy(rscreen->ws);
 	FREE(rscreen);
 }
@@ -980,7 +971,7 @@ bool r600_can_dump_shader(struct r600_common_screen *rscreen,
 }
 
 void r600_screen_clear_buffer(struct r600_common_screen *rscreen, struct pipe_resource *dst,
-			      unsigned offset, unsigned size, unsigned value,
+			      uint64_t offset, uint64_t size, unsigned value,
 			      bool is_framebuffer)
 {
 	struct r600_common_context *rctx = (struct r600_common_context*)rscreen->aux_context;

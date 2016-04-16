@@ -239,6 +239,35 @@ vec4_instruction::can_do_source_mods(const struct brw_device_info *devinfo)
 }
 
 bool
+vec4_instruction::can_do_writemask(const struct brw_device_info *devinfo)
+{
+   switch (opcode) {
+   case SHADER_OPCODE_GEN4_SCRATCH_READ:
+   case VS_OPCODE_PULL_CONSTANT_LOAD:
+   case VS_OPCODE_PULL_CONSTANT_LOAD_GEN7:
+   case VS_OPCODE_SET_SIMD4X2_HEADER_GEN9:
+   case TCS_OPCODE_SET_INPUT_URB_OFFSETS:
+   case TCS_OPCODE_SET_OUTPUT_URB_OFFSETS:
+   case TES_OPCODE_CREATE_INPUT_READ_HEADER:
+   case TES_OPCODE_ADD_INDIRECT_URB_OFFSET:
+   case VEC4_OPCODE_URB_READ:
+   case SHADER_OPCODE_MOV_INDIRECT:
+      return false;
+   default:
+      /* The MATH instruction on Gen6 only executes in align1 mode, which does
+       * not support writemasking.
+       */
+      if (devinfo->gen == 6 && is_math())
+         return false;
+
+      if (is_tex())
+         return false;
+
+      return true;
+   }
+}
+
+bool
 vec4_instruction::can_change_types() const
 {
    return dst.type == src[0].type &&
@@ -496,11 +525,6 @@ vec4_visitor::split_uniform_registers()
 	 inst->src[i].reg_offset = 0;
       }
    }
-
-   /* Update that everything is now vector-sized. */
-   for (int i = 0; i < this->uniforms; i++) {
-      this->uniform_size[i] = 1;
-   }
 }
 
 void
@@ -550,6 +574,24 @@ vec4_visitor::pack_uniform_registers()
                                    BRW_GET_SWZ(inst->src[i].swizzle, c) + 1);
          }
       }
+
+      if (inst->opcode == SHADER_OPCODE_MOV_INDIRECT &&
+          inst->src[0].file == UNIFORM) {
+         assert(inst->src[2].file == BRW_IMMEDIATE_VALUE);
+         assert(inst->src[0].subnr == 0);
+
+         unsigned bytes_read = inst->src[2].ud;
+         assert(bytes_read % 4 == 0);
+         unsigned vec4s_read = DIV_ROUND_UP(bytes_read, 16);
+
+         /* We just mark every register touched by a MOV_INDIRECT as being
+          * fully used.  This ensures that it doesn't broken up piecewise by
+          * the next part of our packing algorithm.
+          */
+         int reg = inst->src[0].nr;
+         for (unsigned i = 0; i < vec4s_read; i++)
+            chans_used[reg + i] = 4;
+      }
    }
 
    int new_uniform_count = 0;
@@ -558,7 +600,6 @@ vec4_visitor::pack_uniform_registers()
     * push constants.
     */
    for (int src = 0; src < uniforms; src++) {
-      assert(src < uniform_array_size);
       int size = chans_used[src];
 
       if (size == 0)
@@ -699,17 +740,6 @@ vec4_visitor::opt_algebraic()
             break;
          }
          break;
-      case SHADER_OPCODE_RCP: {
-         vec4_instruction *prev = (vec4_instruction *)inst->prev;
-         if (prev->opcode == SHADER_OPCODE_SQRT) {
-            if (inst->src[0].equals(src_reg(prev->dst))) {
-               inst->opcode = SHADER_OPCODE_RSQ;
-               inst->src[0] = prev->src[0];
-               progress = true;
-            }
-         }
-         break;
-      }
       case SHADER_OPCODE_BROADCAST:
          if (is_uniform(inst->src[0]) ||
              inst->src[1].is_zero()) {
@@ -805,7 +835,7 @@ vec4_visitor::move_push_constants_to_pull_constants()
 	 dst_reg temp = dst_reg(this, glsl_type::vec4_type);
 
 	 emit_pull_constant_load(block, inst, temp, inst->src[i],
-				 pull_constant_loc[uniform]);
+				 pull_constant_loc[uniform], src_reg());
 
 	 inst->src[i].file = temp.file;
          inst->src[i].nr = temp.nr;
@@ -954,10 +984,12 @@ vec4_instruction::can_reswizzle(const struct brw_device_info *devinfo,
                                 int swizzle_mask)
 {
    /* Gen6 MATH instructions can not execute in align16 mode, so swizzles
-    * or writemasking are not allowed.
+    * are not allowed.
     */
-   if (devinfo->gen == 6 && is_math() &&
-       (swizzle != BRW_SWIZZLE_XYZW || dst_writemask != WRITEMASK_XYZW))
+   if (devinfo->gen == 6 && is_math() && swizzle != BRW_SWIZZLE_XYZW)
+      return false;
+
+   if (!can_do_writemask(devinfo) && dst_writemask != WRITEMASK_XYZW)
       return false;
 
    /* If this instruction sets anything not referenced by swizzle, then we'd
@@ -1051,6 +1083,7 @@ vec4_visitor::opt_register_coalesce()
 
          if (is_nop_mov) {
             inst->remove(block);
+            progress = true;
             continue;
          }
       }
@@ -1609,8 +1642,6 @@ vec4_visitor::setup_uniforms(int reg)
     * matter what, or the GPU would hang.
     */
    if (devinfo->gen < 6 && this->uniforms == 0) {
-      assert(this->uniforms < this->uniform_array_size);
-
       stage_prog_data->param =
          reralloc(NULL, stage_prog_data->param, const gl_constant_value *, 4);
       for (unsigned int i = 0; i < 4; i++) {

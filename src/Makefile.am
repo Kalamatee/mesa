@@ -56,6 +56,10 @@ EXTRA_DIST = \
 AM_CFLAGS = $(VISIBILITY_CFLAGS)
 AM_CXXFLAGS = $(VISIBILITY_CXXFLAGS)
 
+if HAVE_INTEL_DRIVERS
+SUBDIRS += intel
+endif
+
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/include/ \
 	-I$(top_srcdir)/src/mapi/ \

@@ -720,6 +720,28 @@ public:
       unsigned is_unmatched_generic_inout:1;
 
       /**
+       * Is this varying used only by transform feedback?
+       *
+       * This is used by the linker to decide if its safe to pack the varying.
+       */
+      unsigned is_xfb_only:1;
+
+      /**
+       * Was a transfor feedback buffer set in the shader?
+       */
+      unsigned explicit_xfb_buffer:1;
+
+      /**
+       * Was a transfor feedback offset set in the shader?
+       */
+      unsigned explicit_xfb_offset:1;
+
+      /**
+       * Was a transfor feedback stride set in the shader?
+       */
+      unsigned explicit_xfb_stride:1;
+
+      /**
        * If non-zero, then this variable may be packed along with other variables
        * into a single varying slot, so this offset should be applied when
        * accessing components.  For example, an offset of 1 means that the x
@@ -735,21 +757,9 @@ public:
 
       /**
        * Non-zero if this variable was created by lowering a named interface
-       * block which was not an array.
-       *
-       * Note that this variable and \c from_named_ifc_block_array will never
-       * both be non-zero.
+       * block.
        */
-      unsigned from_named_ifc_block_nonarray:1;
-
-      /**
-       * Non-zero if this variable was created by lowering a named interface
-       * block which was an array.
-       *
-       * Note that this variable and \c from_named_ifc_block_nonarray will never
-       * both be non-zero.
-       */
-      unsigned from_named_ifc_block_array:1;
+      unsigned from_named_ifc_block:1;
 
       /**
        * Non-zero if the variable must be a shader input. This is useful for
@@ -866,7 +876,7 @@ public:
       unsigned stream;
 
       /**
-       * Atomic or block member offset.
+       * Atomic, transform feedback or block member offset.
        */
       unsigned offset;
 
@@ -876,6 +886,16 @@ public:
        * Not used for non-array variables.
        */
       unsigned max_array_access;
+
+      /**
+       * Transform feedback buffer.
+       */
+      unsigned xfb_buffer;
+
+      /**
+       * Transform feedback stride.
+       */
+      unsigned xfb_stride;
 
       /**
        * Allow (only) ir_variable direct access private members.

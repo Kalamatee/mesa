@@ -39,7 +39,6 @@ upload_sbe(struct brw_context *brw)
    uint32_t urb_entry_read_length;
    uint32_t urb_entry_read_offset;
    uint32_t point_sprite_enables;
-   uint32_t flat_enables;
    int sbe_cmd_length;
 
    uint32_t dw1 =
@@ -66,7 +65,6 @@ upload_sbe(struct brw_context *brw)
     */
    calculate_attr_overrides(brw, attr_overrides,
                             &point_sprite_enables,
-                            &flat_enables,
                             &urb_entry_read_length,
                             &urb_entry_read_offset);
 
@@ -109,7 +107,7 @@ upload_sbe(struct brw_context *brw)
    OUT_BATCH(_3DSTATE_SBE << 16 | (sbe_cmd_length - 2));
    OUT_BATCH(dw1);
    OUT_BATCH(point_sprite_enables);
-   OUT_BATCH(flat_enables);
+   OUT_BATCH(brw->wm.prog_data->flat_inputs);
    if (sbe_cmd_length >= 6) {
       OUT_BATCH(dw4);
       OUT_BATCH(dw5);
@@ -178,7 +176,7 @@ upload_sf(struct brw_context *brw)
       dw3 |= GEN6_SF_USE_STATE_POINT_WIDTH;
 
    /* _NEW_POINT | _NEW_MULTISAMPLE */
-   if ((ctx->Point.SmoothFlag || ctx->Multisample._Enabled) &&
+   if ((ctx->Point.SmoothFlag || _mesa_is_multisample_enabled(ctx)) &&
        !ctx->Point.PointSprite) {
       dw3 |= GEN8_SF_SMOOTH_POINT_ENABLE;
    }
@@ -249,7 +247,7 @@ upload_raster(struct brw_context *brw)
    if (ctx->Point.SmoothFlag)
       dw1 |= GEN8_RASTER_SMOOTH_POINT_ENABLE;
 
-   if (ctx->Multisample._Enabled)
+   if (_mesa_is_multisample_enabled(ctx))
       dw1 |= GEN8_RASTER_API_MULTISAMPLE_ENABLE;
 
    if (ctx->Polygon.OffsetFill)

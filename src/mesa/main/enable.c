@@ -105,6 +105,8 @@ client_state(struct gl_context *ctx, GLenum cap, GLboolean state)
       case GL_POINT_SIZE_ARRAY_OES:
          var = &vao->VertexAttrib[VERT_ATTRIB_POINT_SIZE].Enabled;
          flag = VERT_BIT_POINT_SIZE;
+         FLUSH_VERTICES(ctx, _NEW_PROGRAM);
+         ctx->VertexProgram.PointSizeEnabled = state;
          break;
 
       /* GL_NV_primitive_restart */
@@ -805,7 +807,7 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
 
       /* GL_ARB_sample_shading */
       case GL_SAMPLE_SHADING:
-         if (!_mesa_is_desktop_gl(ctx))
+         if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles3(ctx))
             goto invalid_enum_error;
          CHECK_EXTENSION(ARB_sample_shading, cap);
          if (ctx->Multisample.SampleShading == state)
@@ -1604,7 +1606,7 @@ _mesa_IsEnabled( GLenum cap )
 
       /* ARB_sample_shading */
       case GL_SAMPLE_SHADING:
-         if (!_mesa_is_desktop_gl(ctx))
+         if (!_mesa_is_desktop_gl(ctx) && !_mesa_is_gles3(ctx))
             goto invalid_enum_error;
          CHECK_EXTENSION(ARB_sample_shading);
          return ctx->Multisample.SampleShading;

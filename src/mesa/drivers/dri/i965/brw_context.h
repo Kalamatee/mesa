@@ -900,7 +900,7 @@ struct brw_context
    struct brw_cache cache;
 
    /** IDs for meta stencil blit shader programs. */
-   unsigned meta_stencil_blit_programs[2];
+   struct gl_shader_program *meta_stencil_blit_programs[2];
 
    /* Whether a meta-operation is in progress. */
    bool meta_in_progress;
@@ -1341,7 +1341,8 @@ extern void intelInitClearFuncs(struct dd_function_table *functions);
  */
 extern const char *const brw_vendor_string;
 
-extern const char *brw_get_renderer_string(unsigned deviceID);
+extern const char *
+brw_get_renderer_string(const struct intel_screen *intelScreen);
 
 enum {
    DRI_CONF_BO_REUSE_DISABLED,

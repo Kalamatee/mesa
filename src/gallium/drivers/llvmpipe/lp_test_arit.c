@@ -218,6 +218,7 @@ const float round_values[] = {
       -10.0, -1, 0.0, 12.0,
       -1.49, -0.25, 1.25, 2.51,
       -0.99, -0.01, 0.01, 0.99,
+      -1.5, -0.5, 0.5, 1.5,
       1.401298464324817e-45f, // smallest denormal
       -1.401298464324817e-45f,
       1.62981451e-08f,
@@ -272,6 +273,7 @@ const float fract_values[] = {
 
 static const struct unary_test_t
 unary_tests[] = {
+   {"abs", &lp_build_abs, &fabsf, exp2_values, Elements(exp2_values), 20.0 },
    {"neg", &lp_build_negate, &negf, exp2_values, Elements(exp2_values), 20.0 },
    {"exp2", &lp_build_exp2, &exp2f, exp2_values, Elements(exp2_values), 20.0 },
    {"log2", &lp_build_log2_safe, &log2f, log2_values, Elements(log2_values), 20.0 },
@@ -282,7 +284,7 @@ unary_tests[] = {
    {"sin", &lp_build_sin, &sinf, sincos_values, Elements(sincos_values), 20.0 },
    {"cos", &lp_build_cos, &cosf, sincos_values, Elements(sincos_values), 20.0 },
    {"sgn", &lp_build_sgn, &sgnf, exp2_values, Elements(exp2_values), 20.0 },
-   {"round", &lp_build_round, &roundf, round_values, Elements(round_values), 24.0 },
+   {"round", &lp_build_round, &nearbyintf, round_values, Elements(round_values), 24.0 },
    {"trunc", &lp_build_trunc, &truncf, round_values, Elements(round_values), 24.0 },
    {"floor", &lp_build_floor, &floorf, round_values, Elements(round_values), 24.0 },
    {"ceil", &lp_build_ceil, &ceilf, round_values, Elements(round_values), 24.0 },

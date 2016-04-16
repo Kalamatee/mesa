@@ -124,6 +124,8 @@ enum radeon_family {
     CHIP_CARRIZO,
     CHIP_FIJI,
     CHIP_STONEY,
+    CHIP_POLARIS10,
+    CHIP_POLARIS11,
     CHIP_LAST,
 };
 
@@ -243,6 +245,7 @@ struct radeon_info {
     enum chip_class             chip_class;
     uint64_t                    gart_size;
     uint64_t                    vram_size;
+    bool                        has_dedicated_vram;
     boolean                     has_virtual_memory;
     bool                        gfx_ib_pad_with_type2;
     boolean                     has_sdma;
@@ -447,7 +450,7 @@ struct radeon_winsys {
      * \return          The created buffer object.
      */
     struct pb_buffer *(*buffer_create)(struct radeon_winsys *ws,
-                                       unsigned size,
+                                       uint64_t size,
                                        unsigned alignment,
                                        boolean use_reusable_pool,
                                        enum radeon_bo_domain domain,
@@ -515,7 +518,7 @@ struct radeon_winsys {
      */
     struct pb_buffer *(*buffer_from_handle)(struct radeon_winsys *ws,
                                             struct winsys_handle *whandle,
-                                            unsigned *stride);
+                                            unsigned *stride, unsigned *offset);
 
     /**
      * Get a winsys buffer from a user pointer. The resulting buffer can't
@@ -526,7 +529,7 @@ struct radeon_winsys {
      * \param Size      Size in bytes for the new buffer.
      */
     struct pb_buffer *(*buffer_from_ptr)(struct radeon_winsys *ws,
-                                         void *pointer, unsigned size);
+                                         void *pointer, uint64_t size);
 
     /**
      * Whether the buffer was created from a user pointer.
@@ -546,7 +549,8 @@ struct radeon_winsys {
      * \return          TRUE on success.
      */
     boolean (*buffer_get_handle)(struct pb_buffer *buf,
-                                 unsigned stride,
+                                 unsigned stride, unsigned offset,
+                                 unsigned slice_size,
                                  struct winsys_handle *whandle);
 
     /**
@@ -592,14 +596,12 @@ struct radeon_winsys {
      * \param ring_type The ring type (GFX, DMA, UVD)
      * \param flush     Flush callback function associated with the command stream.
      * \param user      User pointer that will be passed to the flush callback.
-     * \param trace_buf Trace buffer when tracing is enabled
      */
     struct radeon_winsys_cs *(*cs_create)(struct radeon_winsys_ctx *ctx,
                                           enum ring_type ring_type,
                                           void (*flush)(void *ctx, unsigned flags,
 							struct pipe_fence_handle **fence),
-                                          void *flush_ctx,
-                                          struct pb_buffer *trace_buf);
+                                          void *flush_ctx);
 
     /**
      * Destroy a command stream.
@@ -672,12 +674,10 @@ struct radeon_winsys {
      * \param flags,      RADEON_FLUSH_ASYNC or 0.
      * \param fence       Pointer to a fence. If non-NULL, a fence is inserted
      *                    after the CS and is returned through this parameter.
-     * \param cs_trace_id A unique identifier of the cs, used for tracing.
      */
     void (*cs_flush)(struct radeon_winsys_cs *cs,
                      unsigned flags,
-                     struct pipe_fence_handle **fence,
-                     uint32_t cs_trace_id);
+                     struct pipe_fence_handle **fence);
 
     /**
      * Return TRUE if a buffer is referenced by a command stream.

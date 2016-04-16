@@ -86,9 +86,9 @@ define_depth_stencil_state_object(struct svga_context *svga,
    ds->id = util_bitmask_add(svga->ds_object_id_bm);
 
    /* spot check that these comparision tokens are the same */
-   assert(SVGA3D_COMPARISON_NEVER == SVGA3D_CMP_NEVER);
-   assert(SVGA3D_COMPARISON_LESS == SVGA3D_CMP_LESS);
-   assert(SVGA3D_COMPARISON_NOT_EQUAL == SVGA3D_CMP_NOTEQUAL);
+   STATIC_ASSERT(SVGA3D_COMPARISON_NEVER == SVGA3D_CMP_NEVER);
+   STATIC_ASSERT(SVGA3D_COMPARISON_LESS == SVGA3D_CMP_LESS);
+   STATIC_ASSERT(SVGA3D_COMPARISON_NOT_EQUAL == SVGA3D_CMP_NOTEQUAL);
 
    /* Loop in case command buffer is full and we need to flush and retry */
    for (try = 0; try < 2; try++) {
@@ -133,6 +133,9 @@ svga_create_depth_stencil_state(struct pipe_context *pipe,
 {
    struct svga_context *svga = svga_context(pipe);
    struct svga_depth_stencil_state *ds = CALLOC_STRUCT( svga_depth_stencil_state );
+
+   if (!ds)
+      return NULL;
 
    /* Don't try to figure out CW/CCW correspondence with
     * stencil[0]/[1] at this point.  Presumably this can change as

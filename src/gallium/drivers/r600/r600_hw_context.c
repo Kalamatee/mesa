@@ -57,23 +57,15 @@ void r600_need_cs_space(struct r600_context *ctx, unsigned num_dw,
 
 		/* The number of dwords all the dirty states would take. */
 		mask = ctx->dirty_atoms;
-		while (mask != 0) {
+		while (mask != 0)
 			num_dw += ctx->atoms[u_bit_scan64(&mask)]->num_dw;
-			if (ctx->screen->b.trace_bo) {
-				num_dw += R600_TRACE_CS_DWORDS;
-			}
-		}
 
 		/* The upper-bound of how much space a draw command would take. */
 		num_dw += R600_MAX_FLUSH_CS_DWORDS + R600_MAX_DRAW_CS_DWORDS;
-		if (ctx->screen->b.trace_bo) {
-			num_dw += R600_TRACE_CS_DWORDS;
-		}
 	}
 
-	/* Count in queries_suspend. */
-	num_dw += ctx->b.num_cs_dw_nontimer_queries_suspend +
-		  ctx->b.num_cs_dw_timer_queries_suspend;
+	/* Count in r600_suspend_queries. */
+	num_dw += ctx->b.num_cs_dw_queries_suspend;
 
 	/* Count in streamout_end at the end of CS. */
 	if (ctx->b.streamout.begin_emitted) {
@@ -230,6 +222,16 @@ void r600_flush_emit(struct r600_context *rctx)
 		cs->buf[cs->cdw++] = 0x0000000A;      /* POLL_INTERVAL */
 	}
 
+	if (rctx->b.flags & R600_CONTEXT_START_PIPELINE_STATS) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_PIPELINESTAT_START) |
+			        EVENT_INDEX(0));
+	} else if (rctx->b.flags & R600_CONTEXT_STOP_PIPELINE_STATS) {
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_PIPELINESTAT_STOP) |
+			        EVENT_INDEX(0));
+	}
+
 	if (wait_until) {
 		/* Use of WAIT_UNTIL is deprecated on Cayman+ */
 		if (rctx->b.family < CHIP_CAYMAN) {
@@ -273,7 +275,7 @@ void r600_context_gfx_flush(void *context, unsigned flags,
 	flags |= RADEON_FLUSH_KEEP_TILING_FLAGS;
 
 	/* Flush the CS. */
-	ctx->b.ws->cs_flush(cs, flags, fence, ctx->screen->b.cs_count++);
+	ctx->b.ws->cs_flush(cs, flags, fence);
 
 	r600_begin_new_cs(ctx);
 }
@@ -302,12 +304,10 @@ void r600_begin_new_cs(struct r600_context *ctx)
 	r600_mark_atom_dirty(ctx, &ctx->poly_offset_state.atom);
 	r600_mark_atom_dirty(ctx, &ctx->vgt_state.atom);
 	r600_mark_atom_dirty(ctx, &ctx->sample_mask.atom);
-	ctx->scissor.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
-	ctx->scissor.atom.num_dw = R600_MAX_VIEWPORTS * 4;
-	r600_mark_atom_dirty(ctx, &ctx->scissor.atom);
-	ctx->viewport.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
-	ctx->viewport.atom.num_dw = R600_MAX_VIEWPORTS * 8;
-	r600_mark_atom_dirty(ctx, &ctx->viewport.atom);
+	ctx->b.scissors.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
+	r600_mark_atom_dirty(ctx, &ctx->b.scissors.atom);
+	ctx->b.viewports.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
+	r600_mark_atom_dirty(ctx, &ctx->b.viewports.atom);
 	if (ctx->b.chip_class <= EVERGREEN) {
 		r600_mark_atom_dirty(ctx, &ctx->config_state.atom);
 	}

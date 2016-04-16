@@ -273,6 +273,24 @@ trace_context_get_query_result(struct pipe_context *_pipe,
 }
 
 
+static void
+trace_context_set_active_query_state(struct pipe_context *_pipe,
+                                     boolean enable)
+{
+   struct trace_context *tr_ctx = trace_context(_pipe);
+   struct pipe_context *pipe = tr_ctx->pipe;
+
+   trace_dump_call_begin("pipe_context", "set_active_query_state");
+
+   trace_dump_arg(ptr, pipe);
+   trace_dump_arg(bool, enable);
+
+   pipe->set_active_query_state(pipe, enable);
+
+   trace_dump_call_end();
+}
+
+
 static void *
 trace_context_create_blend_state(struct pipe_context *_pipe,
                                  const struct pipe_blend_state *state)
@@ -1686,6 +1704,44 @@ static void trace_context_set_shader_buffers(struct pipe_context *_context,
       FREE(_buffers);
 }
 
+static void trace_context_set_shader_images(struct pipe_context *_context,
+                                            unsigned shader,
+                                            unsigned start, unsigned nr,
+                                            struct pipe_image_view *images)
+{
+   struct trace_context *tr_context = trace_context(_context);
+   struct pipe_context *context = tr_context->pipe;
+   struct pipe_image_view *_images = NULL;
+
+   trace_dump_call_begin("pipe_context", "set_shader_images");
+   trace_dump_arg(ptr, context);
+   trace_dump_arg(uint, shader);
+   trace_dump_arg(uint, start);
+   trace_dump_arg_begin("images");
+   trace_dump_struct_array(image_view, images, nr);
+   trace_dump_arg_end();
+   trace_dump_call_end();
+
+   if (images) {
+      int i;
+
+      _images = MALLOC(nr * sizeof(struct pipe_image_view));
+      if (!_images)
+         return;
+
+      for (i = 0; i < nr; i++) {
+         _images[i] = images[i];
+         _images[i].resource = trace_resource_unwrap(tr_context,
+                                                     _images[i].resource);
+      }
+   }
+
+   context->set_shader_images(context, shader, start, nr, _images);
+
+   if (_images)
+      FREE(_images);
+}
+
 static void trace_context_launch_grid(struct pipe_context *_pipe,
                                       const struct pipe_grid_info *info)
 {
@@ -1743,6 +1799,7 @@ trace_context_create(struct trace_screen *tr_scr,
    TR_CTX_INIT(begin_query);
    TR_CTX_INIT(end_query);
    TR_CTX_INIT(get_query_result);
+   TR_CTX_INIT(set_active_query_state);
    TR_CTX_INIT(create_blend_state);
    TR_CTX_INIT(bind_blend_state);
    TR_CTX_INIT(delete_blend_state);
@@ -1809,6 +1866,7 @@ trace_context_create(struct trace_screen *tr_scr,
    TR_CTX_INIT(set_tess_state);
    TR_CTX_INIT(set_shader_buffers);
    TR_CTX_INIT(launch_grid);
+   TR_CTX_INIT(set_shader_images);
 
    TR_CTX_INIT(transfer_map);
    TR_CTX_INIT(transfer_unmap);

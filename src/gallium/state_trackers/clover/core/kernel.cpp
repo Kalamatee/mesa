@@ -55,7 +55,7 @@ kernel::launch(command_queue &q,
    const auto reduced_grid_size =
       map(divides(), grid_size, block_size);
    void *st = exec.bind(&q, grid_offset);
-   struct pipe_grid_info info;
+   struct pipe_grid_info info = {};
 
    // The handles are created during exec_context::bind(), so we need make
    // sure to call exec_context::bind() before retrieving them.
@@ -89,6 +89,8 @@ kernel::launch(command_queue &q,
                              exec.sviews.size(), NULL);
    q.pipe->bind_sampler_states(q.pipe, PIPE_SHADER_COMPUTE, 0,
                                exec.samplers.size(), NULL);
+
+   q.pipe->memory_barrier(q.pipe, PIPE_BARRIER_GLOBAL_BUFFER);
    exec.unbind();
 }
 
@@ -223,6 +225,7 @@ kernel::exec_context::bind(intrusive_ptr<command_queue> _q,
       if (st)
          _q->pipe->delete_compute_state(_q->pipe, st);
 
+      cs.ir_type = q->device().ir_format();
       cs.prog = &(msec.data[0]);
       cs.req_local_mem = mem_local;
       cs.req_input_mem = input.size();

@@ -27,7 +27,6 @@
 
 #include "nir.h"
 #include <stdlib.h>
-#include <unistd.h>
 
 /*
  * Implements the classic to-SSA algorithm described by Cytron et. al. in
@@ -160,7 +159,8 @@ static nir_ssa_def *get_ssa_src(nir_register *reg, rewrite_state *state)
        * to preserve the information that this source is undefined
        */
       nir_ssa_undef_instr *instr =
-         nir_ssa_undef_instr_create(state->mem_ctx, reg->num_components);
+         nir_ssa_undef_instr_create(state->mem_ctx, reg->num_components,
+                                    reg->bit_size);
 
       /*
        * We could just insert the undefined instruction before the instruction
@@ -219,7 +219,9 @@ rewrite_def_forwards(nir_dest *dest, void *_state)
                              state->states[index].num_defs);
 
    list_del(&dest->reg.def_link);
-   nir_ssa_dest_init(state->parent_instr, dest, reg->num_components, name);
+   nir_ssa_dest_init(state->parent_instr, dest, reg->num_components,
+                     reg->bit_size, name);
+   ralloc_free(name);
 
    /* push our SSA destination on the stack */
    state->states[index].index++;
@@ -271,7 +273,9 @@ rewrite_alu_instr_forward(nir_alu_instr *instr, rewrite_state *state)
 
       instr->dest.write_mask = (1 << num_components) - 1;
       list_del(&instr->dest.dest.reg.def_link);
-      nir_ssa_dest_init(&instr->instr, &instr->dest.dest, num_components, name);
+      nir_ssa_dest_init(&instr->instr, &instr->dest.dest, num_components,
+                        reg->bit_size, name);
+      ralloc_free(name);
 
       if (nir_op_infos[instr->op].output_size == 0) {
          /*

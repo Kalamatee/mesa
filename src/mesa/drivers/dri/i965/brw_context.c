@@ -77,13 +77,27 @@
 
 const char *const brw_vendor_string = "Intel Open Source Technology Center";
 
+static const char *
+get_bsw_model(const struct intel_screen *intelScreen)
+{
+   switch (intelScreen->eu_total) {
+   case 16:
+      return "405";
+   case 12:
+      return "400";
+   default:
+      return "   ";
+   }
+}
+
 const char *
-brw_get_renderer_string(unsigned deviceID)
+brw_get_renderer_string(const struct intel_screen *intelScreen)
 {
    const char *chipset;
    static char buffer[128];
+   char *bsw = NULL;
 
-   switch (deviceID) {
+   switch (intelScreen->deviceID) {
 #undef CHIPSET
 #define CHIPSET(id, symbol, str) case id: chipset = str; break;
 #include "pci_ids/i965_pci_ids.h"
@@ -92,7 +106,18 @@ brw_get_renderer_string(unsigned deviceID)
       break;
    }
 
+   /* Braswell branding is funny, so we have to fix it up here */
+   if (intelScreen->deviceID == 0x22B1) {
+      bsw = strdup(chipset);
+      char *needle = strstr(bsw, "XXX");
+      if (needle) {
+         memcpy(needle, get_bsw_model(intelScreen), 3);
+         chipset = bsw;
+      }
+   }
+
    (void) driGetRendererString(buffer, chipset, 0);
+   free(bsw);
    return buffer;
 }
 
@@ -107,7 +132,7 @@ intel_get_string(struct gl_context * ctx, GLenum name)
 
    case GL_RENDERER:
       return
-         (GLubyte *) brw_get_renderer_string(brw->intelScreen->deviceID);
+         (GLubyte *) brw_get_renderer_string(brw->intelScreen);
 
    default:
       return NULL;
@@ -929,7 +954,18 @@ brwCreateContext(gl_api api,
    brw->max_ds_threads = devinfo->max_ds_threads;
    brw->max_gs_threads = devinfo->max_gs_threads;
    brw->max_wm_threads = devinfo->max_wm_threads;
-   brw->max_cs_threads = devinfo->max_cs_threads;
+   /* FINISHME: Do this for all platforms that the kernel supports */
+   if (brw->is_cherryview &&
+       screen->subslice_total > 0 && screen->eu_total > 0) {
+      /* Logical CS threads = EUs per subslice * 7 threads per EU */
+      brw->max_cs_threads = screen->eu_total / screen->subslice_total * 7;
+
+      /* Fuse configurations may give more threads than expected, never less. */
+      if (brw->max_cs_threads < devinfo->max_cs_threads)
+         brw->max_cs_threads = devinfo->max_cs_threads;
+   } else {
+      brw->max_cs_threads = devinfo->max_cs_threads;
+   }
    brw->urb.size = devinfo->urb.size;
    brw->urb.min_vs_entries = devinfo->urb.min_vs_entries;
    brw->urb.max_vs_entries = devinfo->urb.max_vs_entries;
@@ -1115,10 +1151,9 @@ intel_gles3_srgb_workaround(struct brw_context *brw,
     */
    fb->Visual.sRGBCapable = false;
    for (int i = 0; i < BUFFER_COUNT; i++) {
-      if (fb->Attachment[i].Renderbuffer &&
-          fb->Attachment[i].Renderbuffer->Format == MESA_FORMAT_B8G8R8A8_SRGB) {
-         fb->Attachment[i].Renderbuffer->Format = MESA_FORMAT_B8G8R8A8_UNORM;
-      }
+      struct gl_renderbuffer *rb = fb->Attachment[i].Renderbuffer;
+      if (rb)
+         rb->Format = _mesa_get_srgb_format_linear(rb->Format);
    }
 }
 

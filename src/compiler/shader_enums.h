@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 /**
- * Shader stages. Note that these will become 5 with tessellation.
+ * Shader stages.
  *
  * The order must match how shaders are ordered in the pipeline.
  * The GLSL linker assumes that if i<j, then the j-th shader is
@@ -379,6 +379,13 @@ typedef enum
    SYSTEM_VALUE_INSTANCE_ID,
 
    /**
+    * Vulkan InstanceIndex.
+    *
+    * InstanceIndex = gl_InstanceID + gl_BaseInstance
+    */
+   SYSTEM_VALUE_INSTANCE_INDEX,
+
+   /**
     * DirectX-style vertex ID.
     *
     * Unlike \c SYSTEM_VALUE_VERTEX_ID, this system value does \b not include
@@ -452,6 +459,8 @@ typedef enum
     */
    /*@{*/
    SYSTEM_VALUE_LOCAL_INVOCATION_ID,
+   SYSTEM_VALUE_LOCAL_INVOCATION_INDEX,
+   SYSTEM_VALUE_GLOBAL_INVOCATION_ID,
    SYSTEM_VALUE_WORK_GROUP_ID,
    SYSTEM_VALUE_NUM_WORK_GROUPS,
    /*@}*/

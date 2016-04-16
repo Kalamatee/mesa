@@ -52,8 +52,6 @@ static void si_blitter_begin(struct pipe_context *ctx, enum si_blitter_op op)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
 
-	r600_suspend_nontimer_queries(&sctx->b);
-
 	util_blitter_save_vertex_buffer_slot(sctx->blitter, sctx->vertex_buffer);
 	util_blitter_save_vertex_elements(sctx->blitter, sctx->vertex_elements);
 	util_blitter_save_vertex_shader(sctx->blitter, sctx->vs_shader.cso);
@@ -70,8 +68,8 @@ static void si_blitter_begin(struct pipe_context *ctx, enum si_blitter_op op)
 		util_blitter_save_stencil_ref(sctx->blitter, &sctx->stencil_ref.state);
 		util_blitter_save_fragment_shader(sctx->blitter, sctx->ps_shader.cso);
 		util_blitter_save_sample_mask(sctx->blitter, sctx->sample_mask.sample_mask);
-		util_blitter_save_viewport(sctx->blitter, &sctx->viewports.states[0]);
-		util_blitter_save_scissor(sctx->blitter, &sctx->scissors.states[0]);
+		util_blitter_save_viewport(sctx->blitter, &sctx->b.viewports.states[0]);
+		util_blitter_save_scissor(sctx->blitter, &sctx->b.scissors.states[0]);
 	}
 
 	if (op & SI_SAVE_FRAMEBUFFER)
@@ -95,7 +93,6 @@ static void si_blitter_end(struct pipe_context *ctx)
 	struct si_context *sctx = (struct si_context *)ctx;
 
 	sctx->b.render_cond_force_off = false;
-	r600_resume_nontimer_queries(&sctx->b);
 }
 
 static unsigned u_max_sample(struct pipe_resource *r)
@@ -246,14 +243,14 @@ si_flush_depth_textures(struct si_context *sctx,
 			struct si_textures_info *textures)
 {
 	unsigned i;
-	unsigned mask = textures->depth_texture_mask;
+	uint64_t mask = textures->depth_texture_mask;
 
 	while (mask) {
 		struct pipe_sampler_view *view;
 		struct si_sampler_view *sview;
 		struct r600_texture *tex;
 
-		i = u_bit_scan(&mask);
+		i = u_bit_scan64(&mask);
 
 		view = textures->views.views[i];
 		assert(view);
@@ -325,17 +322,17 @@ static void si_blit_decompress_color(struct pipe_context *ctx,
 }
 
 static void
-si_decompress_color_textures(struct si_context *sctx,
-			     struct si_textures_info *textures)
+si_decompress_sampler_color_textures(struct si_context *sctx,
+				     struct si_textures_info *textures)
 {
 	unsigned i;
-	unsigned mask = textures->compressed_colortex_mask;
+	uint64_t mask = textures->compressed_colortex_mask;
 
 	while (mask) {
 		struct pipe_sampler_view *view;
 		struct r600_texture *tex;
 
-		i = u_bit_scan(&mask);
+		i = u_bit_scan64(&mask);
 
 		view = textures->views.views[i];
 		assert(view);
@@ -346,6 +343,33 @@ si_decompress_color_textures(struct si_context *sctx,
 		si_blit_decompress_color(&sctx->b.b, tex,
 					 view->u.tex.first_level, view->u.tex.last_level,
 					 0, util_max_layer(&tex->resource.b.b, view->u.tex.first_level),
+					 false);
+	}
+}
+
+static void
+si_decompress_image_color_textures(struct si_context *sctx,
+				   struct si_images_info *images)
+{
+	unsigned i;
+	uint64_t mask = images->compressed_colortex_mask;
+
+	while (mask) {
+		const struct pipe_image_view *view;
+		struct r600_texture *tex;
+
+		i = u_bit_scan64(&mask);
+
+		view = &images->views[i];
+		assert(view->resource->target != PIPE_BUFFER);
+
+		tex = (struct r600_texture *)view->resource;
+		if (!tex->cmask.size && !tex->fmask.size && !tex->dcc_offset)
+			continue;
+
+		si_blit_decompress_color(&sctx->b.b, tex,
+					 view->u.tex.level, view->u.tex.level,
+					 0, util_max_layer(&tex->resource.b.b, view->u.tex.level),
 					 false);
 	}
 }
@@ -370,7 +394,10 @@ void si_decompress_textures(struct si_context *sctx)
 			si_flush_depth_textures(sctx, &sctx->samplers[i]);
 		}
 		if (sctx->samplers[i].compressed_colortex_mask) {
-			si_decompress_color_textures(sctx, &sctx->samplers[i]);
+			si_decompress_sampler_color_textures(sctx, &sctx->samplers[i]);
+		}
+		if (sctx->images[i].compressed_colortex_mask) {
+			si_decompress_image_color_textures(sctx, &sctx->images[i]);
 		}
 	}
 }

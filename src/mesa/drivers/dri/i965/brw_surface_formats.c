@@ -25,21 +25,7 @@
 #include "brw_context.h"
 #include "brw_state.h"
 #include "brw_defines.h"
-
-struct surface_format_info {
-   bool exists;
-   int sampling;
-   int filtering;
-   int shadow_compare;
-   int chroma_key;
-   int render_target;
-   int alpha_blend;
-   int input_vb;
-   int streamed_output_vb;
-   int color_processing;
-   int lossless_compression;
-   const char *name;
-};
+#include "brw_surface_formats.h"
 
 /* This macro allows us to write the table almost as it appears in the PRM,
  * while restructuring it to turn it into the C code we want.
@@ -86,7 +72,7 @@ struct surface_format_info {
  * - VOL4_Part1 section 3.9.11 Render Target Write.
  * - Render Target Surface Types [SKL+]
  */
-const struct surface_format_info surface_formats[] = {
+const struct brw_surface_format_info surface_formats[] = {
 /* smpl filt shad CK  RT  AB  VB  SO  color ccs_e */
    SF( Y, 50,  x,  x,  Y,  Y,  Y,  Y,  x,   90,   R32G32B32A32_FLOAT)
    SF( Y,  x,  x,  x,  Y,  x,  Y,  Y,  x,   90,   R32G32B32A32_SINT)
@@ -218,7 +204,7 @@ const struct surface_format_info surface_formats[] = {
    SF(50, 50,  x,  x,  x,  x,  x,  x,  x,    x,   P8A8_UNORM_PALETTE0)
    SF(50, 50,  x,  x,  x,  x,  x,  x,  x,    x,   P8A8_UNORM_PALETTE1)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   A1B5G5R5_UNORM)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   A4B4G4R4_UNORM)
+   SF(90, 90,  x,  x, 90,  x,  x,  x,  x,    x,   A4B4G4R4_UNORM)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   L8A8_UINT)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   L8A8_SINT)
    SF( Y,  Y,  x, 45,  Y,  Y,  Y,  x,  x,    x,   R8_UNORM)
@@ -281,13 +267,13 @@ const struct surface_format_info surface_formats[] = {
    SF(70, 70,  x,  x,  x,  x,  x,  x,  x,    x,   BC6H_UF16)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   PLANAR_420_8)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   R8G8B8_UNORM_SRGB)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   ETC1_RGB8)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_RGB8)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   EAC_R11)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   EAC_RG11)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   EAC_SIGNED_R11)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   EAC_SIGNED_RG11)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_SRGB8)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   ETC1_RGB8)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_RGB8)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   EAC_R11)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   EAC_RG11)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   EAC_SIGNED_R11)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   EAC_SIGNED_RG11)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_SRGB8)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   R16G16B16_UINT)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   R16G16B16_SINT)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   R32_SFIXED)
@@ -302,10 +288,10 @@ const struct surface_format_info surface_formats[] = {
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   B10G10R10A2_SINT)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   R64G64B64A64_PASSTHRU)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   R64G64B64_PASSTHRU)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_RGB8_PTA)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_SRGB8_PTA)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_EAC_RGBA8)
-   SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_EAC_SRGB8_A8)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_RGB8_PTA)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_SRGB8_PTA)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_EAC_RGBA8)
+   SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   ETC2_EAC_SRGB8_A8)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   R8G8B8_UINT)
    SF( x,  x,  x,  x,  x,  x,  x,  x,  x,    x,   R8G8B8_SINT)
    SF(80, 80,  x,  x,  x,  x,  x,  x,  x,    x,   ASTC_LDR_2D_4x4_FLT16)
@@ -618,7 +604,7 @@ brw_init_surface_formats(struct brw_context *brw)
 
    for (format = MESA_FORMAT_NONE + 1; format < MESA_FORMAT_COUNT; format++) {
       uint32_t texture, render;
-      const struct surface_format_info *rinfo, *tinfo;
+      const struct brw_surface_format_info *rinfo, *tinfo;
       bool is_integer = _mesa_is_format_integer_color(format);
 
       render = texture = brw_format_for_mesa_format(format);
@@ -806,7 +792,8 @@ brw_render_target_supported(struct brw_context *brw,
    /* Under some conditions, MSAA is not supported for formats whose width is
     * more than 64 bits.
     */
-   if (rb->NumSamples > 0 && _mesa_get_format_bytes(format) > 8) {
+   if (brw->gen < 8 &&
+       rb->NumSamples > 0 && _mesa_get_format_bytes(format) > 8) {
       /* Gen6: MSAA on >64 bit formats is unsupported. */
       if (brw->gen <= 6)
          return false;
@@ -827,7 +814,7 @@ bool
 brw_losslessly_compressible_format(const struct brw_context *brw,
                                    uint32_t brw_format)
 {
-   const struct surface_format_info * const sinfo =
+   const struct brw_surface_format_info * const sinfo =
       &surface_formats[brw_format];
    const int gen = brw->gen * 10;
 
