@@ -30,7 +30,8 @@
 #include "si_pm4.h"
 #include "radeon/r600_pipe_common.h"
 
-#define SI_NUM_SHADERS (PIPE_SHADER_TESS_EVAL+1)
+#define SI_NUM_GRAPHICS_SHADERS (PIPE_SHADER_TESS_EVAL+1)
+#define SI_NUM_SHADERS (PIPE_SHADER_COMPUTE+1)
 #define SI_MAX_ATTRIBS 16
 
 struct si_screen;
@@ -191,15 +192,23 @@ struct si_descriptors {
 	unsigned element_dw_size;
 	/* The maximum number of descriptors. */
 	unsigned num_elements;
-	/* Whether the list has been changed and should be re-uploaded. */
-	bool list_dirty;
 
 	/* The buffer where the descriptors have been uploaded. */
 	struct r600_resource *buffer;
 	unsigned buffer_offset;
 
+	/* Offset in CE RAM */
+	unsigned ce_offset;
+
 	/* The i-th bit is set if that element is enabled (non-NULL resource). */
 	uint64_t enabled_mask;
+
+	/* elements of the list that are changed and need to be uploaded */
+	uint64_t dirty_mask;
+
+	/* Whether the CE ram is dirty and needs to be reinitialized entirely
+	 * before we can do partial updates. */
+	bool ce_ram_dirty;
 
 	/* The shader userdata offset within a shader where the 64-bit pointer to the descriptor
 	 * array will be stored. */
@@ -248,14 +257,17 @@ void si_set_ring_buffer(struct pipe_context *ctx, uint shader, uint slot,
 			bool add_tid, bool swizzle,
 			unsigned element_size, unsigned index_stride, uint64_t offset);
 void si_init_all_descriptors(struct si_context *sctx);
-bool si_upload_shader_descriptors(struct si_context *sctx);
+bool si_upload_graphics_shader_descriptors(struct si_context *sctx);
+bool si_upload_compute_shader_descriptors(struct si_context *sctx);
 void si_release_all_descriptors(struct si_context *sctx);
 void si_all_descriptors_begin_new_cs(struct si_context *sctx);
 void si_upload_const_buffer(struct si_context *sctx, struct r600_resource **rbuffer,
 			    const uint8_t *ptr, unsigned size, uint32_t *const_offset);
 void si_shader_change_notify(struct si_context *sctx);
 void si_update_compressed_colortex_masks(struct si_context *sctx);
-void si_emit_shader_userdata(struct si_context *sctx, struct r600_atom *atom);
+void si_emit_graphics_shader_userdata(struct si_context *sctx,
+                                      struct r600_atom *atom);
+void si_emit_compute_shader_userdata(struct si_context *sctx);
 
 /* si_state.c */
 struct si_shader_selector;
@@ -309,6 +321,8 @@ void si_destroy_shader_cache(struct si_screen *sscreen);
 
 /* si_state_draw.c */
 void si_emit_cache_flush(struct si_context *sctx, struct r600_atom *atom);
+void si_ce_pre_draw_synchronization(struct si_context *sctx);
+void si_ce_post_draw_synchronization(struct si_context *sctx);
 void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *dinfo);
 void si_trace_emit(struct si_context *sctx);
 

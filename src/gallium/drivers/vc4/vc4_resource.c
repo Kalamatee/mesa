@@ -171,7 +171,12 @@ vc4_resource_transfer_map(struct pipe_context *pctx,
                         vc4_flush(pctx);
                 }
         } else if (!(usage & PIPE_TRANSFER_UNSYNCHRONIZED)) {
-                if (vc4_cl_references_bo(pctx, rsc->bo)) {
+                /* If we're writing and the buffer is being used by the CL, we
+                 * have to flush the CL first.  If we're only reading, we need
+                 * to flush if the CL has written our buffer.
+                 */
+                if (vc4_cl_references_bo(pctx, rsc->bo,
+                                         usage & PIPE_TRANSFER_WRITE)) {
                         if ((usage & PIPE_TRANSFER_DISCARD_RANGE) &&
                             prsc->last_level == 0 &&
                             prsc->width0 == box->width &&
@@ -529,20 +534,33 @@ vc4_resource_from_handle(struct pipe_screen *pscreen,
         struct vc4_resource *rsc = vc4_resource_setup(pscreen, tmpl);
         struct pipe_resource *prsc = &rsc->base.b;
         struct vc4_resource_slice *slice = &rsc->slices[0];
+        uint32_t expected_stride = align(prsc->width0 / rsc->cpp,
+                                         vc4_utile_width(rsc->cpp));
 
         if (!rsc)
                 return NULL;
+
+        if (handle->stride != expected_stride) {
+                static bool warned = false;
+                if (!warned) {
+                        warned = true;
+                        fprintf(stderr,
+                                "Attempting to import %dx%d %s with "
+                                "unsupported stride %d instead of %d\n",
+                                prsc->width0, prsc->height0,
+                                util_format_short_name(prsc->format),
+                                handle->stride,
+                                expected_stride);
+                }
+                return NULL;
+        }
 
         rsc->tiled = false;
         rsc->bo = vc4_screen_bo_from_handle(pscreen, handle);
         if (!rsc->bo)
                 goto fail;
 
-        if (!using_vc4_simulator)
-                slice->stride = handle->stride;
-        else
-                slice->stride = align(prsc->width0 * rsc->cpp, 16);
-
+        slice->stride = handle->stride;
         slice->tiling = VC4_TILING_FORMAT_LINEAR;
 
         rsc->vc4_format = get_resource_texture_format(prsc);
@@ -589,7 +607,8 @@ vc4_create_surface(struct pipe_context *pctx,
         psurf->u.tex.level = level;
         psurf->u.tex.first_layer = surf_tmpl->u.tex.first_layer;
         psurf->u.tex.last_layer = surf_tmpl->u.tex.last_layer;
-        surface->offset = rsc->slices[level].offset;
+        surface->offset = (rsc->slices[level].offset +
+                           psurf->u.tex.first_layer * rsc->cube_map_stride);
         surface->tiling = rsc->slices[level].tiling;
 
         return &surface->base;

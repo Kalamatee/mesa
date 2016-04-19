@@ -198,48 +198,58 @@ amdgpu_ctx_query_reset_status(struct radeon_winsys_ctx *rwctx)
 
 /* COMMAND SUBMISSION */
 
-static bool amdgpu_get_new_ib(struct amdgpu_cs *cs)
+static bool amdgpu_get_new_ib(struct radeon_winsys *ws, struct amdgpu_ib *ib,
+                              struct amdgpu_cs_ib_info *info, unsigned ib_type)
 {
    /* Small IBs are better than big IBs, because the GPU goes idle quicker
     * and there is less waiting for buffers and fences. Proof:
     *   http://www.phoronix.com/scan.php?page=article&item=mesa-111-si&num=1
     */
-   const unsigned buffer_size = 128 * 1024 * 4;
-   const unsigned ib_size = 20 * 1024 * 4;
+   unsigned buffer_size, ib_size;
 
-   cs->base.cdw = 0;
-   cs->base.buf = NULL;
+   switch (ib_type) {
+   case IB_CONST_PREAMBLE:
+      buffer_size = 4 * 1024 * 4;
+      ib_size = 1024 * 4;
+   case IB_CONST:
+      buffer_size = 512 * 1024 * 4;
+      ib_size = 128 * 1024 * 4;
+      break;
+   case IB_MAIN:
+      buffer_size = 128 * 1024 * 4;
+      ib_size = 20 * 1024 * 4;
+   }
+
+   ib->base.cdw = 0;
+   ib->base.buf = NULL;
 
    /* Allocate a new buffer for IBs if the current buffer is all used. */
-   if (!cs->big_ib_buffer ||
-       cs->used_ib_space + ib_size > cs->big_ib_buffer->size) {
-      struct radeon_winsys *ws = &cs->ctx->ws->base;
+   if (!ib->big_ib_buffer ||
+       ib->used_ib_space + ib_size > ib->big_ib_buffer->size) {
 
-      pb_reference(&cs->big_ib_buffer, NULL);
-      cs->big_ib_winsys_buffer = NULL;
-      cs->ib_mapped = NULL;
-      cs->used_ib_space = 0;
+      pb_reference(&ib->big_ib_buffer, NULL);
+      ib->ib_mapped = NULL;
+      ib->used_ib_space = 0;
 
-      cs->big_ib_buffer = ws->buffer_create(ws, buffer_size,
+      ib->big_ib_buffer = ws->buffer_create(ws, buffer_size,
                                             4096, true,
                                             RADEON_DOMAIN_GTT,
                                             RADEON_FLAG_CPU_ACCESS);
-      if (!cs->big_ib_buffer)
+      if (!ib->big_ib_buffer)
          return false;
 
-      cs->ib_mapped = ws->buffer_map(cs->big_ib_buffer, NULL,
+      ib->ib_mapped = ws->buffer_map(ib->big_ib_buffer, NULL,
                                      PIPE_TRANSFER_WRITE);
-      if (!cs->ib_mapped) {
-         pb_reference(&cs->big_ib_buffer, NULL);
+      if (!ib->ib_mapped) {
+         pb_reference(&ib->big_ib_buffer, NULL);
          return false;
       }
-
-      cs->big_ib_winsys_buffer = (struct amdgpu_winsys_bo*)cs->big_ib_buffer;
    }
 
-   cs->ib.ib_mc_address = cs->big_ib_winsys_buffer->va + cs->used_ib_space;
-   cs->base.buf = (uint32_t*)(cs->ib_mapped + cs->used_ib_space);
-   cs->base.max_dw = ib_size / 4;
+   info->ib_mc_address = amdgpu_winsys_bo(ib->big_ib_buffer)->va +
+                         ib->used_ib_space;
+   ib->base.buf = (uint32_t*)(ib->ib_mapped + ib->used_ib_space);
+   ib->base.max_dw = ib_size / 4;
    return true;
 }
 
@@ -270,9 +280,6 @@ static boolean amdgpu_init_cs_context(struct amdgpu_cs *cs,
       cs->request.ip_type = AMDGPU_HW_IP_GFX;
       break;
    }
-
-   cs->request.number_of_ibs = 1;
-   cs->request.ibs = &cs->ib;
 
    cs->max_num_buffers = 512;
    cs->buffers = (struct amdgpu_cs_buffer*)
@@ -348,21 +355,67 @@ amdgpu_cs_create(struct radeon_winsys_ctx *rwctx,
    cs->ctx = ctx;
    cs->flush_cs = flush;
    cs->flush_data = flush_ctx;
-   cs->base.ring_type = ring_type;
+   cs->ring_type = ring_type;
 
    if (!amdgpu_init_cs_context(cs, ring_type)) {
       FREE(cs);
       return NULL;
    }
 
-   if (!amdgpu_get_new_ib(cs)) {
+   if (!amdgpu_get_new_ib(&ctx->ws->base, &cs->main, &cs->ib[IB_MAIN], IB_MAIN)) {
       amdgpu_destroy_cs_context(cs);
       FREE(cs);
       return NULL;
    }
 
+   cs->request.number_of_ibs = 1;
+   cs->request.ibs = &cs->ib[IB_MAIN];
+
    p_atomic_inc(&ctx->ws->num_cs);
-   return &cs->base;
+   return &cs->main.base;
+}
+
+static struct radeon_winsys_cs *
+amdgpu_cs_add_const_ib(struct radeon_winsys_cs *rcs)
+{
+   struct amdgpu_cs *cs = (struct amdgpu_cs*)rcs;
+   struct amdgpu_winsys *ws = cs->ctx->ws;
+
+   /* only one const IB can be added */
+   if (cs->ring_type != RING_GFX || cs->const_ib.ib_mapped)
+      return NULL;
+
+   if (!amdgpu_get_new_ib(&ws->base, &cs->const_ib, &cs->ib[IB_CONST], IB_CONST))
+      return NULL;
+
+   cs->request.number_of_ibs = 2;
+   cs->request.ibs = &cs->ib[IB_CONST];
+   cs->ib[IB_CONST].flags = AMDGPU_IB_FLAG_CE;
+
+   return &cs->const_ib.base;
+}
+
+static struct radeon_winsys_cs *
+amdgpu_cs_add_const_preamble_ib(struct radeon_winsys_cs *rcs)
+{
+   struct amdgpu_cs *cs = (struct amdgpu_cs*)rcs;
+   struct amdgpu_winsys *ws = cs->ctx->ws;
+
+   /* only one const preamble IB can be added and only when the const IB has
+    * also been mapped */
+   if (cs->ring_type != RING_GFX || !cs->const_ib.ib_mapped ||
+       cs->const_preamble_ib.ib_mapped)
+      return NULL;
+
+   if (!amdgpu_get_new_ib(&ws->base, &cs->const_preamble_ib,
+                                 &cs->ib[IB_CONST_PREAMBLE], IB_CONST_PREAMBLE))
+      return NULL;
+
+   cs->request.number_of_ibs = 3;
+   cs->request.ibs = &cs->ib[IB_CONST_PREAMBLE];
+   cs->ib[IB_CONST_PREAMBLE].flags = AMDGPU_IB_FLAG_CE | AMDGPU_IB_FLAG_PREAMBLE;
+
+   return &cs->const_preamble_ib.base;
 }
 
 #define OUT_CS(cs, value) (cs)->buf[(cs)->cdw++] = (value)
@@ -570,7 +623,7 @@ static void amdgpu_cs_do_submission(struct amdgpu_cs *cs,
    cs->request.fence_info.handle = NULL;
    if (cs->request.ip_type != AMDGPU_HW_IP_UVD && cs->request.ip_type != AMDGPU_HW_IP_VCE) {
 	cs->request.fence_info.handle = cs->ctx->user_fence_bo;
-	cs->request.fence_info.offset = cs->base.ring_type;
+	cs->request.fence_info.offset = cs->ring_type;
    }
 
    r = amdgpu_cs_submit(cs->ctx->ctx, 0, &cs->request, 1);
@@ -591,7 +644,7 @@ static void amdgpu_cs_do_submission(struct amdgpu_cs *cs,
       amdgpu_fence_submitted(fence, &cs->request, user_fence);
 
       for (i = 0; i < cs->num_buffers; i++)
-         amdgpu_fence_reference(&cs->buffers[i].bo->fence[cs->base.ring_type],
+         amdgpu_fence_reference(&cs->buffers[i].bo->fence[cs->ring_type],
                                 fence);
    }
    pipe_mutex_unlock(ws->bo_fence_lock);
@@ -613,20 +666,29 @@ static void amdgpu_cs_flush(struct radeon_winsys_cs *rcs,
    struct amdgpu_cs *cs = amdgpu_cs(rcs);
    struct amdgpu_winsys *ws = cs->ctx->ws;
 
-   switch (cs->base.ring_type) {
+   switch (cs->ring_type) {
    case RING_DMA:
       /* pad DMA ring to 8 DWs */
       while (rcs->cdw & 7)
-         OUT_CS(&cs->base, 0x00000000); /* NOP packet */
+         OUT_CS(rcs, 0x00000000); /* NOP packet */
       break;
    case RING_GFX:
       /* pad GFX ring to 8 DWs to meet CP fetch alignment requirements */
       while (rcs->cdw & 7)
-         OUT_CS(&cs->base, 0xffff1000); /* type3 nop packet */
+         OUT_CS(rcs, 0xffff1000); /* type3 nop packet */
+
+      /* Also pad the const IB. */
+      if (cs->const_ib.ib_mapped)
+         while (!cs->const_ib.base.cdw || (cs->const_ib.base.cdw & 7))
+            OUT_CS(&cs->const_ib.base, 0xffff1000); /* type3 nop packet */
+
+      if (cs->const_preamble_ib.ib_mapped)
+         while (!cs->const_preamble_ib.base.cdw || (cs->const_preamble_ib.base.cdw & 7))
+            OUT_CS(&cs->const_preamble_ib.base, 0xffff1000);
       break;
    case RING_UVD:
       while (rcs->cdw & 15)
-         OUT_CS(&cs->base, 0x80000000); /* type2 nop packet */
+         OUT_CS(rcs, 0x80000000); /* type2 nop packet */
       break;
    default:
       break;
@@ -636,11 +698,19 @@ static void amdgpu_cs_flush(struct radeon_winsys_cs *rcs,
       fprintf(stderr, "amdgpu: command stream overflowed\n");
    }
 
-   amdgpu_cs_add_buffer(rcs, (void*)cs->big_ib_winsys_buffer,
-		       RADEON_USAGE_READ, 0, RADEON_PRIO_IB1);
+   amdgpu_cs_add_buffer(rcs, cs->main.big_ib_buffer,
+                        RADEON_USAGE_READ, 0, RADEON_PRIO_IB1);
+
+   if (cs->const_ib.ib_mapped)
+      amdgpu_cs_add_buffer(rcs, cs->const_ib.big_ib_buffer,
+                           RADEON_USAGE_READ, 0, RADEON_PRIO_IB1);
+
+   if (cs->const_preamble_ib.ib_mapped)
+      amdgpu_cs_add_buffer(rcs, cs->const_preamble_ib.big_ib_buffer,
+                           RADEON_USAGE_READ, 0, RADEON_PRIO_IB1);
 
    /* If the CS is not empty or overflowed.... */
-   if (cs->base.cdw && cs->base.cdw <= cs->base.max_dw && !debug_get_option_noop()) {
+   if (cs->main.base.cdw && cs->main.base.cdw <= cs->main.base.max_dw && !debug_get_option_noop()) {
       int r;
 
       /* Use a buffer list containing all allocated buffers if requested. */
@@ -679,8 +749,18 @@ static void amdgpu_cs_flush(struct radeon_winsys_cs *rcs,
 	 goto cleanup;
       }
 
-      cs->ib.size = cs->base.cdw;
-      cs->used_ib_space += cs->base.cdw * 4;
+      cs->ib[IB_MAIN].size = cs->main.base.cdw;
+      cs->main.used_ib_space += cs->main.base.cdw * 4;
+
+      if (cs->const_ib.ib_mapped) {
+         cs->ib[IB_CONST].size = cs->const_ib.base.cdw;
+         cs->const_ib.used_ib_space += cs->const_ib.base.cdw * 4;
+      }
+
+      if (cs->const_preamble_ib.ib_mapped) {
+         cs->ib[IB_CONST_PREAMBLE].size = cs->const_preamble_ib.base.cdw;
+         cs->const_preamble_ib.used_ib_space += cs->const_preamble_ib.base.cdw * 4;
+      }
 
       amdgpu_cs_do_submission(cs, fence);
 
@@ -691,7 +771,13 @@ static void amdgpu_cs_flush(struct radeon_winsys_cs *rcs,
 
 cleanup:
    amdgpu_cs_context_cleanup(cs);
-   amdgpu_get_new_ib(cs);
+
+   amdgpu_get_new_ib(&ws->base, &cs->main, &cs->ib[IB_MAIN], IB_MAIN);
+   if (cs->const_ib.ib_mapped)
+      amdgpu_get_new_ib(&ws->base, &cs->const_ib, &cs->ib[IB_CONST], IB_CONST);
+   if (cs->const_preamble_ib.ib_mapped)
+      amdgpu_get_new_ib(&ws->base, &cs->const_preamble_ib,
+                                 &cs->ib[IB_CONST_PREAMBLE], IB_CONST_PREAMBLE);
 
    ws->num_cs_flushes++;
 }
@@ -702,7 +788,9 @@ static void amdgpu_cs_destroy(struct radeon_winsys_cs *rcs)
 
    amdgpu_destroy_cs_context(cs);
    p_atomic_dec(&cs->ctx->ws->num_cs);
-   pb_reference(&cs->big_ib_buffer, NULL);
+   pb_reference(&cs->main.big_ib_buffer, NULL);
+   pb_reference(&cs->const_ib.big_ib_buffer, NULL);
+   pb_reference(&cs->const_preamble_ib.big_ib_buffer, NULL);
    FREE(cs);
 }
 
@@ -722,6 +810,8 @@ void amdgpu_cs_init_functions(struct amdgpu_winsys *ws)
    ws->base.ctx_destroy = amdgpu_ctx_destroy;
    ws->base.ctx_query_reset_status = amdgpu_ctx_query_reset_status;
    ws->base.cs_create = amdgpu_cs_create;
+   ws->base.cs_add_const_ib = amdgpu_cs_add_const_ib;
+   ws->base.cs_add_const_preamble_ib = amdgpu_cs_add_const_preamble_ib;
    ws->base.cs_destroy = amdgpu_cs_destroy;
    ws->base.cs_add_buffer = amdgpu_cs_add_buffer;
    ws->base.cs_lookup_buffer = amdgpu_cs_lookup_buffer;

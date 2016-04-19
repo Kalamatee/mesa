@@ -121,6 +121,8 @@ struct si_shader_context
 	LLVMTypeRef v4i32;
 	LLVMTypeRef v4f32;
 	LLVMTypeRef v8i32;
+
+	LLVMValueRef shared_memory;
 };
 
 static struct si_shader_context *si_shader_context(
@@ -1282,12 +1284,66 @@ static void declare_system_value(
 		value = get_primitive_id(&radeon_bld->soa.bld_base, 0);
 		break;
 
+	case TGSI_SEMANTIC_GRID_SIZE:
+		value = LLVMGetParam(radeon_bld->main_fn, SI_PARAM_GRID_SIZE);
+		break;
+
+	case TGSI_SEMANTIC_BLOCK_SIZE:
+	{
+		LLVMValueRef values[3];
+		unsigned i;
+		unsigned *properties = ctx->shader->selector->info.properties;
+		unsigned sizes[3] = {
+			properties[TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH],
+			properties[TGSI_PROPERTY_CS_FIXED_BLOCK_HEIGHT],
+			properties[TGSI_PROPERTY_CS_FIXED_BLOCK_DEPTH]
+		};
+
+		for (i = 0; i < 3; ++i)
+			values[i] = lp_build_const_int32(gallivm, sizes[i]);
+
+		value = lp_build_gather_values(gallivm, values, 3);
+		break;
+	}
+
+	case TGSI_SEMANTIC_BLOCK_ID:
+		value = LLVMGetParam(radeon_bld->main_fn, SI_PARAM_BLOCK_ID);
+		break;
+
+	case TGSI_SEMANTIC_THREAD_ID:
+		value = LLVMGetParam(radeon_bld->main_fn, SI_PARAM_THREAD_ID);
+		break;
+
 	default:
 		assert(!"unknown system value");
 		return;
 	}
 
 	radeon_bld->system_values[index] = value;
+}
+
+static void declare_compute_memory(struct radeon_llvm_context *radeon_bld,
+                                   const struct tgsi_full_declaration *decl)
+{
+	struct si_shader_context *ctx =
+		si_shader_context(&radeon_bld->soa.bld_base);
+	struct si_shader_selector *sel = ctx->shader->selector;
+	struct gallivm_state *gallivm = &radeon_bld->gallivm;
+
+	LLVMTypeRef i8p = LLVMPointerType(ctx->i8, LOCAL_ADDR_SPACE);
+	LLVMValueRef var;
+
+	assert(decl->Declaration.MemType == TGSI_MEMORY_TYPE_SHARED);
+	assert(decl->Range.First == decl->Range.Last);
+	assert(!ctx->shared_memory);
+
+	var = LLVMAddGlobalInAddressSpace(gallivm->module,
+	                                  LLVMArrayType(ctx->i8, sel->local_size),
+	                                  "compute_lds",
+	                                  LOCAL_ADDR_SPACE);
+	LLVMSetAlignment(var, 4);
+
+	ctx->shared_memory = LLVMBuildBitCast(gallivm->builder, var, i8p, "");
 }
 
 static LLVMValueRef fetch_constant(
@@ -3015,7 +3071,7 @@ static void load_fetch_args(
 
 		buffer_append_args(ctx, emit_data, rsrc, bld_base->uint_bld.zero,
 				   offset, false);
-	} else {
+	} else if (inst->Src[0].Register.File == TGSI_FILE_IMAGE) {
 		LLVMValueRef coords;
 
 		image_fetch_rsrc(bld_base, &inst->Src[0], false, &rsrc);
@@ -3068,6 +3124,53 @@ static void load_emit_buffer(struct si_shader_context *ctx,
 			LLVMReadOnlyAttribute | LLVMNoUnwindAttribute);
 }
 
+static LLVMValueRef get_memory_ptr(struct si_shader_context *ctx,
+                                   const struct tgsi_full_instruction *inst,
+                                   LLVMTypeRef type, int arg)
+{
+	struct gallivm_state *gallivm = &ctx->radeon_bld.gallivm;
+	LLVMBuilderRef builder = gallivm->builder;
+	LLVMValueRef offset, ptr;
+	int addr_space;
+
+	offset = lp_build_emit_fetch(&ctx->radeon_bld.soa.bld_base, inst, arg, 0);
+	offset = LLVMBuildBitCast(builder, offset, ctx->i32, "");
+
+	ptr = ctx->shared_memory;
+	ptr = LLVMBuildGEP(builder, ptr, &offset, 1, "");
+	addr_space = LLVMGetPointerAddressSpace(LLVMTypeOf(ptr));
+	ptr = LLVMBuildBitCast(builder, ptr, LLVMPointerType(type, addr_space), "");
+
+	return ptr;
+}
+
+static void load_emit_memory(
+		struct si_shader_context *ctx,
+		struct lp_build_emit_data *emit_data)
+{
+	const struct tgsi_full_instruction *inst = emit_data->inst;
+	struct lp_build_context *base = &ctx->radeon_bld.soa.bld_base.base;
+	struct gallivm_state *gallivm = &ctx->radeon_bld.gallivm;
+	LLVMBuilderRef builder = gallivm->builder;
+	unsigned writemask = inst->Dst[0].Register.WriteMask;
+	LLVMValueRef channels[4], ptr, derived_ptr, index;
+	int chan;
+
+	ptr = get_memory_ptr(ctx, inst, base->elem_type, 1);
+
+	for (chan = 0; chan < 4; ++chan) {
+		if (!(writemask & (1 << chan))) {
+			channels[chan] = LLVMGetUndef(base->elem_type);
+			continue;
+		}
+
+		index = lp_build_const_int32(gallivm, chan);
+		derived_ptr = LLVMBuildGEP(builder, ptr, &index, 1, "");
+		channels[chan] = LLVMBuildLoad(builder, derived_ptr, "");
+	}
+	emit_data->output[emit_data->chan] = lp_build_gather_values(gallivm, channels, 4);
+}
+
 static void load_emit(
 		const struct lp_build_tgsi_action *action,
 		struct lp_build_tgsi_context *bld_base,
@@ -3079,6 +3182,11 @@ static void load_emit(
 	const struct tgsi_full_instruction * inst = emit_data->inst;
 	char intrinsic_name[32];
 	char coords_type[8];
+
+	if (inst->Src[0].Register.File == TGSI_FILE_MEMORY) {
+		load_emit_memory(ctx, emit_data);
+		return;
+	}
 
 	if (inst->Memory.Qualifier & TGSI_MEMORY_VOLATILE)
 		emit_optimization_barrier(ctx);
@@ -3145,7 +3253,7 @@ static void store_fetch_args(
 
 		buffer_append_args(ctx, emit_data, rsrc, bld_base->uint_bld.zero,
 				   offset, false);
-	} else {
+	} else if (inst->Dst[0].Register.File == TGSI_FILE_IMAGE) {
 		unsigned target = inst->Memory.Texture;
 		LLVMValueRef coords;
 
@@ -3241,6 +3349,31 @@ static void store_emit_buffer(
 	}
 }
 
+static void store_emit_memory(
+		struct si_shader_context *ctx,
+		struct lp_build_emit_data *emit_data)
+{
+	const struct tgsi_full_instruction *inst = emit_data->inst;
+	struct gallivm_state *gallivm = &ctx->radeon_bld.gallivm;
+	struct lp_build_context *base = &ctx->radeon_bld.soa.bld_base.base;
+	LLVMBuilderRef builder = gallivm->builder;
+	unsigned writemask = inst->Dst[0].Register.WriteMask;
+	LLVMValueRef ptr, derived_ptr, data, index;
+	int chan;
+
+	ptr = get_memory_ptr(ctx, inst, base->elem_type, 0);
+
+	for (chan = 0; chan < 4; ++chan) {
+		if (!(writemask & (1 << chan))) {
+			continue;
+		}
+		data = lp_build_emit_fetch(&ctx->radeon_bld.soa.bld_base, inst, 1, chan);
+		index = lp_build_const_int32(gallivm, chan);
+		derived_ptr = LLVMBuildGEP(builder, ptr, &index, 1, "");
+		LLVMBuildStore(builder, data, derived_ptr);
+	}
+}
+
 static void store_emit(
 		const struct lp_build_tgsi_action *action,
 		struct lp_build_tgsi_context *bld_base,
@@ -3255,6 +3388,9 @@ static void store_emit(
 
 	if (inst->Dst[0].Register.File == TGSI_FILE_BUFFER) {
 		store_emit_buffer(si_shader_context(bld_base), emit_data);
+		return;
+	} else if (inst->Dst[0].Register.File == TGSI_FILE_MEMORY) {
+		store_emit_memory(si_shader_context(bld_base), emit_data);
 		return;
 	}
 
@@ -3316,7 +3452,7 @@ static void atomic_fetch_args(
 
 		buffer_append_args(ctx, emit_data, rsrc, bld_base->uint_bld.zero,
 				   offset, true);
-	} else {
+	} else if (inst->Src[0].Register.File == TGSI_FILE_IMAGE) {
 		unsigned target = inst->Memory.Texture;
 		LLVMValueRef coords;
 
@@ -3337,16 +3473,91 @@ static void atomic_fetch_args(
 	}
 }
 
+static void atomic_emit_memory(struct si_shader_context *ctx,
+                               struct lp_build_emit_data *emit_data) {
+	struct gallivm_state *gallivm = &ctx->radeon_bld.gallivm;
+	LLVMBuilderRef builder = gallivm->builder;
+	const struct tgsi_full_instruction * inst = emit_data->inst;
+	LLVMValueRef ptr, result, arg;
+
+	ptr = get_memory_ptr(ctx, inst, ctx->i32, 1);
+
+	arg = lp_build_emit_fetch(&ctx->radeon_bld.soa.bld_base, inst, 2, 0);
+	arg = LLVMBuildBitCast(builder, arg, ctx->i32, "");
+
+	if (inst->Instruction.Opcode == TGSI_OPCODE_ATOMCAS) {
+		LLVMValueRef new_data;
+		new_data = lp_build_emit_fetch(&ctx->radeon_bld.soa.bld_base,
+		                               inst, 3, 0);
+
+		new_data = LLVMBuildBitCast(builder, new_data, ctx->i32, "");
+
+#if HAVE_LLVM >= 0x309
+		result = LLVMBuildAtomicCmpXchg(builder, ptr, arg, new_data,
+		                       LLVMAtomicOrderingSequentiallyConsistent,
+		                       LLVMAtomicOrderingSequentiallyConsistent,
+		                       false);
+#endif
+
+		result = LLVMBuildExtractValue(builder, result, 0, "");
+	} else {
+		LLVMAtomicRMWBinOp op;
+
+		switch(inst->Instruction.Opcode) {
+			case TGSI_OPCODE_ATOMUADD:
+				op = LLVMAtomicRMWBinOpAdd;
+				break;
+			case TGSI_OPCODE_ATOMXCHG:
+				op = LLVMAtomicRMWBinOpXchg;
+				break;
+			case TGSI_OPCODE_ATOMAND:
+				op = LLVMAtomicRMWBinOpAnd;
+				break;
+			case TGSI_OPCODE_ATOMOR:
+				op = LLVMAtomicRMWBinOpOr;
+				break;
+			case TGSI_OPCODE_ATOMXOR:
+				op = LLVMAtomicRMWBinOpXor;
+				break;
+			case TGSI_OPCODE_ATOMUMIN:
+				op = LLVMAtomicRMWBinOpUMin;
+				break;
+			case TGSI_OPCODE_ATOMUMAX:
+				op = LLVMAtomicRMWBinOpUMax;
+				break;
+			case TGSI_OPCODE_ATOMIMIN:
+				op = LLVMAtomicRMWBinOpMin;
+				break;
+			case TGSI_OPCODE_ATOMIMAX:
+				op = LLVMAtomicRMWBinOpMax;
+				break;
+			default:
+				unreachable("unknown atomic opcode");
+		}
+
+		result = LLVMBuildAtomicRMW(builder, op, ptr, arg,
+		                       LLVMAtomicOrderingSequentiallyConsistent,
+		                       false);
+	}
+	emit_data->output[emit_data->chan] = LLVMBuildBitCast(builder, result, emit_data->dst_type, "");
+}
+
 static void atomic_emit(
 		const struct lp_build_tgsi_action *action,
 		struct lp_build_tgsi_context *bld_base,
 		struct lp_build_emit_data *emit_data)
 {
+	struct si_shader_context *ctx = si_shader_context(bld_base);
 	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBuilderRef builder = gallivm->builder;
 	const struct tgsi_full_instruction * inst = emit_data->inst;
 	char intrinsic_name[40];
 	LLVMValueRef tmp;
+
+	if (inst->Src[0].Register.File == TGSI_FILE_MEMORY) {
+		atomic_emit_memory(ctx, emit_data);
+		return;
+	}
 
 	if (inst->Src[0].Register.File == TGSI_FILE_BUFFER ||
 	    inst->Memory.Texture == TGSI_TEXTURE_BUFFER) {
@@ -4823,6 +5034,14 @@ static void create_function(struct si_shader_context *ctx)
 		}
 		break;
 
+	case TGSI_PROCESSOR_COMPUTE:
+		params[SI_PARAM_GRID_SIZE] = v3i32;
+		params[SI_PARAM_BLOCK_ID] = v3i32;
+		last_sgpr = SI_PARAM_BLOCK_ID;
+
+		params[SI_PARAM_THREAD_ID] = v3i32;
+		num_params = SI_PARAM_THREAD_ID + 1;
+		break;
 	default:
 		assert(0 && "unimplemented shader");
 		return;
@@ -4846,6 +5065,18 @@ static void create_function(struct si_shader_context *ctx)
 					  S_0286D0_LINEAR_CENTROID_ENA(1) |
 					  S_0286D0_FRONT_FACE_ENA(1) |
 					  S_0286D0_POS_FIXED_PT_ENA(1));
+	} else if (ctx->type == TGSI_PROCESSOR_COMPUTE) {
+		const unsigned *properties = shader->selector->info.properties;
+		unsigned max_work_group_size =
+		               properties[TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH] *
+		               properties[TGSI_PROPERTY_CS_FIXED_BLOCK_HEIGHT] *
+		               properties[TGSI_PROPERTY_CS_FIXED_BLOCK_DEPTH];
+
+		assert(max_work_group_size);
+
+		radeon_llvm_add_attribute(ctx->radeon_bld.main_fn,
+		                          "amdgpu-max-work-group-size",
+		                          max_work_group_size);
 	}
 
 	shader->info.num_input_sgprs = 0;
@@ -5600,6 +5831,7 @@ void si_dump_shader_key(unsigned shader, union si_shader_key *key, FILE *f)
 		break;
 
 	case PIPE_SHADER_GEOMETRY:
+	case PIPE_SHADER_COMPUTE:
 		break;
 
 	case PIPE_SHADER_FRAGMENT:
@@ -5783,6 +6015,9 @@ int si_compile_tgsi_shader(struct si_screen *sscreen,
 			bld_base->emit_epilogue = si_llvm_emit_fs_epilogue;
 		else
 			bld_base->emit_epilogue = si_llvm_return_fs_outputs;
+		break;
+	case TGSI_PROCESSOR_COMPUTE:
+		ctx.radeon_bld.declare_memory_region = declare_compute_memory;
 		break;
 	default:
 		assert(!"Unsupported shader type");
@@ -6787,7 +7022,8 @@ int si_shader_create(struct si_screen *sscreen, LLVMTargetMachineRef tm,
 	     (shader->key.vs.as_es != mainp->key.vs.as_es ||
 	      shader->key.vs.as_ls != mainp->key.vs.as_ls)) ||
 	    (shader->selector->type == PIPE_SHADER_TESS_EVAL &&
-	     shader->key.tes.as_es != mainp->key.tes.as_es)) {
+	     shader->key.tes.as_es != mainp->key.tes.as_es) ||
+	    shader->selector->type == PIPE_SHADER_COMPUTE) {
 		/* Monolithic shader (compiled as a whole, has many variants,
 		 * may take a long time to compile).
 		 */

@@ -95,9 +95,16 @@
 #define DBG_NO_RB_PLUS		(1llu << 45)
 #define DBG_SI_SCHED		(1llu << 46)
 #define DBG_MONOLITHIC_SHADERS	(1llu << 47)
+#define DBG_NO_CE		(1llu << 48)
 
 #define R600_MAP_BUFFER_ALIGNMENT 64
 #define R600_MAX_VIEWPORTS        16
+
+#ifdef PIPE_ARCH_BIG_ENDIAN
+#define R600_BIG_ENDIAN 1
+#else
+#define R600_BIG_ENDIAN 0
+#endif
 
 struct r600_common_context;
 struct r600_perfcounters;

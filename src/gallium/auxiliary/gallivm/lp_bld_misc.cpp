@@ -518,10 +518,16 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
 #ifdef _WIN32
        /*
         * MCJIT works on Windows, but currently only through ELF object format.
+        *
+        * XXX: We could use `LLVM_HOST_TRIPLE "-elf"` but LLVM_HOST_TRIPLE has
+        * different strings for MinGW/MSVC, so better play it safe and be
+        * explicit.
         */
-       std::string targetTriple = llvm::sys::getProcessTriple();
-       targetTriple.append("-elf");
-       unwrap(M)->setTargetTriple(targetTriple);
+#  ifdef _WIN64
+       LLVMSetTarget(M, "x86_64-pc-win32-elf");
+#  else
+       LLVMSetTarget(M, "i686-pc-win32-elf");
+#  endif
 #endif
    }
 
@@ -596,7 +602,6 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
 
    ShaderMemoryManager *MM = NULL;
    if (useMCJIT) {
-#if HAVE_LLVM > 0x0303
        BaseMemoryManager* JMM = reinterpret_cast<BaseMemoryManager*>(CMM);
        MM = new ShaderMemoryManager(JMM);
        *OutCode = MM->getGeneratedCode();
@@ -604,9 +609,10 @@ lp_build_create_jit_compiler_for_module(LLVMExecutionEngineRef *OutJIT,
 #if HAVE_LLVM >= 0x0306
        builder.setMCJITMemoryManager(std::unique_ptr<RTDyldMemoryManager>(MM));
        MM = NULL; // ownership taken by std::unique_ptr
-#else
+#elif HAVE_LLVM > 0x0303
        builder.setMCJITMemoryManager(MM);
-#endif
+#else
+       builder.setJITMemoryManager(MM);
 #endif
    } else {
 #if HAVE_LLVM < 0x0306

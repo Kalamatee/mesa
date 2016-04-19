@@ -497,11 +497,6 @@ _mesa_meta_begin(struct gl_context *ctx, GLbitfield state)
    if (state & MESA_META_COLOR_MASK) {
       memcpy(save->ColorMask, ctx->Color.ColorMask,
              sizeof(ctx->Color.ColorMask));
-      if (!ctx->Color.ColorMask[0][0] ||
-          !ctx->Color.ColorMask[0][1] ||
-          !ctx->Color.ColorMask[0][2] ||
-          !ctx->Color.ColorMask[0][3])
-         _mesa_ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
    }
 
    if (state & MESA_META_DEPTH_TEST) {
@@ -1623,6 +1618,79 @@ _mesa_meta_drawbuffers_from_bitfield(GLbitfield bits)
 }
 
 /**
+ * Return if all of the color channels are masked.
+ */
+static inline GLboolean
+is_color_disabled(struct gl_context *ctx, int i)
+{
+   return !ctx->Color.ColorMask[i][0] &&
+          !ctx->Color.ColorMask[i][1] &&
+          !ctx->Color.ColorMask[i][2] &&
+          !ctx->Color.ColorMask[i][3];
+}
+
+/**
+ * Given a bitfield of BUFFER_BIT_x draw buffers, call glDrawBuffers to
+ * set GL to only draw to those buffers.  Also, update color masks to
+ * reflect the new draw buffer ordering.
+ */
+static void
+_mesa_meta_drawbuffers_and_colormask(struct gl_context *ctx, GLbitfield mask)
+{
+   GLenum enums[MAX_DRAW_BUFFERS];
+   GLubyte colormask[MAX_DRAW_BUFFERS][4];
+   int num_bufs = 0;
+
+   /* This function is only legal for color buffer bitfields. */
+   assert((mask & ~BUFFER_BITS_COLOR) == 0);
+
+   /* Make sure we don't overflow any arrays. */
+   assert(_mesa_bitcount(mask) <= MAX_DRAW_BUFFERS);
+
+   enums[0] = GL_NONE;
+
+   for (int i = 0; i < ctx->DrawBuffer->_NumColorDrawBuffers; i++) {
+      int b = ctx->DrawBuffer->_ColorDrawBufferIndexes[i];
+      int colormask_idx = ctx->Extensions.EXT_draw_buffers2 ? i : 0;
+
+      if (b < 0 || !(mask & (1 << b)) || is_color_disabled(ctx, colormask_idx))
+         continue;
+
+      switch (b) {
+      case BUFFER_FRONT_LEFT:
+         enums[num_bufs] = GL_FRONT_LEFT;
+         break;
+      case BUFFER_FRONT_RIGHT:
+         enums[num_bufs] = GL_FRONT_RIGHT;
+         break;
+      case BUFFER_BACK_LEFT:
+         enums[num_bufs] = GL_BACK_LEFT;
+         break;
+      case BUFFER_BACK_RIGHT:
+         enums[num_bufs] = GL_BACK_RIGHT;
+         break;
+      default:
+         assert(b >= BUFFER_COLOR0 && b <= BUFFER_COLOR7);
+         enums[num_bufs] = GL_COLOR_ATTACHMENT0 + (b - BUFFER_COLOR0);
+         break;
+      }
+
+      for (int k = 0; k < 4; k++)
+         colormask[num_bufs][k] = ctx->Color.ColorMask[colormask_idx][k];
+
+      num_bufs++;
+   }
+
+   _mesa_DrawBuffers(num_bufs, enums);
+
+   for (int i = 0; i < num_bufs; i++) {
+      _mesa_ColorMaski(i, colormask[i][0], colormask[i][1],
+                          colormask[i][2], colormask[i][3]);
+   }
+}
+
+
+/**
  * Meta implementation of ctx->Driver.Clear() in terms of polygon rendering.
  */
 static void
@@ -1638,6 +1706,7 @@ meta_clear(struct gl_context *ctx, GLbitfield buffers, bool glsl)
 
    metaSave = (MESA_META_ALPHA_TEST |
 	       MESA_META_BLEND |
+               MESA_META_COLOR_MASK |
 	       MESA_META_DEPTH_TEST |
 	       MESA_META_RASTERIZATION |
 	       MESA_META_SHADER |
@@ -1660,11 +1729,6 @@ meta_clear(struct gl_context *ctx, GLbitfield buffers, bool glsl)
 
    if (buffers & BUFFER_BITS_COLOR) {
       metaSave |= MESA_META_DRAW_BUFFERS;
-   } else {
-      /* We'll use colormask to disable color writes.  Otherwise,
-       * respect color mask
-       */
-      metaSave |= MESA_META_COLOR_MASK;
    }
 
    _mesa_meta_begin(ctx, metaSave);
@@ -1700,7 +1764,7 @@ meta_clear(struct gl_context *ctx, GLbitfield buffers, bool glsl)
    /* GL_COLOR_BUFFER_BIT */
    if (buffers & BUFFER_BITS_COLOR) {
       /* Only draw to the buffers we were asked to clear. */
-      _mesa_meta_drawbuffers_from_bitfield(buffers & BUFFER_BITS_COLOR);
+      _mesa_meta_drawbuffers_and_colormask(ctx, buffers & BUFFER_BITS_COLOR);
 
       /* leave colormask state as-is */
 
@@ -1709,7 +1773,6 @@ meta_clear(struct gl_context *ctx, GLbitfield buffers, bool glsl)
          _mesa_ClampColor(GL_CLAMP_FRAGMENT_COLOR, GL_FALSE);
    }
    else {
-      assert(metaSave & MESA_META_COLOR_MASK);
       _mesa_ColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
    }
 
@@ -2984,6 +3047,7 @@ decompress_texture_image(struct gl_context *ctx,
 
    _mesa_meta_begin(ctx, MESA_META_ALL & ~(MESA_META_PIXEL_STORE |
                                            MESA_META_DRAW_BUFFERS));
+   _mesa_ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 
    _mesa_reference_sampler_object(ctx, &samp_obj_save,
                                   ctx->Texture.Unit[ctx->Texture.CurrentUnit].Sampler);
@@ -3499,6 +3563,7 @@ cleartexsubimage_using_fbo(struct gl_context *ctx,
                     MESA_META_DITHER |
                     MESA_META_FRAMEBUFFER_SRGB);
 
+   _mesa_ColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
    _mesa_set_enable(ctx, GL_DITHER, GL_FALSE);
 
    _mesa_set_enable(ctx, GL_SCISSOR_TEST, GL_TRUE);

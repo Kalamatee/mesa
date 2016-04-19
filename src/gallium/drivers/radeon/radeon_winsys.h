@@ -229,7 +229,6 @@ struct radeon_winsys_cs {
     unsigned                    cdw;  /* Number of used dwords. */
     unsigned                    max_dw; /* Maximum number of dwords. */
     uint32_t                    *buf; /* The command buffer. */
-    enum ring_type              ring_type;
 };
 
 struct radeon_info {
@@ -603,6 +602,36 @@ struct radeon_winsys {
 							struct pipe_fence_handle **fence),
                                           void *flush_ctx);
 
+    /**
+     * Add a constant engine IB to a graphics CS. This makes the graphics CS
+     * from "cs_create" a group of two IBs that share a buffer list and are
+     * flushed together.
+     *
+     * The returned constant CS is only a stream for writing packets to the new
+     * IB. Calling other winsys functions with it is not allowed, not even
+     * "cs_destroy".
+     *
+     * In order to add buffers and check memory usage, use the graphics CS.
+     * In order to flush it, use the graphics CS, which will flush both IBs.
+     * Destroying the graphics CS will destroy both of them.
+     *
+     * \param cs  The graphics CS from "cs_create" that will hold the buffer
+     *            list and will be used for flushing.
+     */
+    struct radeon_winsys_cs *(*cs_add_const_ib)(struct radeon_winsys_cs *cs);
+
+     /**
+     * Add a constant engine preamble IB to a graphics CS. This add an extra IB
+     * in similar manner to cs_add_const_ib. This should always be called after
+     * cs_add_const_ib.
+     *
+     * The returned IB is a constant engine IB that only gets flushed if the
+     * context changed.
+     *
+     * \param cs  The graphics CS from "cs_create" that will hold the buffer
+     *            list and will be used for flushing.
+     */
+    struct radeon_winsys_cs *(*cs_add_const_preamble_ib)(struct radeon_winsys_cs *cs);
     /**
      * Destroy a command stream.
      *

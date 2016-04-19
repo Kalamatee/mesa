@@ -63,9 +63,6 @@
 #define SI_CONTEXT_CS_PARTIAL_FLUSH	(R600_CONTEXT_PRIVATE_FLAG << 10)
 #define SI_CONTEXT_VGT_FLUSH		(R600_CONTEXT_PRIVATE_FLAG << 11)
 #define SI_CONTEXT_VGT_STREAMOUT_SYNC	(R600_CONTEXT_PRIVATE_FLAG << 12)
-/* Compute only. */
-#define SI_CONTEXT_FLUSH_WITH_INV_L2	(R600_CONTEXT_PRIVATE_FLAG << 13) /* TODO: merge with TC? */
-#define SI_CONTEXT_FLAG_COMPUTE		(R600_CONTEXT_PRIVATE_FLAG << 14)
 
 #define SI_CONTEXT_FLUSH_AND_INV_FRAMEBUFFER (SI_CONTEXT_FLUSH_AND_INV_CB | \
 					      SI_CONTEXT_FLUSH_AND_INV_CB_META | \
@@ -80,6 +77,7 @@
 
 struct si_compute;
 struct hash_table;
+struct u_suballocator;
 
 struct si_screen {
 	struct r600_common_screen	b;
@@ -132,6 +130,9 @@ struct si_sampler_state {
 
 struct si_cs_shader_state {
 	struct si_compute		*program;
+	struct si_compute		*emitted_program;
+	unsigned			offset;
+	bool				initialized;
 };
 
 struct si_textures_info {
@@ -191,6 +192,12 @@ struct si_context {
 	void				*custom_blend_dcc_decompress;
 	void				*pstipple_sampler_state;
 	struct si_screen		*screen;
+
+	struct radeon_winsys_cs		*ce_ib;
+	struct radeon_winsys_cs		*ce_preamble_ib;
+	bool				ce_need_synchronization;
+	struct u_suballocator		*ce_suballocator;
+
 	struct pipe_fence_handle	*last_gfx_fence;
 	struct si_shader_ctx_state	fixed_func_tcs_shader;
 	LLVMTargetMachineRef		tm;
@@ -298,6 +305,8 @@ struct si_context {
 	unsigned		scratch_waves;
 	unsigned		spi_tmpring_size;
 
+	struct r600_resource	*compute_scratch_buffer;
+
 	/* Emitted derived tessellation state. */
 	struct si_shader	*last_ls; /* local shader (VS) */
 	struct si_shader_selector *last_tcs;
@@ -327,7 +336,8 @@ void cik_sdma_copy(struct pipe_context *ctx,
 
 /* si_blit.c */
 void si_init_blit_functions(struct si_context *sctx);
-void si_decompress_textures(struct si_context *sctx);
+void si_decompress_graphics_textures(struct si_context *sctx);
+void si_decompress_compute_textures(struct si_context *sctx);
 void si_resource_copy_region(struct pipe_context *ctx,
 			     struct pipe_resource *dst,
 			     unsigned dst_level,
@@ -407,6 +417,15 @@ si_set_atom_dirty(struct si_context *sctx,
 		sctx->dirty_atoms |= bit;
 	else
 		sctx->dirty_atoms &= ~bit;
+}
+
+static inline bool
+si_is_atom_dirty(struct si_context *sctx,
+		  struct r600_atom *atom)
+{
+	unsigned bit = 1 << (atom->id - 1);
+
+	return sctx->dirty_atoms & bit;
 }
 
 static inline void

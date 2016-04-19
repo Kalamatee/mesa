@@ -29,6 +29,7 @@
 #include "radeon/radeon_llvm_emit.h"
 #include "radeon/radeon_uvd.h"
 #include "util/u_memory.h"
+#include "util/u_suballoc.h"
 #include "vl/vl_decoder.h"
 
 /*
@@ -41,6 +42,9 @@ static void si_destroy_context(struct pipe_context *context)
 
 	si_release_all_descriptors(sctx);
 
+	if (sctx->ce_suballocator)
+		u_suballocator_destroy(sctx->ce_suballocator);
+
 	pipe_resource_reference(&sctx->esgs_ring, NULL);
 	pipe_resource_reference(&sctx->gsvs_ring, NULL);
 	pipe_resource_reference(&sctx->tf_ring, NULL);
@@ -48,6 +52,7 @@ static void si_destroy_context(struct pipe_context *context)
 	r600_resource_reference(&sctx->border_color_buffer, NULL);
 	free(sctx->border_color_table);
 	r600_resource_reference(&sctx->scratch_buffer, NULL);
+	r600_resource_reference(&sctx->compute_scratch_buffer, NULL);
 	sctx->b.ws->fence_reference(&sctx->last_gfx_fence, NULL);
 
 	si_pm4_free_state(sctx, sctx->init_config, ~0);
@@ -142,6 +147,28 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 
 	sctx->b.gfx.cs = ws->cs_create(sctx->b.ctx, RING_GFX,
 				       si_context_gfx_flush, sctx);
+
+	if (!(sscreen->b.debug_flags & DBG_NO_CE) && ws->cs_add_const_ib) {
+		sctx->ce_ib = ws->cs_add_const_ib(sctx->b.gfx.cs);
+		if (!sctx->ce_ib)
+			goto fail;
+
+		if (ws->cs_add_const_preamble_ib) {
+			sctx->ce_preamble_ib =
+			           ws->cs_add_const_preamble_ib(sctx->b.gfx.cs);
+
+			if (!sctx->ce_preamble_ib)
+				goto fail;
+		}
+
+		sctx->ce_suballocator =
+				u_suballocator_create(&sctx->b.b, 1024 * 1024,
+						      64, PIPE_BIND_CUSTOM,
+						      PIPE_USAGE_DEFAULT, FALSE);
+		if (!sctx->ce_suballocator)
+			goto fail;
+	}
+
 	sctx->b.gfx.flush = si_context_gfx_flush;
 
 	/* Border colors. */
@@ -446,6 +473,8 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 
 static int si_get_shader_param(struct pipe_screen* pscreen, unsigned shader, enum pipe_shader_cap param)
 {
+	struct si_screen *sscreen = (struct si_screen *)pscreen;
+
 	switch(shader)
 	{
 	case PIPE_SHADER_FRAGMENT:
@@ -463,9 +492,19 @@ static int si_get_shader_param(struct pipe_screen* pscreen, unsigned shader, enu
 		case PIPE_SHADER_CAP_PREFERRED_IR:
 			return PIPE_SHADER_IR_NATIVE;
 
-		case PIPE_SHADER_CAP_SUPPORTED_IRS:
-			return 0;
+		case PIPE_SHADER_CAP_SUPPORTED_IRS: {
+			int ir = 1 << PIPE_SHADER_IR_NATIVE;
 
+			/* Old kernels disallowed some register writes for SI
+			 * that are used for indirect dispatches. */
+			if (HAVE_LLVM >= 0x309 && (sscreen->b.chip_class >= CIK ||
+			                           sscreen->b.info.drm_major == 3 ||
+			                           (sscreen->b.info.drm_major == 2 &&
+			                            sscreen->b.info.drm_minor >= 45)))
+				ir |= 1 << PIPE_SHADER_IR_TGSI;
+
+			return ir;
+		}
 		case PIPE_SHADER_CAP_DOUBLES:
 			return HAVE_LLVM >= 0x0307;
 

@@ -275,10 +275,50 @@ swizzle_result(nir_builder *b, nir_tex_instr *tex, const uint8_t swizzle[4])
                                   swizzled->parent_instr);
 }
 
+static void
+linearize_srgb_result(nir_builder *b, nir_tex_instr *tex)
+{
+   assert(tex->dest.is_ssa);
+   assert(nir_tex_instr_dest_size(tex) == 4);
+   assert(nir_alu_type_get_base_type(tex->dest_type) == nir_type_float);
+
+   b->cursor = nir_after_instr(&tex->instr);
+
+   static const unsigned swiz[4] = {0, 1, 2, 0};
+   nir_ssa_def *comp = nir_swizzle(b, &tex->dest.ssa, swiz, 3, true);
+
+   /* Formula is:
+    *    (comp <= 0.04045) ?
+    *          (comp / 12.92) :
+    *          pow((comp + 0.055) / 1.055, 2.4)
+    */
+   nir_ssa_def *low  = nir_fmul(b, comp, nir_imm_float(b, 1.0 / 12.92));
+   nir_ssa_def *high = nir_fpow(b,
+                                nir_fmul(b,
+                                         nir_fadd(b,
+                                                  comp,
+                                                  nir_imm_float(b, 0.055)),
+                                         nir_imm_float(b, 1.0 / 1.055)),
+                                nir_imm_float(b, 2.4));
+   nir_ssa_def *cond = nir_fge(b, nir_imm_float(b, 0.04045), comp);
+   nir_ssa_def *rgb  = nir_bcsel(b, cond, low, high);
+
+   /* alpha is untouched: */
+   nir_ssa_def *result = nir_vec4(b,
+                                  nir_channel(b, rgb, 0),
+                                  nir_channel(b, rgb, 1),
+                                  nir_channel(b, rgb, 2),
+                                  nir_channel(b, &tex->dest.ssa, 3));
+
+   nir_ssa_def_rewrite_uses_after(&tex->dest.ssa, nir_src_for_ssa(result),
+                                  result->parent_instr);
+}
+
 static bool
 nir_lower_tex_block(nir_block *block, void *void_state)
 {
    lower_tex_state *state = void_state;
+   const nir_lower_tex_options *options = state->options;
    nir_builder *b = &state->b;
 
    nir_foreach_instr_safe(block, instr) {
@@ -286,16 +326,16 @@ nir_lower_tex_block(nir_block *block, void *void_state)
          continue;
 
       nir_tex_instr *tex = nir_instr_as_tex(instr);
-      bool lower_txp = !!(state->options->lower_txp & (1 << tex->sampler_dim));
+      bool lower_txp = !!(options->lower_txp & (1 << tex->sampler_dim));
 
       /* mask of src coords to saturate (clamp): */
       unsigned sat_mask = 0;
 
-      if ((1 << tex->sampler_index) & state->options->saturate_r)
+      if ((1 << tex->sampler_index) & options->saturate_r)
          sat_mask |= (1 << 2);    /* .z */
-      if ((1 << tex->sampler_index) & state->options->saturate_t)
+      if ((1 << tex->sampler_index) & options->saturate_t)
          sat_mask |= (1 << 1);    /* .y */
-      if ((1 << tex->sampler_index) & state->options->saturate_s)
+      if ((1 << tex->sampler_index) & options->saturate_s)
          sat_mask |= (1 << 0);    /* .x */
 
       /* If we are clamping any coords, we must lower projector first
@@ -306,8 +346,7 @@ nir_lower_tex_block(nir_block *block, void *void_state)
          state->progress = true;
       }
 
-      if ((tex->sampler_dim == GLSL_SAMPLER_DIM_RECT) &&
-          state->options->lower_rect) {
+      if ((tex->sampler_dim == GLSL_SAMPLER_DIM_RECT) && options->lower_rect) {
          lower_rect(b, tex);
          state->progress = true;
       }
@@ -317,10 +356,17 @@ nir_lower_tex_block(nir_block *block, void *void_state)
          state->progress = true;
       }
 
-      if (((1 << tex->texture_index) & state->options->swizzle_result) &&
+      if (((1 << tex->texture_index) & options->swizzle_result) &&
           !nir_tex_instr_is_query(tex) &&
           !(tex->is_shadow && tex->is_new_style_shadow)) {
-         swizzle_result(b, tex, state->options->swizzles[tex->texture_index]);
+         swizzle_result(b, tex, options->swizzles[tex->texture_index]);
+         state->progress = true;
+      }
+
+      /* should be after swizzle so we know which channels are rgb: */
+      if (((1 << tex->texture_index) & options->lower_srgb) &&
+          !nir_tex_instr_is_query(tex) && !tex->is_shadow) {
+         linearize_srgb_result(b, tex);
          state->progress = true;
       }
    }
