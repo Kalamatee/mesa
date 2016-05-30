@@ -404,11 +404,10 @@ register_copy_instr(nir_intrinsic_instr *copy_instr,
 
 /* Registers all variable uses in the given block. */
 static bool
-register_variable_uses_block(nir_block *block, void *void_state)
+register_variable_uses_block(nir_block *block,
+                             struct lower_variables_state *state)
 {
-   struct lower_variables_state *state = void_state;
-
-   nir_foreach_instr_safe(block, instr) {
+   nir_foreach_instr_safe(instr, block) {
       if (instr->type != nir_instr_type_intrinsic)
          continue;
 
@@ -485,7 +484,7 @@ rename_variables_block(nir_block *block, struct lower_variables_state *state)
    nir_builder b;
    nir_builder_init(&b, state->impl);
 
-   nir_foreach_instr_safe(block, instr) {
+   nir_foreach_instr_safe(instr, block) {
       if (instr->type != nir_instr_type_intrinsic)
          continue;
 
@@ -653,7 +652,10 @@ nir_lower_vars_to_ssa_impl(nir_function_impl *impl)
 
    /* Build the initial deref structures and direct_deref_nodes table */
    state.add_to_direct_deref_nodes = true;
-   nir_foreach_block(impl, register_variable_uses_block, &state);
+
+   nir_foreach_block(block, impl) {
+      register_variable_uses_block(block, &state);
+   }
 
    bool progress = false;
 
@@ -693,7 +695,9 @@ nir_lower_vars_to_ssa_impl(nir_function_impl *impl)
     * added load/store instructions are registered.  We need this
     * information for phi node insertion below.
     */
-   nir_foreach_block(impl, register_variable_uses_block, &state);
+   nir_foreach_block(block, impl) {
+      register_variable_uses_block(block, &state);
+   }
 
    state.phi_builder = nir_phi_builder_create(state.impl);
 
@@ -721,7 +725,7 @@ nir_lower_vars_to_ssa_impl(nir_function_impl *impl)
       node->pb_value =
          nir_phi_builder_add_value(state.phi_builder,
                                    glsl_get_vector_elements(node->type),
-                                   glsl_get_bit_size(glsl_get_base_type(node->type)),
+                                   glsl_get_bit_size(node->type),
                                    store_blocks);
 
       if (node->deref->var->constant_initializer) {
@@ -748,7 +752,7 @@ nir_lower_vars_to_ssa_impl(nir_function_impl *impl)
 void
 nir_lower_vars_to_ssa(nir_shader *shader)
 {
-   nir_foreach_function(shader, function) {
+   nir_foreach_function(function, shader) {
       if (function->impl)
          nir_lower_vars_to_ssa_impl(function->impl);
    }

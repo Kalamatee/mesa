@@ -406,6 +406,8 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY:
    case PIPE_CAP_QUERY_BUFFER_OBJECT:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
+   case PIPE_CAP_CULL_DISTANCE:
+   case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
       return 0;
    }
 
@@ -431,6 +433,9 @@ vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
       {
       case PIPE_SHADER_CAP_MAX_INSTRUCTIONS:
       case PIPE_SHADER_CAP_MAX_ALU_INSTRUCTIONS:
+         return get_uint_cap(sws,
+                             SVGA3D_DEVCAP_MAX_FRAGMENT_SHADER_INSTRUCTIONS,
+                             512);
       case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
       case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
          return 512;
@@ -867,9 +872,9 @@ svga_get_driver_query_info(struct pipe_screen *screen,
 #undef QUERY
 
    if (!info)
-      return Elements(queries);
+      return ARRAY_SIZE(queries);
 
-   if (index >= Elements(queries))
+   if (index >= ARRAY_SIZE(queries))
       return 0;
 
    *info = queries[index];
@@ -1064,6 +1069,7 @@ svga_screen_create(struct svga_winsys_screen *sws)
                    svgascreen->haveLineStipple, svgascreen->haveLineSmooth,
                    svgascreen->maxLineWidth);
       debug_printf("svga: maxPointSize %g\n", svgascreen->maxPointSize);
+      debug_printf("svga: msaa samples mask: 0x%x\n", svgascreen->ms_samples);
    }
 
    pipe_mutex_init(svgascreen->tex_mutex);

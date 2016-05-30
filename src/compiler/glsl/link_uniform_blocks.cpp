@@ -34,9 +34,10 @@ namespace {
 class ubo_visitor : public program_resource_visitor {
 public:
    ubo_visitor(void *mem_ctx, gl_uniform_buffer_variable *variables,
-               unsigned num_variables)
+               unsigned num_variables, struct gl_shader_program *prog)
       : index(0), offset(0), buffer_size(0), variables(variables),
-        num_variables(num_variables), mem_ctx(mem_ctx), is_array_instance(false)
+        num_variables(num_variables), mem_ctx(mem_ctx), is_array_instance(false),
+        prog(prog)
    {
       /* empty */
    }
@@ -56,6 +57,7 @@ public:
    unsigned num_variables;
    void *mem_ctx;
    bool is_array_instance;
+   struct gl_shader_program *prog;
 
 private:
    virtual void visit_field(const glsl_type *type, const char *name,
@@ -148,7 +150,13 @@ private:
        */
       const glsl_type *type_for_size = type;
       if (type->is_unsized_array()) {
-         assert(last_field);
+         if (!last_field) {
+            linker_error(prog, "unsized array `%s' definition: "
+                         "only last member of a shader storage block "
+                         "can be defined as unsized array",
+                         name);
+         }
+
          type_for_size = type->without_array();
       }
 
@@ -314,7 +322,7 @@ create_buffer_blocks(void *mem_ctx, struct gl_context *ctx,
    /* Add each variable from each uniform block to the API tracking
     * structures.
     */
-   ubo_visitor parcel(blocks, variables, num_variables);
+   ubo_visitor parcel(blocks, variables, num_variables, prog);
 
    STATIC_ASSERT(unsigned(GLSL_INTERFACE_PACKING_STD140)
                  == unsigned(ubo_packing_std140));
@@ -499,4 +507,57 @@ link_uniform_blocks_are_compatible(const gl_uniform_block *a,
    }
 
    return true;
+}
+
+/**
+ * Merges a uniform block into an array of uniform blocks that may or
+ * may not already contain a copy of it.
+ *
+ * Returns the index of the new block in the array.
+ */
+int
+link_cross_validate_uniform_block(void *mem_ctx,
+                                  struct gl_uniform_block **linked_blocks,
+                                  unsigned int *num_linked_blocks,
+                                  struct gl_uniform_block *new_block)
+{
+   for (unsigned int i = 0; i < *num_linked_blocks; i++) {
+      struct gl_uniform_block *old_block = &(*linked_blocks)[i];
+
+      if (strcmp(old_block->Name, new_block->Name) == 0)
+         return link_uniform_blocks_are_compatible(old_block, new_block)
+            ? i : -1;
+   }
+
+   *linked_blocks = reralloc(mem_ctx, *linked_blocks,
+                             struct gl_uniform_block,
+                             *num_linked_blocks + 1);
+   int linked_block_index = (*num_linked_blocks)++;
+   struct gl_uniform_block *linked_block = &(*linked_blocks)[linked_block_index];
+
+   memcpy(linked_block, new_block, sizeof(*new_block));
+   linked_block->Uniforms = ralloc_array(*linked_blocks,
+                                         struct gl_uniform_buffer_variable,
+                                         linked_block->NumUniforms);
+
+   memcpy(linked_block->Uniforms,
+          new_block->Uniforms,
+          sizeof(*linked_block->Uniforms) * linked_block->NumUniforms);
+
+   linked_block->Name = ralloc_strdup(*linked_blocks, linked_block->Name);
+
+   for (unsigned int i = 0; i < linked_block->NumUniforms; i++) {
+      struct gl_uniform_buffer_variable *ubo_var =
+         &linked_block->Uniforms[i];
+
+      if (ubo_var->Name == ubo_var->IndexName) {
+         ubo_var->Name = ralloc_strdup(*linked_blocks, ubo_var->Name);
+         ubo_var->IndexName = ubo_var->Name;
+      } else {
+         ubo_var->Name = ralloc_strdup(*linked_blocks, ubo_var->Name);
+         ubo_var->IndexName = ralloc_strdup(*linked_blocks, ubo_var->IndexName);
+      }
+   }
+
+   return linked_block_index;
 }

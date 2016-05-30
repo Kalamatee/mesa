@@ -51,8 +51,7 @@
 
 
 /**
- * Info related to samplers and sampler views.
- * We have one of these for fragment samplers and another for vertex samplers.
+ * Per-shader sampler information.
  */
 struct sampler_info
 {
@@ -1154,7 +1153,6 @@ unsigned cso_get_aux_vertex_buffer_slot(struct cso_context *ctx)
 }
 
 
-/**************** fragment/vertex sampler view state *************************/
 
 enum pipe_error
 cso_single_sampler(struct cso_context *ctx, unsigned shader_stage,
@@ -1199,10 +1197,14 @@ cso_single_sampler(struct cso_context *ctx, unsigned shader_stage,
 }
 
 
+/**
+ * Send staged sampler state to the driver.
+ */
 void
 cso_single_sampler_done(struct cso_context *ctx, unsigned shader_stage)
 {
    struct sampler_info *info = &ctx->samplers[shader_stage];
+   const unsigned old_nr_samplers = info->nr_samplers;
    unsigned i;
 
    /* find highest non-null sampler */
@@ -1212,7 +1214,8 @@ cso_single_sampler_done(struct cso_context *ctx, unsigned shader_stage)
    }
 
    info->nr_samplers = i;
-   ctx->pipe->bind_sampler_states(ctx->pipe, shader_stage, 0, i,
+   ctx->pipe->bind_sampler_states(ctx->pipe, shader_stage, 0,
+                                  MAX2(old_nr_samplers, info->nr_samplers),
                                   info->samplers);
 }
 
@@ -1231,9 +1234,6 @@ cso_set_samplers(struct cso_context *ctx,
    struct sampler_info *info = &ctx->samplers[shader_stage];
    unsigned i;
    enum pipe_error temp, error = PIPE_OK;
-
-   /* TODO: fastpath
-    */
 
    for (i = 0; i < nr; i++) {
       temp = cso_single_sampler(ctx, shader_stage, i, templates[i]);

@@ -47,6 +47,7 @@ void fd4_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
 
 /* grouped together emit-state for prog/vertex/state emit: */
 struct fd4_emit {
+	struct pipe_debug_callback *debug;
 	const struct fd_vertex_state *vtx;
 	const struct fd_program_stateobj *prog;
 	const struct pipe_draw_info *info;
@@ -75,7 +76,7 @@ fd4_emit_get_vp(struct fd4_emit *emit)
 {
 	if (!emit->vp) {
 		struct fd4_shader_stateobj *so = emit->prog->vp;
-		emit->vp = ir3_shader_variant(so->shader, emit->key);
+		emit->vp = ir3_shader_variant(so->shader, emit->key, emit->debug);
 	}
 	return emit->vp;
 }
@@ -90,7 +91,7 @@ fd4_emit_get_fp(struct fd4_emit *emit)
 			emit->fp = &binning_fp;
 		} else {
 			struct fd4_shader_stateobj *so = emit->prog->fp;
-			emit->fp = ir3_shader_variant(so->shader, emit->key);
+			emit->fp = ir3_shader_variant(so->shader, emit->key, emit->debug);
 		}
 	}
 	return emit->fp;

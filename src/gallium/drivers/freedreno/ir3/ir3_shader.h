@@ -81,6 +81,7 @@ struct ir3_shader_key {
 			 * Vertex shader variant parameters:
 			 */
 			unsigned binning_pass : 1;
+			unsigned vclamp_color : 1;
 
 			/*
 			 * Fragment shader variant parameters:
@@ -91,6 +92,7 @@ struct ir3_shader_key {
 			 * for front/back color inputs to frag shader:
 			 */
 			unsigned rasterflat : 1;
+			unsigned fclamp_color : 1;
 		};
 		uint32_t global;
 	};
@@ -105,8 +107,8 @@ struct ir3_shader_key {
 	 */
 	uint16_t fsaturate_s, fsaturate_t, fsaturate_r;
 
-	/* bitmask of samplers which need srgb->linear lowering: */
-	uint16_t vlower_srgb, flower_srgb;
+	/* bitmask of samplers which need astc srgb workaround: */
+	uint16_t vastc_srgb, fastc_srgb;
 };
 
 static inline bool
@@ -225,6 +227,14 @@ struct ir3_shader_variant {
 		uint32_t val[4];
 	} immediates[64];
 
+	/* for astc srgb workaround, the number/base of additional
+	 * alpha tex states we need, and index of original tex states
+	 */
+	struct {
+		unsigned base, count;
+		unsigned orig_idx[16];
+	} astc_srgb;
+
 	/* shader variants form a linked list: */
 	struct ir3_shader_variant *next;
 
@@ -242,6 +252,9 @@ struct ir3_shader {
 	uint32_t id;
 	uint32_t variant_count;
 
+	/* so we know when we can disable TGSI related hacks: */
+	bool from_tgsi;
+
 	struct ir3_compiler *compiler;
 
 	nir_shader *nir;
@@ -253,10 +266,11 @@ struct ir3_shader {
 void * ir3_shader_assemble(struct ir3_shader_variant *v, uint32_t gpu_id);
 
 struct ir3_shader * ir3_shader_create(struct ir3_compiler *compiler,
-		const struct pipe_shader_state *cso, enum shader_t type);
+		const struct pipe_shader_state *cso, enum shader_t type,
+		struct pipe_debug_callback *debug);
 void ir3_shader_destroy(struct ir3_shader *shader);
 struct ir3_shader_variant * ir3_shader_variant(struct ir3_shader *shader,
-		struct ir3_shader_key key);
+		struct ir3_shader_key key, struct pipe_debug_callback *debug);
 void ir3_shader_disasm(struct ir3_shader_variant *so, uint32_t *bin);
 
 struct fd_ringbuffer;

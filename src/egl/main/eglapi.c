@@ -88,6 +88,7 @@
 #include <string.h>
 #include "c99_compat.h"
 #include "c11/threads.h"
+#include "GL/mesa_glinterop.h"
 #include "eglcompiler.h"
 
 #include "eglglobals.h"
@@ -430,14 +431,11 @@ _eglCreateAPIsString(_EGLDisplay *dpy)
    if (dpy->ClientAPIs & EGL_OPENGL_BIT)
       strcat(dpy->ClientAPIsString, "OpenGL ");
 
-   if (dpy->ClientAPIs & EGL_OPENGL_ES_BIT)
+   if (dpy->ClientAPIs & EGL_OPENGL_ES_BIT ||
+       dpy->ClientAPIs & EGL_OPENGL_ES2_BIT ||
+       dpy->ClientAPIs & EGL_OPENGL_ES3_BIT_KHR) {
       strcat(dpy->ClientAPIsString, "OpenGL_ES ");
-
-   if (dpy->ClientAPIs & EGL_OPENGL_ES2_BIT)
-      strcat(dpy->ClientAPIsString, "OpenGL_ES2 ");
-
-   if (dpy->ClientAPIs & EGL_OPENGL_ES3_BIT_KHR)
-      strcat(dpy->ClientAPIsString, "OpenGL_ES3 ");
+   }
 
    if (dpy->ClientAPIs & EGL_OPENVG_BIT)
       strcat(dpy->ClientAPIsString, "OpenVG ");
@@ -1911,4 +1909,75 @@ eglGetProcAddress(const char *procname)
       ret = _eglGetDriverProc(procname);
 
    RETURN_EGL_SUCCESS(NULL, ret);
+}
+
+static int
+_eglLockDisplayInterop(EGLDisplay dpy, EGLContext context,
+                       _EGLDisplay **disp, _EGLDriver **drv,
+                       _EGLContext **ctx)
+{
+
+   *disp = _eglLockDisplay(dpy);
+   if (!*disp || !(*disp)->Initialized || !(*disp)->Driver) {
+      if (*disp)
+         _eglUnlockDisplay(*disp);
+      return MESA_GLINTEROP_INVALID_DISPLAY;
+   }
+
+   *drv = (*disp)->Driver;
+
+   *ctx = _eglLookupContext(context, *disp);
+   if (!*ctx ||
+       ((*ctx)->ClientAPI != EGL_OPENGL_API &&
+        (*ctx)->ClientAPI != EGL_OPENGL_ES_API)) {
+      _eglUnlockDisplay(*disp);
+      return MESA_GLINTEROP_INVALID_CONTEXT;
+   }
+
+   return MESA_GLINTEROP_SUCCESS;
+}
+
+int
+MesaGLInteropEGLQueryDeviceInfo(EGLDisplay dpy, EGLContext context,
+                                mesa_glinterop_device_info *out)
+{
+   _EGLDisplay *disp;
+   _EGLDriver *drv;
+   _EGLContext *ctx;
+   int ret;
+
+   ret = _eglLockDisplayInterop(dpy, context, &disp, &drv, &ctx);
+   if (ret != MESA_GLINTEROP_SUCCESS)
+      return ret;
+
+   if (drv->API.GLInteropQueryDeviceInfo)
+      ret = drv->API.GLInteropQueryDeviceInfo(disp, ctx, out);
+   else
+      ret = MESA_GLINTEROP_UNSUPPORTED;
+
+   _eglUnlockDisplay(disp);
+   return ret;
+}
+
+int
+MesaGLInteropEGLExportObject(EGLDisplay dpy, EGLContext context,
+                             mesa_glinterop_export_in *in,
+                             mesa_glinterop_export_out *out)
+{
+   _EGLDisplay *disp;
+   _EGLDriver *drv;
+   _EGLContext *ctx;
+   int ret;
+
+   ret = _eglLockDisplayInterop(dpy, context, &disp, &drv, &ctx);
+   if (ret != MESA_GLINTEROP_SUCCESS)
+      return ret;
+
+   if (drv->API.GLInteropExportObject)
+      ret = drv->API.GLInteropExportObject(disp, ctx, in, out);
+   else
+      ret = MESA_GLINTEROP_UNSUPPORTED;
+
+   _eglUnlockDisplay(disp);
+   return ret;
 }

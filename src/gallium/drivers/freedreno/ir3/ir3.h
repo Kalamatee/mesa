@@ -337,8 +337,6 @@ static inline int ir3_neighbor_count(struct ir3_instruction *instr)
 	return num;
 }
 
-struct ir3_heap_chunk;
-
 struct ir3 {
 	struct ir3_compiler *compiler;
 
@@ -377,14 +375,17 @@ struct ir3 {
 	unsigned keeps_count, keeps_sz;
 	struct ir3_instruction **keeps;
 
+	/* Track texture sample instructions which need texture state
+	 * patched in (for astc-srgb workaround):
+	 */
+	unsigned astc_srgb_count, astc_srgb_sz;
+	struct ir3_instruction **astc_srgb;
+
 	/* List of blocks: */
 	struct list_head block_list;
 
 	/* List of ir3_array's: */
 	struct list_head array_list;
-
-	unsigned heap_idx;
-	struct ir3_heap_chunk *chunk;
 };
 
 typedef struct nir_variable nir_variable;
@@ -909,7 +910,8 @@ void ir3_insert_by_depth(struct ir3_instruction *instr, struct list_head *list);
 void ir3_depth(struct ir3 *ir);
 
 /* copy-propagate: */
-void ir3_cp(struct ir3 *ir);
+struct ir3_shader_variant;
+void ir3_cp(struct ir3 *ir, struct ir3_shader_variant *so);
 
 /* group neighbors and insert mov's to resolve conflicts: */
 void ir3_group(struct ir3 *ir);

@@ -19,20 +19,14 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-SUBDIRS = . tests
+include Makefile.sources
 
 vulkan_includedir = $(includedir)/vulkan
 
-vulkan_include_HEADERS =				\
-	$(top_srcdir)/include/vulkan/vk_platform.h	\
-	$(top_srcdir)/include/vulkan/vulkan.h		\
+vulkan_include_HEADERS = \
+	$(top_srcdir)/include/vulkan/vk_platform.h \
+	$(top_srcdir)/include/vulkan/vulkan.h \
 	$(top_srcdir)/include/vulkan/vulkan_intel.h
-
-# Used when generating entrypoints to filter out unwanted extensions
-VULKAN_ENTRYPOINT_CPPFLAGS = \
-   -I$(top_srcdir)/include/vulkan \
-   -DVK_USE_PLATFORM_XCB_KHR \
-   -DVK_USE_PLATFORM_WAYLAND_KHR
 
 lib_LTLIBRARIES = libvulkan_intel.la
 
@@ -53,160 +47,141 @@ AM_CPPFLAGS = \
 	$(VALGRIND_CFLAGS) \
 	$(DEFINES) \
 	-I$(top_srcdir)/include \
+	-I$(top_builddir)/src \
 	-I$(top_srcdir)/src \
+	-I$(top_builddir)/src/compiler \
 	-I$(top_srcdir)/src/compiler \
+	-I$(top_builddir)/src/compiler/nir \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/mesa \
 	-I$(top_srcdir)/src/mesa/drivers/dri/common \
 	-I$(top_srcdir)/src/mesa/drivers/dri/i965 \
 	-I$(top_srcdir)/src/gallium/auxiliary \
 	-I$(top_srcdir)/src/gallium/include \
-	-I$(top_srcdir)/src/intel/ \
-	-I$(top_builddir)/src \
-	-I$(top_builddir)/src/compiler \
-	-I$(top_builddir)/src/compiler/nir \
-	-I$(top_builddir)/src/intel
+	-I$(top_builddir)/src/intel \
+	-I$(top_srcdir)/src/intel
 
-libvulkan_intel_la_CFLAGS = $(CFLAGS) -Wno-override-init
+AM_CFLAGS = -Wno-override-init -msse2
 
-VULKAN_SOURCES =                                        \
-	anv_allocator.c                                 \
-	anv_cmd_buffer.c                                \
-	anv_batch_chain.c                               \
-	anv_descriptor_set.c                            \
-	anv_device.c                                    \
-        anv_dump.c                                      \
-	anv_entrypoints.c                               \
-	anv_entrypoints.h                               \
-	anv_formats.c                                   \
-	anv_image.c                                     \
-	anv_intel.c                                     \
-	anv_meta.c                                      \
-	anv_meta_blit.c                                 \
-	anv_meta_blit2d.c                               \
-	anv_meta_clear.c                                \
-	anv_meta_copy.c                                 \
-	anv_meta_resolve.c                              \
-	anv_nir_apply_dynamic_offsets.c                 \
-	anv_nir_apply_pipeline_layout.c                 \
-	anv_nir_lower_push_constants.c                  \
-	anv_pass.c					\
-	anv_pipeline.c                                  \
-	anv_pipeline_cache.c                            \
-	anv_private.h                                   \
-	anv_query.c                                     \
-	anv_util.c                                      \
-	anv_wsi.c					\
-	anv_wsi_x11.c
+libanv_gen7_la_CFLAGS = $(AM_CFLAGS) -DGEN_VERSIONx10=70
+libanv_gen7_la_SOURCES = $(GEN7_FILES)
 
-BUILT_SOURCES =                                         \
-	anv_entrypoints.h                               \
-	anv_entrypoints.c
+libanv_gen75_la_CFLAGS = $(AM_CFLAGS) -DGEN_VERSIONx10=75
+libanv_gen75_la_SOURCES = $(GEN75_FILES)
 
-libanv_gen7_la_SOURCES =                                \
-	genX_cmd_buffer.c				\
-	genX_pipeline.c					\
-	gen7_cmd_buffer.c				\
-	gen7_pipeline.c                                 \
-	genX_state.c
-libanv_gen7_la_CFLAGS = $(libvulkan_intel_la_CFLAGS) -DGEN_VERSIONx10=70
+libanv_gen8_la_CFLAGS = $(AM_CFLAGS) -DGEN_VERSIONx10=80
+libanv_gen8_la_SOURCES = $(GEN8_FILES)
 
-libanv_gen75_la_SOURCES =                               \
-	genX_cmd_buffer.c				\
-	genX_pipeline.c					\
-	gen7_cmd_buffer.c				\
-	gen7_pipeline.c                                 \
-	genX_state.c
-libanv_gen75_la_CFLAGS = $(libvulkan_intel_la_CFLAGS) -DGEN_VERSIONx10=75
+libanv_gen9_la_CFLAGS = $(AM_CFLAGS) -DGEN_VERSIONx10=90
+libanv_gen9_la_SOURCES = $(GEN9_FILES)
 
-libanv_gen8_la_SOURCES =                               	\
-	genX_cmd_buffer.c				\
-	genX_pipeline.c					\
-	gen8_cmd_buffer.c				\
-	gen8_pipeline.c					\
-	genX_state.c
-libanv_gen8_la_CFLAGS = $(libvulkan_intel_la_CFLAGS) -DGEN_VERSIONx10=80
 
-libanv_gen9_la_SOURCES =                               	\
-	genX_cmd_buffer.c				\
-	genX_pipeline.c					\
-	gen8_cmd_buffer.c				\
-	gen8_pipeline.c					\
-	genX_state.c
-libanv_gen9_la_CFLAGS = $(libvulkan_intel_la_CFLAGS) -DGEN_VERSIONx10=90
+VULKAN_SOURCES = \
+	$(VULKAN_GENERATED_FILES) \
+	$(VULKAN_FILES)
 
-if HAVE_EGL_PLATFORM_WAYLAND
-BUILT_SOURCES += \
-	wayland-drm-protocol.c \
-	wayland-drm-client-protocol.h
+VULKAN_LIB_DEPS =
 
-%-protocol.c : $(top_srcdir)/src/egl/wayland/wayland-drm/%.xml
-	$(AM_V_GEN)$(WAYLAND_SCANNER) code < $< > $@
 
-%-client-protocol.h : $(top_srcdir)/src/egl/wayland/wayland-drm/%.xml
-	$(AM_V_GEN)$(WAYLAND_SCANNER) client-header < $< > $@
+if HAVE_PLATFORM_X11
+AM_CPPFLAGS += \
+	$(XCB_DRI3_CFLAGS) \
+	-DVK_USE_PLATFORM_XCB_KHR
 
-AM_CPPFLAGS += -I$(top_srcdir)/src/egl/wayland/wayland-drm
-VULKAN_SOURCES += \
-	wayland-drm-protocol.c \
-	anv_wsi_wayland.c
-libvulkan_intel_la_CFLAGS += -DHAVE_WAYLAND_PLATFORM
+VULKAN_SOURCES += $(VULKAN_WSI_X11_FILES)
+VULKAN_LIB_DEPS += $(XCB_DRI3_LIBS)
 endif
 
-libvulkan_intel_la_SOURCES =                            \
-	$(VULKAN_SOURCES)                               \
-	anv_gem.c
+
+if HAVE_PLATFORM_WAYLAND
+AM_CPPFLAGS += \
+	-I$(top_builddir)/src/egl/wayland/wayland-drm \
+	-I$(top_srcdir)/src/egl/wayland/wayland-drm \
+	$(WAYLAND_CFLAGS) \
+	-DVK_USE_PLATFORM_WAYLAND_KHR
+
+VULKAN_SOURCES += $(VULKAN_WSI_WAYLAND_FILES)
+
+VULKAN_LIB_DEPS += \
+	$(top_builddir)/src/egl/wayland/wayland-drm/libwayland-drm.la \
+	$(WAYLAND_LIBS)
+endif
+
+noinst_LTLIBRARIES += libvulkan_common.la
+libvulkan_common_la_SOURCES = $(VULKAN_SOURCES)
+
+VULKAN_LIB_DEPS += \
+	libvulkan_common.la \
+	$(top_builddir)/src/mesa/drivers/dri/i965/libi965_compiler.la \
+	$(top_builddir)/src/compiler/nir/libnir.la \
+	$(top_builddir)/src/util/libmesautil.la \
+	$(top_builddir)/src/intel/isl/libisl.la \
+	$(PER_GEN_LIBS) \
+	$(PTHREAD_LIBS) \
+	$(DLOPEN_LIBS) \
+	-lm
+
+nodist_EXTRA_libvulkan_intel_la_SOURCES = dummy.cpp
+libvulkan_intel_la_SOURCES = $(VULKAN_GEM_FILES)
+
+VULKAN_ENTRYPOINT_CPPFLAGS = \
+	-DVK_USE_PLATFORM_XCB_KHR \
+	-DVK_USE_PLATFORM_WAYLAND_KHR
 
 anv_entrypoints.h : anv_entrypoints_gen.py $(vulkan_include_HEADERS)
-	$(AM_V_GEN) cat $(vulkan_include_HEADERS) | $(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) - | $(PYTHON2) $< header > $@
+	$(AM_V_GEN)$(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) $(top_srcdir)/include/vulkan/vulkan_intel.h |\
+	$(PYTHON2) $(srcdir)/anv_entrypoints_gen.py header > $@
 
 anv_entrypoints.c : anv_entrypoints_gen.py $(vulkan_include_HEADERS)
-	$(AM_V_GEN) cat $(vulkan_include_HEADERS) | $(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) - | $(PYTHON2) $< code > $@
+	$(AM_V_GEN)$(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) $(top_srcdir)/include/vulkan/vulkan_intel.h |\
+	$(PYTHON2) $(srcdir)/anv_entrypoints_gen.py code > $@
 
-CLEANFILES = $(BUILT_SOURCES)
+BUILT_SOURCES = $(VULKAN_GENERATED_FILES)
+CLEANFILES = $(BUILT_SOURCES) dev_icd.json
+EXTRA_DIST = \
+	$(top_srcdir)/include/vulkan/vk_icd.h \
+	anv_entrypoints_gen.py \
+	dev_icd.json.in \
+	intel_icd.json
 
-libvulkan_intel_la_LIBADD = $(WAYLAND_LIBS) \
-	-lxcb -lxcb-dri3 -lxcb-present -lxcb-sync -lxshmfence \
-	$(top_builddir)/src/intel/isl/libisl.la \
-	$(top_builddir)/src/mesa/drivers/dri/i965/libi965_compiler.la \
-	$(top_builddir)/src/mesa/libmesa.la \
-	$(top_builddir)/src/mesa/drivers/dri/common/libdri_test_stubs.la \
-	-lpthread -ldl -lstdc++ \
-        $(PER_GEN_LIBS)
+libvulkan_intel_la_LIBADD = $(VULKAN_LIB_DEPS)
 
 libvulkan_intel_la_LDFLAGS = \
-        -module -avoid-version -shared -shrext .so
+	-shared \
+	-module \
+	-no-undefined \
+	-avoid-version \
+	$(GC_SECTIONS) \
+	$(LD_NO_UNDEFINED)
 
 
-# Generate icd files. It would be nice to just be able to add these to
-# AC_CONFIG_FILES, but @libdir@ typically expands to '${exec_prefix}/lib64',
-# which we can't put in the icd file. When running sed from the Makefile we
-# can use ${libdir}, which expands completely and we avoid putting Makefile
-# variables in the icd file.
-
-icdconfdir=$(sysconfdir)/vulkan/icd.d
+icdconfdir = @VULKAN_ICD_INSTALL_DIR@
 icdconf_DATA = intel_icd.json
+# The following is used for development purposes, by setting VK_ICD_FILENAMES.
 noinst_DATA = dev_icd.json
 
-%.json : %.json.in
+dev_icd.json : dev_icd.json.in
 	$(AM_V_GEN) $(SED) \
 		-e "s#@build_libdir@#${abs_top_builddir}/${LIB_DIR}#" \
-		-e "s#@install_libdir@#${libdir}#" < $< > $@
-
+		< $(srcdir)/dev_icd.json.in > $@
 
 # Libvulkan with dummy gem. Used for unit tests.
-
-libvulkan_test_la_SOURCES =                             \
-	$(VULKAN_SOURCES)                               \
-	anv_gem_stubs.c
-
-libvulkan_test_la_CFLAGS =                              \
-	-I$(top_srcdir)/src/intel/vulkan                \
-	$(libvulkan_intel_la_CFLAGS)
-
-libvulkan_test_la_LIBADD = $(libvulkan_intel_la_LIBADD)
+libvulkan_test_la_SOURCES = $(VULKAN_GEM_STUB_FILES)
+libvulkan_test_la_LIBADD = $(VULKAN_LIB_DEPS)
 
 include $(top_srcdir)/install-lib-links.mk
 
-install-data-local:
-	$(INSTALL_DATA) -D $(srcdir)/intel_icd.json $(VULKAN_ICD_INSTALL_DIR)/intel_icd.json
+noinst_HEADERS = \
+	tests/state_pool_test_helper.h
+
+LDADD = \
+	libvulkan-test.la \
+	$(PTHREAD_LIBS) -lm -lstdc++
+
+check_PROGRAMS = \
+	tests/block_pool_no_free \
+	tests/state_pool_no_free \
+	tests/state_pool_free_list_only \
+	tests/state_pool
+
+TESTS = $(check_PROGRAMS)

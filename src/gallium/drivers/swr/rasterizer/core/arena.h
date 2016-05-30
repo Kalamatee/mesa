@@ -37,20 +37,6 @@
 #include <atomic>
 #include "core/utils.h"
 
-class DefaultAllocator
-{
-public:
-    void* AllocateAligned(size_t size, size_t align)
-    {
-        void* p = _aligned_malloc(size, align);
-        return p;
-    }
-    void  Free(void* pMem)
-    {
-        _aligned_free(pMem);
-    }
-};
-
 static const size_t ARENA_BLOCK_ALIGN = 64;
 
 struct ArenaBlock
@@ -59,25 +45,46 @@ struct ArenaBlock
     ArenaBlock* pNext = nullptr;
 };
 static_assert(sizeof(ArenaBlock) <= ARENA_BLOCK_ALIGN,
-              "Increase BLOCK_ALIGN size");
+    "Increase BLOCK_ALIGN size");
+
+class DefaultAllocator
+{
+public:
+    ArenaBlock* AllocateAligned(size_t size, size_t align)
+    {
+        SWR_ASSUME_ASSERT(size >= sizeof(ArenaBlock));
+
+        ArenaBlock* p = new (AlignedMalloc(size, align)) ArenaBlock();
+        p->blockSize = size;
+        return p;
+    }
+
+    void Free(ArenaBlock* pMem)
+    {
+        if (pMem)
+        {
+            SWR_ASSUME_ASSERT(pMem->blockSize < size_t(0xdddddddd));
+            AlignedFree(pMem);
+        }
+    }
+};
 
 // Caching Allocator for Arena
-template<uint32_t NumBucketsT = 4, uint32_t StartBucketBitT = 16>
+template<uint32_t NumBucketsT = 8, uint32_t StartBucketBitT = 12>
 struct CachingAllocatorT : DefaultAllocator
 {
-    void* AllocateAligned(size_t size, size_t align)
+    ArenaBlock* AllocateAligned(size_t size, size_t align)
     {
-        SWR_ASSERT(size >= sizeof(ArenaBlock));
-        SWR_ASSERT(size <= uint32_t(-1));
+        SWR_ASSUME_ASSERT(size >= sizeof(ArenaBlock));
+        SWR_ASSUME_ASSERT(size <= uint32_t(-1));
 
-        size_t blockSize = size - ARENA_BLOCK_ALIGN;
-        uint32_t bucket = GetBucketId(blockSize);
+        uint32_t bucket = GetBucketId(size);
 
         {
             // search cached blocks
             std::lock_guard<std::mutex> l(m_mutex);
             ArenaBlock* pPrevBlock = &m_cachedBlocks[bucket];
-            ArenaBlock* pBlock = SearchBlocks(pPrevBlock, blockSize, align);
+            ArenaBlock* pBlock = SearchBlocks(pPrevBlock, size, align);
 
             if (pBlock)
             {
@@ -89,22 +96,22 @@ struct CachingAllocatorT : DefaultAllocator
             }
             else
             {
-                pPrevBlock = &m_oldCachedBlocks[GetBucketId(blockSize)];
-                pBlock = SearchBlocks(pPrevBlock, blockSize, align);
+                pPrevBlock = &m_oldCachedBlocks[bucket];
+                pBlock = SearchBlocks(pPrevBlock, size, align);
 
                 if (pBlock)
                 {
                     m_oldCachedSize -= pBlock->blockSize;
                     if (pBlock == m_pOldLastCachedBlocks[bucket])
                     {
-                        m_pLastCachedBlocks[bucket] = pPrevBlock;
+                        m_pOldLastCachedBlocks[bucket] = pPrevBlock;
                     }
                 }
             }
 
             if (pBlock)
             {
-                SWR_ASSERT(pPrevBlock && pPrevBlock->pNext == pBlock);
+                SWR_ASSUME_ASSERT(pPrevBlock && pPrevBlock->pNext == pBlock);
                 pPrevBlock->pNext = pBlock->pNext;
                 pBlock->pNext = nullptr;
 
@@ -123,18 +130,21 @@ struct CachingAllocatorT : DefaultAllocator
 #endif
         }
 
+        if (bucket && bucket < (CACHE_NUM_BUCKETS - 1))
+        {
+            // Make all blocks in this bucket the same size
+            size = size_t(1) << (bucket + 1 + CACHE_START_BUCKET_BIT);
+        }
+
         return this->DefaultAllocator::AllocateAligned(size, align);
     }
 
-    void Free(void* pMem)
+    void Free(ArenaBlock* pMem)
     {
         if (pMem)
         {
-            ArenaBlock* pNewBlock = reinterpret_cast<ArenaBlock*>(pMem);
-            SWR_ASSERT(pNewBlock->blockSize >= 0);
-
             std::unique_lock<std::mutex> l(m_mutex);
-            InsertCachedBlock(GetBucketId(pNewBlock->blockSize), pNewBlock);
+            InsertCachedBlock(GetBucketId(pMem->blockSize), pMem);
         }
     }
 
@@ -154,7 +164,7 @@ struct CachingAllocatorT : DefaultAllocator
                 {
                     ArenaBlock* pNext = pBlock->pNext;
                     m_oldCachedSize -= pBlock->blockSize;
-                    m_totalAllocated -= (pBlock->blockSize + ARENA_BLOCK_ALIGN);
+                    m_totalAllocated -= pBlock->blockSize;
                     this->DefaultAllocator::Free(pBlock);
                     pBlock = pNext;
                 }
@@ -164,14 +174,36 @@ struct CachingAllocatorT : DefaultAllocator
 
             if (m_pLastCachedBlocks[i] != &m_cachedBlocks[i])
             {
-                m_pLastCachedBlocks[i]->pNext = m_oldCachedBlocks[i].pNext;
-                m_oldCachedBlocks[i].pNext = m_cachedBlocks[i].pNext;
-                m_cachedBlocks[i].pNext = nullptr;
-                if (m_pOldLastCachedBlocks[i]->pNext)
+                if (i && i < (CACHE_NUM_BUCKETS - 1))
                 {
-                    m_pOldLastCachedBlocks[i] = m_pLastCachedBlocks[i];
+                    // We know that all blocks are the same size.
+                    // Just move the list over.
+                    m_pLastCachedBlocks[i]->pNext = m_oldCachedBlocks[i].pNext;
+                    m_oldCachedBlocks[i].pNext = m_cachedBlocks[i].pNext;
+                    m_cachedBlocks[i].pNext = nullptr;
+                    if (m_pOldLastCachedBlocks[i]->pNext)
+                    {
+                        m_pOldLastCachedBlocks[i] = m_pLastCachedBlocks[i];
+                    }
+                    m_pLastCachedBlocks[i] = &m_cachedBlocks[i];
                 }
-                m_pLastCachedBlocks[i] = &m_cachedBlocks[i];
+                else
+                {
+                    // The end buckets can have variable sized lists.
+                    // Insert each block based on size
+                    ArenaBlock* pBlock = m_cachedBlocks[i].pNext;
+                    while (pBlock)
+                    {
+                        ArenaBlock* pNext = pBlock->pNext;
+                        pBlock->pNext = nullptr;
+                        m_cachedSize -= pBlock->blockSize;
+                        InsertCachedBlock<true>(i, pBlock);
+                        pBlock = pNext;
+                    }
+
+                    m_pLastCachedBlocks[i] = &m_cachedBlocks[i];
+                    m_cachedBlocks[i].pNext = nullptr;
+                }
             }
         }
 
@@ -216,18 +248,19 @@ private:
         uint32_t bucketId = 0;
 
 #if defined(BitScanReverseSizeT)
-        BitScanReverseSizeT((unsigned long*)&bucketId, blockSize >> CACHE_START_BUCKET_BIT);
+        BitScanReverseSizeT((unsigned long*)&bucketId, (blockSize - 1) >> CACHE_START_BUCKET_BIT);
         bucketId = std::min<uint32_t>(bucketId, CACHE_NUM_BUCKETS - 1);
 #endif
 
         return bucketId;
     }
 
+    template <bool OldBlockT = false>
     void InsertCachedBlock(uint32_t bucketId, ArenaBlock* pNewBlock)
     {
-        SWR_ASSERT(bucketId < CACHE_NUM_BUCKETS);
+        SWR_ASSUME_ASSERT(bucketId < CACHE_NUM_BUCKETS);
 
-        ArenaBlock* pPrevBlock = &m_cachedBlocks[bucketId];
+        ArenaBlock* pPrevBlock = OldBlockT ? &m_oldCachedBlocks[bucketId] : &m_cachedBlocks[bucketId];
         ArenaBlock* pBlock = pPrevBlock->pNext;
 
         while (pBlock)
@@ -242,16 +275,28 @@ private:
         }
 
         // Insert into list
-        SWR_ASSERT(pPrevBlock);
+        SWR_ASSUME_ASSERT(pPrevBlock);
         pPrevBlock->pNext = pNewBlock;
         pNewBlock->pNext = pBlock;
 
-        if (m_pLastCachedBlocks[bucketId] == pPrevBlock)
+        if (OldBlockT)
         {
-            m_pLastCachedBlocks[bucketId] = pNewBlock;
-        }
+            if (m_pOldLastCachedBlocks[bucketId] == pPrevBlock)
+            {
+                m_pOldLastCachedBlocks[bucketId] = pNewBlock;
+            }
 
-        m_cachedSize += pNewBlock->blockSize;
+            m_oldCachedSize += pNewBlock->blockSize;
+        }
+        else
+        {
+            if (m_pLastCachedBlocks[bucketId] == pPrevBlock)
+            {
+                m_pLastCachedBlocks[bucketId] = pNewBlock;
+            }
+
+            m_cachedSize += pNewBlock->blockSize;
+        }
     }
 
     static ArenaBlock* SearchBlocks(ArenaBlock*& pPrevBlock, size_t blockSize, size_t align)
@@ -304,7 +349,7 @@ private:
     // buckets, for block sizes < (1 << (start+1)), < (1 << (start+2)), ...
     static const uint32_t   CACHE_NUM_BUCKETS       = NumBucketsT;
     static const uint32_t   CACHE_START_BUCKET_BIT  = StartBucketBitT;
-    static const size_t     MAX_UNUSED_SIZE         = 20 * sizeof(MEGABYTE);
+    static const size_t     MAX_UNUSED_SIZE         = sizeof(MEGABYTE);
 
     ArenaBlock              m_cachedBlocks[CACHE_NUM_BUCKETS];
     ArenaBlock*             m_pLastCachedBlocks[CACHE_NUM_BUCKETS];
@@ -346,7 +391,7 @@ public:
 
             if ((offset + size) <= pCurBlock->blockSize)
             {
-                void* pMem = PtrAdd(pCurBlock, offset + ARENA_BLOCK_ALIGN);
+                void* pMem = PtrAdd(pCurBlock, offset);
                 m_offset = offset + size;
                 return pMem;
             }
@@ -355,24 +400,21 @@ public:
             // a new block
         }
 
-        static const size_t ArenaBlockSize = BlockSizeT - ARENA_BLOCK_ALIGN;
-        size_t blockSize = std::max(size, ArenaBlockSize);
+        static const size_t ArenaBlockSize = BlockSizeT;
+        size_t blockSize = std::max(size + ARENA_BLOCK_ALIGN, ArenaBlockSize);
 
         // Add in one BLOCK_ALIGN unit to store ArenaBlock in.
         blockSize = AlignUp(blockSize, ARENA_BLOCK_ALIGN);
 
-        void *pMem = m_allocator.AllocateAligned(blockSize + ARENA_BLOCK_ALIGN, ARENA_BLOCK_ALIGN);    // Arena blocks are always simd byte aligned.
-        SWR_ASSERT(pMem != nullptr);
-
-        ArenaBlock* pNewBlock = new (pMem) ArenaBlock();
+        ArenaBlock* pNewBlock = m_allocator.AllocateAligned(blockSize, ARENA_BLOCK_ALIGN);    // Arena blocks are always simd byte aligned.
+        SWR_ASSERT(pNewBlock != nullptr);
 
         if (pNewBlock != nullptr)
         {
-            m_offset = 0;
+            m_offset = ARENA_BLOCK_ALIGN;
             pNewBlock->pNext = m_pCurBlock;
 
             m_pCurBlock = pNewBlock;
-            m_pCurBlock->blockSize = blockSize;
         }
 
         return AllocAligned(size, align);
@@ -407,7 +449,7 @@ public:
 
     void Reset(bool removeAll = false)
     {
-        m_offset = 0;
+        m_offset = ARENA_BLOCK_ALIGN;
 
         if (m_pCurBlock)
         {
@@ -431,13 +473,13 @@ public:
 
     bool IsEmpty()
     {
-        return (m_pCurBlock == nullptr) || (m_offset == 0 && m_pCurBlock->pNext == nullptr);
+        return (m_pCurBlock == nullptr) || (m_offset == ARENA_BLOCK_ALIGN && m_pCurBlock->pNext == nullptr);
     }
 
 private:
 
     ArenaBlock*         m_pCurBlock = nullptr;
-    size_t              m_offset    = 0;
+    size_t              m_offset    = ARENA_BLOCK_ALIGN;
 
     /// @note Mutex is only used by sync allocation functions.
     std::mutex          m_mutex;

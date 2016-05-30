@@ -210,7 +210,7 @@ static const struct internal_format_class_info gles_etc2_compatible_internal_for
 
 static const struct internal_format_class_info gles_astc_compatible_internal_formats[] = {
 #define ASTC_FMT(size) \
-   {VIEW_CLASS_ASTC_##size## _RGBA, GL_COMPRESSED_RGBA_ASTC_##size##_KHR}, \
+   {VIEW_CLASS_ASTC_##size##_RGBA, GL_COMPRESSED_RGBA_ASTC_##size##_KHR}, \
    {VIEW_CLASS_ASTC_##size##_RGBA, GL_COMPRESSED_SRGB8_ALPHA8_ASTC_##size##_KHR}
 
    ASTC_FMT(4x4),
@@ -227,6 +227,24 @@ static const struct internal_format_class_info gles_astc_compatible_internal_for
    ASTC_FMT(10x10),
    ASTC_FMT(12x10),
    ASTC_FMT(12x12),
+#undef ASTC_FMT
+};
+
+static const struct internal_format_class_info gles_astc_3d_compatible_internal_formats[] = {
+#define ASTC_FMT(size) \
+   {VIEW_CLASS_ASTC_##size##_RGBA, GL_COMPRESSED_RGBA_ASTC_##size##_OES}, \
+   {VIEW_CLASS_ASTC_##size##_RGBA, GL_COMPRESSED_SRGB8_ALPHA8_ASTC_##size##_OES}
+
+   ASTC_FMT(3x3x3),
+   ASTC_FMT(4x3x3),
+   ASTC_FMT(4x4x3),
+   ASTC_FMT(4x4x4),
+   ASTC_FMT(5x4x4),
+   ASTC_FMT(5x5x4),
+   ASTC_FMT(5x5x5),
+   ASTC_FMT(6x5x5),
+   ASTC_FMT(6x6x5),
+   ASTC_FMT(6x6x6),
 #undef ASTC_FMT
 };
 
@@ -264,7 +282,13 @@ _mesa_texture_view_lookup_view_class(const struct gl_context *ctx, GLenum intern
          }
       }
 
-      /* FINISHME: Add 3D OES formats when supported */
+      if (ctx->Extensions.OES_texture_compression_astc) {
+         for (i = 0; i < ARRAY_SIZE(gles_astc_3d_compatible_internal_formats); i++) {
+            if (gles_astc_3d_compatible_internal_formats[i].internal_format
+                == internalformat)
+               return gles_astc_3d_compatible_internal_formats[i].view_class;
+         }
+      }
    }
    return GL_FALSE;
 }
@@ -639,13 +663,38 @@ _mesa_TextureView(GLuint texture, GLenum target, GLuint origtexture,
    case GL_TEXTURE_2D:
    case GL_TEXTURE_2D_MULTISAMPLE:
    case GL_TEXTURE_RECTANGLE:
+      depth = 1;
+      break;
    case GL_TEXTURE_CUBE_MAP:
+      /* If the new texture's target is TEXTURE_CUBE_MAP, the clamped
+       * <numlayers> must be equal to 6.
+       */
+      if (newViewNumLayers != 6) {
+         _mesa_error(ctx, GL_INVALID_VALUE,
+                     "glTextureView(clamped numlayers %d != 6)",
+                     newViewNumLayers);
+         return;
+      }
       depth = 1;
       break;
 
    case GL_TEXTURE_2D_ARRAY:
-   case GL_TEXTURE_CUBE_MAP_ARRAY:
    case GL_TEXTURE_2D_MULTISAMPLE_ARRAY:
+      depth = newViewNumLayers;
+      break;
+   case GL_TEXTURE_CUBE_MAP_ARRAY:
+      /* If the new texture's target is TEXTURE_CUBE_MAP_ARRAY,
+       * then <numlayers> counts layer-faces rather than layers,
+       * and the clamped <numlayers> must be a multiple of 6.
+       * Otherwise, the error INVALID_VALUE is generated.
+       */
+      if ((newViewNumLayers % 6) != 0) {
+         _mesa_error(ctx, GL_INVALID_VALUE,
+                     "glTextureView(clamped numlayers %d is not"
+                     " a multiple of 6)",
+                     newViewNumLayers);
+         return;
+      }
       depth = newViewNumLayers;
       break;
    }
@@ -689,32 +738,9 @@ _mesa_TextureView(GLuint texture, GLenum target, GLuint origtexture,
          return;
       }
       break;
-
    case GL_TEXTURE_CUBE_MAP:
-      /* If the new texture's target is TEXTURE_CUBE_MAP, the clamped
-       * <numlayers> must be equal to 6.
-       */
-      if (newViewNumLayers != 6) {
-         _mesa_error(ctx, GL_INVALID_VALUE,
-                     "glTextureView(clamped numlayers %d != 6)",
-                     newViewNumLayers);
-         return;
-      }
       break;
-
    case GL_TEXTURE_CUBE_MAP_ARRAY:
-      /* If the new texture's target is TEXTURE_CUBE_MAP_ARRAY,
-       * then <numlayers> counts layer-faces rather than layers,
-       * and the clamped <numlayers> must be a multiple of 6.
-       * Otherwise, the error INVALID_VALUE is generated.
-       */
-      if ((newViewNumLayers % 6) != 0) {
-         _mesa_error(ctx, GL_INVALID_VALUE,
-                     "glTextureView(clamped numlayers %d is not"
-                     " a multiple of 6)",
-                     newViewNumLayers);
-         return;
-      }
       break;
    }
 

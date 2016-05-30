@@ -19,8 +19,7 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
-SUBDIRS = .
-
+include Makefile.sources
 
 ISL_GEN_LIBS =                                           \
 	libisl-gen7.la                                   \
@@ -31,69 +30,41 @@ ISL_GEN_LIBS =                                           \
 
 noinst_LTLIBRARIES = $(ISL_GEN_LIBS) libisl.la
 
-EXTRA_DIST = tests
-
 # The gallium includes are for the util/u_math.h include from main/macros.h
 AM_CPPFLAGS = \
 	$(INTEL_CFLAGS) \
 	$(VALGRIND_CFLAGS) \
 	$(DEFINES) \
 	-I$(top_srcdir)/include \
+	-I$(top_builddir)/src \
 	-I$(top_srcdir)/src \
+	-I$(top_builddir)/src/intel \
 	-I$(top_srcdir)/src/intel \
 	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/mesa \
-	-I$(top_srcdir)/src/mesa/drivers/dri/common \
 	-I$(top_srcdir)/src/mesa/drivers/dri/i965 \
 	-I$(top_srcdir)/src/gallium/auxiliary \
-	-I$(top_srcdir)/src/gallium/include \
-	-I$(top_builddir)/src \
-	-I$(top_builddir)/src/intel
+	-I$(top_srcdir)/src/gallium/include
 
 libisl_la_CFLAGS = $(CFLAGS) -Wno-override-init
 
 libisl_la_LIBADD = $(ISL_GEN_LIBS)
 
-libisl_la_SOURCES =                                     \
-	isl.c                                           \
-	isl.h                                           \
-	isl_format.c                                    \
-	isl_format_layout.c                             \
-	isl_gen4.c                                      \
-	isl_gen4.h                                      \
-	isl_gen6.c                                      \
-	isl_gen6.h                                      \
-	isl_storage_image.c                             \
-	$(NULL)
+libisl_la_SOURCES = $(ISL_FILES)
 
-libisl_gen7_la_SOURCES =                                \
-	isl_gen7.c                                      \
-	isl_gen7.h                                      \
-        isl_surface_state.c                             \
-	$(NULL)
+libisl_gen7_la_SOURCES = $(ISL_GEN7_FILES)
 libisl_gen7_la_CFLAGS = $(libisl_la_CFLAGS) -DGEN_VERSIONx10=70
 
-libisl_gen75_la_SOURCES =                               \
-        isl_surface_state.c                             \
-	$(NULL)
+libisl_gen75_la_SOURCES = $(ISL_GEN75_FILES)
 libisl_gen75_la_CFLAGS = $(libisl_la_CFLAGS) -DGEN_VERSIONx10=75
 
-libisl_gen8_la_SOURCES =                                \
-	isl_gen8.c                                      \
-	isl_gen8.h                                      \
-        isl_surface_state.c                             \
-	$(NULL)
+libisl_gen8_la_SOURCES = $(ISL_GEN8_FILES)
 libisl_gen8_la_CFLAGS = $(libisl_la_CFLAGS) -DGEN_VERSIONx10=80
 
-libisl_gen9_la_SOURCES =                                \
-	isl_gen9.c                                      \
-	isl_gen9.h                                      \
-        isl_surface_state.c                             \
-	$(NULL)
+libisl_gen9_la_SOURCES = $(ISL_GEN9_FILES)
 libisl_gen9_la_CFLAGS = $(libisl_la_CFLAGS) -DGEN_VERSIONx10=90
 
-BUILT_SOURCES =                                         \
-	isl_format_layout.c
+BUILT_SOURCES = $(ISL_GENERATED_FILES)
 
 isl_format_layout.c: isl_format_layout_gen.bash \
                      isl_format_layout.csv
@@ -104,20 +75,18 @@ isl_format_layout.c: isl_format_layout_gen.bash \
 #  Tests
 # ----------------------------------------------------------------------------
 
-TESTS = tests/isl_surf_get_image_offset_test
+check_PROGRAMS = tests/isl_surf_get_image_offset_test
 
-check_PROGRAMS = $(TESTS)
+TESTS = $(check_PROGRAMS)
 
-# Link tests to lib965_compiler.la for brw_get_device_info().
-tests_ldadd =						\
-	-lm						\
-	libisl.la					\
-	$(top_builddir)/src/mesa/drivers/dri/i965/libi965_compiler.la
-
-tests_isl_surf_get_image_offset_test_SOURCES =		\
-	tests/isl_surf_get_image_offset_test.c
-tests_isl_surf_get_image_offset_test_LDADD = $(tests_ldadd)
+tests_isl_surf_get_image_offset_test_LDADD = \
+	libisl.la \
+	$(top_builddir)/src/mesa/drivers/dri/i965/libi965_compiler.la \
+	-lm
 
 # ----------------------------------------------------------------------------
 
-include $(top_srcdir)/install-lib-links.mk
+EXTRA_DIST = \
+	isl_format_layout_gen.bash \
+	isl_format_layout.csv \
+	README

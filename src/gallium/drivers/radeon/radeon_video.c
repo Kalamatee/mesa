@@ -122,7 +122,7 @@ void rvid_clear_buffer(struct pipe_context *context, struct rvid_buffer* buffer)
 	struct r600_common_context *rctx = (struct r600_common_context*)context;
 
 	rctx->clear_buffer(context, &buffer->res->b.b, 0, buffer->res->buf->size,
-			   0, false);
+			   0, R600_COHERENCY_NONE);
 	context->flush(context, NULL, 0);
 }
 
@@ -130,7 +130,7 @@ void rvid_clear_buffer(struct pipe_context *context, struct rvid_buffer* buffer)
  * join surfaces into the same buffer with identical tiling params
  * sumup their sizes and replace the backend buffers with a single bo
  */
-void rvid_join_surfaces(struct radeon_winsys* ws, unsigned bind,
+void rvid_join_surfaces(struct radeon_winsys* ws,
 			struct pb_buffer** buffers[VL_NUM_COMPONENTS],
 			struct radeon_surf *surfaces[VL_NUM_COMPONENTS])
 {
@@ -165,7 +165,7 @@ void rvid_join_surfaces(struct radeon_winsys* ws, unsigned bind,
 
 		/* adjust the texture layer offsets */
 		off = align(off, surfaces[i]->bo_alignment);
-		for (j = 0; j < Elements(surfaces[i]->level); ++j)
+		for (j = 0; j < ARRAY_SIZE(surfaces[i]->level); ++j)
 			surfaces[i]->level[j].offset += off;
 		off += surfaces[i]->bo_size;
 	}
@@ -185,7 +185,7 @@ void rvid_join_surfaces(struct radeon_winsys* ws, unsigned bind,
 	/* TODO: 2D tiling workaround */
 	alignment *= 2;
 
-	pb = ws->buffer_create(ws, size, alignment, bind, RADEON_DOMAIN_VRAM, 0);
+	pb = ws->buffer_create(ws, size, alignment, RADEON_DOMAIN_VRAM, 0);
 	if (!pb)
 		return;
 

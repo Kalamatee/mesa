@@ -476,8 +476,8 @@ layout		{
 			    char suffix = yytext[strlen(yytext) - 1];
 			    if (!state->is_version(120, 300) &&
 			        (suffix == 'f' || suffix == 'F')) {
-			        _mesa_glsl_error(yylloc, state,
-			                         "Float suffixes are invalid in GLSL 1.10");
+			        _mesa_glsl_warning(yylloc, state,
+			                           "Float suffixes are invalid in GLSL 1.10");
 			    }
 			    yylval->real = _mesa_strtof(yytext, NULL);
 			    return FLOATCONSTANT;
@@ -583,7 +583,7 @@ isamplerBuffer	KEYWORD_WITH_ALT(140, 300, 140, 320, yyextra->EXT_texture_buffer_
 usamplerBuffer	KEYWORD_WITH_ALT(140, 300, 140, 320, yyextra->EXT_texture_buffer_enable || yyextra->OES_texture_buffer_enable, USAMPLERBUFFER);
 
     /* Additional reserved words in GLSL ES 3.00 */
-resource	KEYWORD(0, 300, 0, 0, RESOURCE);
+resource	KEYWORD(420, 300, 0, 0, RESOURCE);
 sample		KEYWORD_WITH_ALT(400, 300, 400, 320, yyextra->ARB_gpu_shader5_enable || yyextra->OES_shader_multisample_interpolation_enable, SAMPLE);
 subroutine	KEYWORD_WITH_ALT(400, 300, 400, 0, yyextra->ARB_shader_subroutine_enable, SUBROUTINE);
 

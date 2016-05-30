@@ -130,7 +130,7 @@ get_drawpix_z_stencil_program(struct st_context *st,
       return st->drawpix.zs_shaders[shaderIndex];
    }
 
-   ureg = ureg_create(TGSI_PROCESSOR_FRAGMENT);
+   ureg = ureg_create(PIPE_SHADER_FRAGMENT);
    if (ureg == NULL)
       return NULL;
 
@@ -197,7 +197,7 @@ make_passthrough_vertex_shader(struct st_context *st,
       TGSI_SEMANTIC_TEXCOORD : TGSI_SEMANTIC_GENERIC;
 
    if (!st->drawpix.vert_shaders[passColor]) {
-      struct ureg_program *ureg = ureg_create( TGSI_PROCESSOR_VERTEX );
+      struct ureg_program *ureg = ureg_create( PIPE_SHADER_VERTEX );
 
       if (ureg == NULL)
          return NULL;
@@ -1025,17 +1025,17 @@ setup_sampler_swizzle(struct pipe_sampler_view *sv, GLenum format, GLenum type)
 
       /* invert the format's swizzle to setup the sampler's swizzle */
       if (format == GL_RGBA) {
-         c0 = UTIL_FORMAT_SWIZZLE_X;
-         c1 = UTIL_FORMAT_SWIZZLE_Y;
-         c2 = UTIL_FORMAT_SWIZZLE_Z;
-         c3 = UTIL_FORMAT_SWIZZLE_W;
+         c0 = PIPE_SWIZZLE_X;
+         c1 = PIPE_SWIZZLE_Y;
+         c2 = PIPE_SWIZZLE_Z;
+         c3 = PIPE_SWIZZLE_W;
       }
       else {
          assert(format == GL_BGRA);
-         c0 = UTIL_FORMAT_SWIZZLE_Z;
-         c1 = UTIL_FORMAT_SWIZZLE_Y;
-         c2 = UTIL_FORMAT_SWIZZLE_X;
-         c3 = UTIL_FORMAT_SWIZZLE_W;
+         c0 = PIPE_SWIZZLE_Z;
+         c1 = PIPE_SWIZZLE_Y;
+         c2 = PIPE_SWIZZLE_X;
+         c3 = PIPE_SWIZZLE_W;
       }
       sv->swizzle_r = search_swizzle(desc->swizzle, c0);
       sv->swizzle_g = search_swizzle(desc->swizzle, c1);

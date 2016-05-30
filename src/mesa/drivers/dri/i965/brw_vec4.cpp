@@ -350,28 +350,6 @@ src_reg::equals(const src_reg &r) const
 }
 
 bool
-vec4_visitor::vectorize_mov(bblock_t *block, vec4_instruction *inst,
-                            uint8_t imm[4], vec4_instruction *imm_inst[4],
-                            int inst_count, unsigned writemask)
-{
-   if (inst_count < 2)
-      return false;
-
-   unsigned vf;
-   memcpy(&vf, imm, sizeof(vf));
-   vec4_instruction *mov = MOV(imm_inst[0]->dst, brw_imm_vf(vf));
-   mov->dst.type = BRW_REGISTER_TYPE_F;
-   mov->dst.writemask = writemask;
-   inst->insert_before(block, mov);
-
-   for (int i = 0; i < inst_count; i++) {
-      imm_inst[i]->remove(block);
-   }
-
-   return true;
-}
-
-bool
 vec4_visitor::opt_vector_float()
 {
    bool progress = false;
@@ -383,50 +361,88 @@ vec4_visitor::opt_vector_float()
    int inst_count = 0;
    vec4_instruction *imm_inst[4];
    unsigned writemask = 0;
+   enum brw_reg_type dest_type = BRW_REGISTER_TYPE_F;
 
    foreach_block_and_inst_safe(block, vec4_instruction, inst, cfg) {
+      int vf = -1;
+      enum brw_reg_type need_type;
+
+      /* Look for unconditional MOVs from an immediate with a partial
+       * writemask.  Skip type-conversion MOVs other than integer 0,
+       * where the type doesn't matter.  See if the immediate can be
+       * represented as a VF.
+       */
+      if (inst->opcode == BRW_OPCODE_MOV &&
+          inst->src[0].file == IMM &&
+          inst->predicate == BRW_PREDICATE_NONE &&
+          inst->dst.writemask != WRITEMASK_XYZW &&
+          (inst->src[0].type == inst->dst.type || inst->src[0].d == 0)) {
+
+         vf = brw_float_to_vf(inst->src[0].d);
+         need_type = BRW_REGISTER_TYPE_D;
+
+         if (vf == -1) {
+            vf = brw_float_to_vf(inst->src[0].f);
+            need_type = BRW_REGISTER_TYPE_F;
+         }
+      } else {
+         last_reg = -1;
+      }
+
+      /* If this wasn't a MOV, or the destination register doesn't match,
+       * or we have to switch destination types, then this breaks our
+       * sequence.  Combine anything we've accumulated so far.
+       */
       if (last_reg != inst->dst.nr ||
           last_reg_offset != inst->dst.reg_offset ||
-          last_reg_file != inst->dst.file) {
-         progress |= vectorize_mov(block, inst, imm, imm_inst, inst_count,
-                                   writemask);
+          last_reg_file != inst->dst.file ||
+          (vf > 0 && dest_type != need_type)) {
+
+         if (inst_count > 1) {
+            unsigned vf;
+            memcpy(&vf, imm, sizeof(vf));
+            vec4_instruction *mov = MOV(imm_inst[0]->dst, brw_imm_vf(vf));
+            mov->dst.type = dest_type;
+            mov->dst.writemask = writemask;
+            inst->insert_before(block, mov);
+
+            for (int i = 0; i < inst_count; i++) {
+               imm_inst[i]->remove(block);
+            }
+
+            progress = true;
+         }
+
          inst_count = 0;
+         last_reg = -1;
          writemask = 0;
-         last_reg = inst->dst.nr;
-         last_reg_offset = inst->dst.reg_offset;
-         last_reg_file = inst->dst.file;
+         dest_type = BRW_REGISTER_TYPE_F;
 
          for (int i = 0; i < 4; i++) {
             imm[i] = 0;
          }
       }
 
-      if (inst->opcode != BRW_OPCODE_MOV ||
-          inst->dst.writemask == WRITEMASK_XYZW ||
-          inst->src[0].file != IMM ||
-          inst->predicate != BRW_PREDICATE_NONE) {
-         progress |= vectorize_mov(block, inst, imm, imm_inst, inst_count,
-                                   writemask);
-         inst_count = 0;
-         last_reg = -1;
-         continue;
+      /* Record this instruction's value (if it was representable). */
+      if (vf != -1) {
+         if ((inst->dst.writemask & WRITEMASK_X) != 0)
+            imm[0] = vf;
+         if ((inst->dst.writemask & WRITEMASK_Y) != 0)
+            imm[1] = vf;
+         if ((inst->dst.writemask & WRITEMASK_Z) != 0)
+            imm[2] = vf;
+         if ((inst->dst.writemask & WRITEMASK_W) != 0)
+            imm[3] = vf;
+
+         writemask |= inst->dst.writemask;
+         imm_inst[inst_count++] = inst;
+
+         last_reg = inst->dst.nr;
+         last_reg_offset = inst->dst.reg_offset;
+         last_reg_file = inst->dst.file;
+         if (vf > 0)
+            dest_type = need_type;
       }
-
-      int vf = brw_float_to_vf(inst->src[0].f);
-      if (vf == -1)
-         continue;
-
-      if ((inst->dst.writemask & WRITEMASK_X) != 0)
-         imm[0] = vf;
-      if ((inst->dst.writemask & WRITEMASK_Y) != 0)
-         imm[1] = vf;
-      if ((inst->dst.writemask & WRITEMASK_Z) != 0)
-         imm[2] = vf;
-      if ((inst->dst.writemask & WRITEMASK_W) != 0)
-         imm[3] = vf;
-
-      writemask |= inst->dst.writemask;
-      imm_inst[inst_count++] = inst;
    }
 
    if (progress)
@@ -1377,7 +1393,7 @@ vec4_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
               pred_ctrl_align16[inst->predicate]);
    }
 
-   fprintf(file, "%s", brw_instruction_name(inst->opcode));
+   fprintf(file, "%s", brw_instruction_name(devinfo, inst->opcode));
    if (inst->saturate)
       fprintf(file, ".sat");
    if (inst->conditional_mod) {
@@ -1852,7 +1868,7 @@ vec4_visitor::convert_to_hw_regs()
          src = reg;
       }
 
-      if (inst->is_3src()) {
+      if (inst->is_3src(devinfo)) {
          /* 3-src instructions with scalar sources support arbitrary subnr,
           * but don't actually use swizzles.  Convert swizzle into subnr.
           */
@@ -2088,23 +2104,30 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
       nr_attributes++;
    }
 
+   unsigned nr_attribute_slots =
+      nr_attributes +
+      _mesa_bitcount_64(shader->info.double_inputs_read);
+
    /* The 3DSTATE_VS documentation lists the lower bound on "Vertex URB Entry
     * Read Length" as 1 in vec4 mode, and 0 in SIMD8 mode.  Empirically, in
     * vec4 mode, the hardware appears to wedge unless we read something.
     */
    if (is_scalar)
-      prog_data->base.urb_read_length = DIV_ROUND_UP(nr_attributes, 2);
+      prog_data->base.urb_read_length =
+         DIV_ROUND_UP(nr_attribute_slots, 2);
    else
-      prog_data->base.urb_read_length = DIV_ROUND_UP(MAX2(nr_attributes, 1), 2);
+      prog_data->base.urb_read_length =
+         DIV_ROUND_UP(MAX2(nr_attribute_slots, 1), 2);
 
    prog_data->nr_attributes = nr_attributes;
+   prog_data->nr_attribute_slots = nr_attribute_slots;
 
    /* Since vertex shaders reuse the same VUE entry for inputs and outputs
     * (overwriting the original contents), we need to make sure the size is
     * the larger of the two.
     */
    const unsigned vue_entries =
-      MAX2(nr_attributes, (unsigned)prog_data->base.vue_map.num_slots);
+      MAX2(nr_attribute_slots, (unsigned)prog_data->base.vue_map.num_slots);
 
    if (compiler->devinfo->gen == 6)
       prog_data->base.urb_entry_size = DIV_ROUND_UP(vue_entries, 8);
@@ -2123,6 +2146,8 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
 
          return NULL;
       }
+
+      prog_data->base.base.dispatch_grf_start_reg = v.payload.num_regs;
 
       fs_generator g(compiler, log_data, mem_ctx, (void *) key,
                      &prog_data->base.base, v.promoted_constants,

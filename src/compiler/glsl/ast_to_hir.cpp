@@ -822,7 +822,7 @@ validate_assignment(struct _mesa_glsl_parse_state *state,
     */
    if (state->stage == MESA_SHADER_TESS_CTRL && !lhs->type->is_error()) {
       ir_variable *var = lhs->variable_referenced();
-      if (var->data.mode == ir_var_shader_out && !var->data.patch) {
+      if (var && var->data.mode == ir_var_shader_out && !var->data.patch) {
          ir_rvalue *index = find_innermost_array_index(lhs);
          ir_variable *index_var = index ? index->variable_referenced() : NULL;
          if (!index_var || strcmp(index_var->name, "gl_InvocationID") != 0) {
@@ -976,7 +976,7 @@ do_assignment(exec_list *instructions, struct _mesa_glsl_parse_state *state,
 
          assert(var != NULL);
 
-         if (var->data.max_array_access >= unsigned(rhs->type->array_size())) {
+         if (var->data.max_array_access >= rhs->type->array_size()) {
             /* FINISHME: This should actually log the location of the RHS. */
             _mesa_glsl_error(& lhs_loc, state, "array size must be > %u due to "
                              "previous access",
@@ -1051,6 +1051,11 @@ bool
 ast_node::has_sequence_subexpression() const
 {
    return false;
+}
+
+void
+ast_node::set_is_lhs(bool /* new_value */)
+{
 }
 
 void
@@ -1196,20 +1201,38 @@ check_builtin_array_max_size(const char *name, unsigned size,
       _mesa_glsl_error(&loc, state, "`gl_TexCoord' array size cannot "
                        "be larger than gl_MaxTextureCoords (%u)",
                        state->Const.MaxTextureCoords);
-   } else if (strcmp("gl_ClipDistance", name) == 0
-              && size > state->Const.MaxClipPlanes) {
-      /* From section 7.1 (Vertex Shader Special Variables) of the
-       * GLSL 1.30 spec:
-       *
-       *   "The gl_ClipDistance array is predeclared as unsized and
-       *   must be sized by the shader either redeclaring it with a
-       *   size or indexing it only with integral constant
-       *   expressions. ... The size can be at most
-       *   gl_MaxClipDistances."
-       */
-      _mesa_glsl_error(&loc, state, "`gl_ClipDistance' array size cannot "
-                       "be larger than gl_MaxClipDistances (%u)",
-                       state->Const.MaxClipPlanes);
+   } else if (strcmp("gl_ClipDistance", name) == 0) {
+      state->clip_dist_size = size;
+      if (size + state->cull_dist_size > state->Const.MaxClipPlanes) {
+         /* From section 7.1 (Vertex Shader Special Variables) of the
+          * GLSL 1.30 spec:
+          *
+          *   "The gl_ClipDistance array is predeclared as unsized and
+          *   must be sized by the shader either redeclaring it with a
+          *   size or indexing it only with integral constant
+          *   expressions. ... The size can be at most
+          *   gl_MaxClipDistances."
+          */
+         _mesa_glsl_error(&loc, state, "`gl_ClipDistance' array size cannot "
+                          "be larger than gl_MaxClipDistances (%u)",
+                          state->Const.MaxClipPlanes);
+      }
+   } else if (strcmp("gl_CullDistance", name) == 0) {
+      state->cull_dist_size = size;
+      if (size + state->clip_dist_size > state->Const.MaxClipPlanes) {
+         /* From the ARB_cull_distance spec:
+          *
+          *   "The gl_CullDistance array is predeclared as unsized and
+          *    must be sized by the shader either redeclaring it with
+          *    a size or indexing it only with integral constant
+          *    expressions. The size determines the number and set of
+          *    enabled cull distances and can be at most
+          *    gl_MaxCullDistances."
+          */
+         _mesa_glsl_error(&loc, state, "`gl_CullDistance' array size cannot "
+                          "be larger than gl_MaxCullDistances (%u)",
+                          state->Const.MaxClipPlanes);
+      }
    }
 }
 
@@ -1898,6 +1921,14 @@ ast_expression::do_hir(exec_list *instructions,
        */
       ir_variable *var =
          state->symbols->get_variable(this->primary_expression.identifier);
+
+      if (var == NULL) {
+         /* the identifier might be a subroutine name */
+         char *sub_name;
+         sub_name = ralloc_asprintf(ctx, "%s_%s", _mesa_shader_stage_to_subroutine_prefix(state->stage), this->primary_expression.identifier);
+         var = state->symbols->get_variable(sub_name);
+         ralloc_free(sub_name);
+      }
 
       if (var != NULL) {
          var->data.used = true;
@@ -2792,8 +2823,163 @@ apply_explicit_binding(struct _mesa_glsl_parse_state *state,
 }
 
 
+static void
+validate_interpolation_qualifier(struct _mesa_glsl_parse_state *state,
+                                 YYLTYPE *loc,
+                                 const glsl_interp_qualifier interpolation,
+                                 const struct ast_type_qualifier *qual,
+                                 const struct glsl_type *var_type,
+                                 ir_variable_mode mode)
+{
+   /* Interpolation qualifiers can only apply to shader inputs or outputs, but
+    * not to vertex shader inputs nor fragment shader outputs.
+    *
+    * From section 4.3 ("Storage Qualifiers") of the GLSL 1.30 spec:
+    *    "Outputs from a vertex shader (out) and inputs to a fragment
+    *    shader (in) can be further qualified with one or more of these
+    *    interpolation qualifiers"
+    *    ...
+    *    "These interpolation qualifiers may only precede the qualifiers in,
+    *    centroid in, out, or centroid out in a declaration. They do not apply
+    *    to the deprecated storage qualifiers varying or centroid
+    *    varying. They also do not apply to inputs into a vertex shader or
+    *    outputs from a fragment shader."
+    *
+    * From section 4.3 ("Storage Qualifiers") of the GLSL ES 3.00 spec:
+    *    "Outputs from a shader (out) and inputs to a shader (in) can be
+    *    further qualified with one of these interpolation qualifiers."
+    *    ...
+    *    "These interpolation qualifiers may only precede the qualifiers
+    *    in, centroid in, out, or centroid out in a declaration. They do
+    *    not apply to inputs into a vertex shader or outputs from a
+    *    fragment shader."
+    */
+   if (state->is_version(130, 300)
+       && interpolation != INTERP_QUALIFIER_NONE) {
+      const char *i = interpolation_string(interpolation);
+      if (mode != ir_var_shader_in && mode != ir_var_shader_out)
+         _mesa_glsl_error(loc, state,
+                          "interpolation qualifier `%s' can only be applied to "
+                          "shader inputs or outputs.", i);
+
+      switch (state->stage) {
+      case MESA_SHADER_VERTEX:
+         if (mode == ir_var_shader_in) {
+            _mesa_glsl_error(loc, state,
+                             "interpolation qualifier '%s' cannot be applied to "
+                             "vertex shader inputs", i);
+         }
+         break;
+      case MESA_SHADER_FRAGMENT:
+         if (mode == ir_var_shader_out) {
+            _mesa_glsl_error(loc, state,
+                             "interpolation qualifier '%s' cannot be applied to "
+                             "fragment shader outputs", i);
+         }
+         break;
+      default:
+         break;
+      }
+   }
+
+   /* Interpolation qualifiers cannot be applied to 'centroid' and
+    * 'centroid varying'.
+    *
+    * From section 4.3 ("Storage Qualifiers") of the GLSL 1.30 spec:
+    *    "interpolation qualifiers may only precede the qualifiers in,
+    *    centroid in, out, or centroid out in a declaration. They do not apply
+    *    to the deprecated storage qualifiers varying or centroid varying."
+    *
+    * These deprecated storage qualifiers do not exist in GLSL ES 3.00.
+    */
+   if (state->is_version(130, 0)
+       && interpolation != INTERP_QUALIFIER_NONE
+       && qual->flags.q.varying) {
+
+      const char *i = interpolation_string(interpolation);
+      const char *s;
+      if (qual->flags.q.centroid)
+         s = "centroid varying";
+      else
+         s = "varying";
+
+      _mesa_glsl_error(loc, state,
+                       "qualifier '%s' cannot be applied to the "
+                       "deprecated storage qualifier '%s'", i, s);
+   }
+
+   /* Integer fragment inputs must be qualified with 'flat'.  In GLSL ES,
+    * so must integer vertex outputs.
+    *
+    * From section 4.3.4 ("Inputs") of the GLSL 1.50 spec:
+    *    "Fragment shader inputs that are signed or unsigned integers or
+    *    integer vectors must be qualified with the interpolation qualifier
+    *    flat."
+    *
+    * From section 4.3.4 ("Input Variables") of the GLSL 3.00 ES spec:
+    *    "Fragment shader inputs that are, or contain, signed or unsigned
+    *    integers or integer vectors must be qualified with the
+    *    interpolation qualifier flat."
+    *
+    * From section 4.3.6 ("Output Variables") of the GLSL 3.00 ES spec:
+    *    "Vertex shader outputs that are, or contain, signed or unsigned
+    *    integers or integer vectors must be qualified with the
+    *    interpolation qualifier flat."
+    *
+    * Note that prior to GLSL 1.50, this requirement applied to vertex
+    * outputs rather than fragment inputs.  That creates problems in the
+    * presence of geometry shaders, so we adopt the GLSL 1.50 rule for all
+    * desktop GL shaders.  For GLSL ES shaders, we follow the spec and
+    * apply the restriction to both vertex outputs and fragment inputs.
+    *
+    * Note also that the desktop GLSL specs are missing the text "or
+    * contain"; this is presumably an oversight, since there is no
+    * reasonable way to interpolate a fragment shader input that contains
+    * an integer. See Khronos bug #15671.
+    */
+   if (state->is_version(130, 300)
+       && var_type->contains_integer()
+       && interpolation != INTERP_QUALIFIER_FLAT
+       && ((state->stage == MESA_SHADER_FRAGMENT && mode == ir_var_shader_in)
+           || (state->stage == MESA_SHADER_VERTEX && mode == ir_var_shader_out
+               && state->es_shader))) {
+      const char *shader_var_type = (state->stage == MESA_SHADER_VERTEX) ?
+         "vertex output" : "fragment input";
+      _mesa_glsl_error(loc, state, "if a %s is (or contains) "
+                       "an integer, then it must be qualified with 'flat'",
+                       shader_var_type);
+   }
+
+   /* Double fragment inputs must be qualified with 'flat'.
+    *
+    * From the "Overview" of the ARB_gpu_shader_fp64 extension spec:
+    *    "This extension does not support interpolation of double-precision
+    *    values; doubles used as fragment shader inputs must be qualified as
+    *    "flat"."
+    *
+    * From section 4.3.4 ("Inputs") of the GLSL 4.00 spec:
+    *    "Fragment shader inputs that are signed or unsigned integers, integer
+    *    vectors, or any double-precision floating-point type must be
+    *    qualified with the interpolation qualifier flat."
+    *
+    * Note that the GLSL specs are missing the text "or contain"; this is
+    * presumably an oversight. See Khronos bug #15671.
+    *
+    * The 'double' type does not exist in GLSL ES so far.
+    */
+   if (state->has_double()
+       && var_type->contains_double()
+       && interpolation != INTERP_QUALIFIER_FLAT
+       && state->stage == MESA_SHADER_FRAGMENT
+       && mode == ir_var_shader_in) {
+      _mesa_glsl_error(loc, state, "if a fragment input is (or contains) "
+                       "a double, then it must be qualified with 'flat'");
+   }
+}
+
 static glsl_interp_qualifier
 interpret_interpolation_qualifier(const struct ast_type_qualifier *qual,
+                                  const struct glsl_type *var_type,
                                   ir_variable_mode mode,
                                   struct _mesa_glsl_parse_state *state,
                                   YYLTYPE *loc)
@@ -2805,37 +2991,23 @@ interpret_interpolation_qualifier(const struct ast_type_qualifier *qual,
       interpolation = INTERP_QUALIFIER_NOPERSPECTIVE;
    else if (qual->flags.q.smooth)
       interpolation = INTERP_QUALIFIER_SMOOTH;
-   else
-      interpolation = INTERP_QUALIFIER_NONE;
-
-   if (interpolation != INTERP_QUALIFIER_NONE) {
-      if (mode != ir_var_shader_in && mode != ir_var_shader_out) {
-         _mesa_glsl_error(loc, state,
-                          "interpolation qualifier `%s' can only be applied to "
-                          "shader inputs or outputs.",
-                          interpolation_string(interpolation));
-
-      }
-
-      if ((state->stage == MESA_SHADER_VERTEX && mode == ir_var_shader_in) ||
-          (state->stage == MESA_SHADER_FRAGMENT && mode == ir_var_shader_out)) {
-         _mesa_glsl_error(loc, state,
-                          "interpolation qualifier `%s' cannot be applied to "
-                          "vertex shader inputs or fragment shader outputs",
-                          interpolation_string(interpolation));
-      }
-   } else if (state->es_shader &&
-              ((mode == ir_var_shader_in &&
-                state->stage != MESA_SHADER_VERTEX) ||
-               (mode == ir_var_shader_out &&
-                state->stage != MESA_SHADER_FRAGMENT))) {
+   else if (state->es_shader &&
+            ((mode == ir_var_shader_in &&
+              state->stage != MESA_SHADER_VERTEX) ||
+             (mode == ir_var_shader_out &&
+              state->stage != MESA_SHADER_FRAGMENT)))
       /* Section 4.3.9 (Interpolation) of the GLSL ES 3.00 spec says:
        *
        *    "When no interpolation qualifier is present, smooth interpolation
        *    is used."
        */
       interpolation = INTERP_QUALIFIER_SMOOTH;
-   }
+   else
+      interpolation = INTERP_QUALIFIER_NONE;
+
+   validate_interpolation_qualifier(state, loc,
+                                    interpolation,
+                                    qual, var_type, mode);
 
    return interpolation;
 }
@@ -3204,10 +3376,42 @@ apply_layout_qualifier_to_variable(const struct ast_type_qualifier *qual,
 
    if (qual->flags.q.explicit_location) {
       apply_explicit_location(qual, var, state, loc);
+
+      if (qual->flags.q.explicit_component) {
+         unsigned qual_component;
+         if (process_qualifier_constant(state, loc, "component",
+                                        qual->component, &qual_component)) {
+            const glsl_type *type = var->type->without_array();
+            unsigned components = type->component_slots();
+
+            if (type->is_matrix() || type->is_record()) {
+               _mesa_glsl_error(loc, state, "component layout qualifier "
+                                "cannot be applied to a matrix, a structure, "
+                                "a block, or an array containing any of "
+                                "these.");
+            } else if (qual_component != 0 &&
+                (qual_component + components - 1) > 3) {
+               _mesa_glsl_error(loc, state, "component overflow (%u > 3)",
+                                (qual_component + components - 1));
+            } else if (qual_component == 1 && type->is_double()) {
+               /* We don't bother checking for 3 as it should be caught by the
+                * overflow check above.
+                */
+               _mesa_glsl_error(loc, state, "doubles cannot begin at "
+                                "component 1 or 3");
+            } else {
+               var->data.explicit_component = true;
+               var->data.location_frac = qual_component;
+            }
+         }
+      }
    } else if (qual->flags.q.explicit_index) {
       if (!qual->flags.q.subroutine_def)
          _mesa_glsl_error(loc, state,
                           "explicit index requires explicit location");
+   } else if (qual->flags.q.explicit_component) {
+      _mesa_glsl_error(loc, state,
+                       "explicit component requires explicit location");
    }
 
    if (qual->flags.q.explicit_binding) {
@@ -3238,11 +3442,11 @@ apply_layout_qualifier_to_variable(const struct ast_type_qualifier *qual,
    if (qual->flags.q.explicit_xfb_offset) {
       unsigned qual_xfb_offset;
       unsigned component_size = var->type->contains_double() ? 8 : 4;
-
+      const glsl_type *t = get_varying_type(var, state->stage);
       if (process_qualifier_constant(state, loc, "xfb_offset",
                                      qual->offset, &qual_xfb_offset) &&
           validate_xfb_offset_qualifier(loc, state, (int) qual_xfb_offset,
-                                        var->type, component_size)) {
+                                        t, component_size)) {
          var->data.offset = qual_xfb_offset;
          var->data.explicit_xfb_offset = true;
       }
@@ -3575,7 +3779,8 @@ apply_type_qualifier_to_variable(const struct ast_type_qualifier *qual,
    }
 
    var->data.interpolation =
-      interpret_interpolation_qualifier(qual, (ir_variable_mode) var->data.mode,
+      interpret_interpolation_qualifier(qual, var->type,
+                                        (ir_variable_mode) var->data.mode,
                                         state, loc);
 
    /* Does the declaration use the deprecated 'attribute' or 'varying'
@@ -3665,7 +3870,7 @@ get_variable_being_redeclared(ir_variable *var, YYLTYPE loc,
        * FINISHME: required or not.
        */
 
-      const unsigned size = unsigned(var->type->array_size());
+      const int size = var->type->array_size();
       check_builtin_array_max_size(var->name, size, loc, state);
       if ((size > 0) && (size <= earlier->data.max_array_access)) {
          _mesa_glsl_error(& loc, state, "array size must be > %u due to "
@@ -4756,124 +4961,6 @@ ast_declarator_list::hir(exec_list *instructions,
          var->data.how_declared = ir_var_hidden;
       }
 
-      /* Integer fragment inputs must be qualified with 'flat'.  In GLSL ES,
-       * so must integer vertex outputs.
-       *
-       * From section 4.3.4 ("Inputs") of the GLSL 1.50 spec:
-       *    "Fragment shader inputs that are signed or unsigned integers or
-       *    integer vectors must be qualified with the interpolation qualifier
-       *    flat."
-       *
-       * From section 4.3.4 ("Input Variables") of the GLSL 3.00 ES spec:
-       *    "Fragment shader inputs that are, or contain, signed or unsigned
-       *    integers or integer vectors must be qualified with the
-       *    interpolation qualifier flat."
-       *
-       * From section 4.3.6 ("Output Variables") of the GLSL 3.00 ES spec:
-       *    "Vertex shader outputs that are, or contain, signed or unsigned
-       *    integers or integer vectors must be qualified with the
-       *    interpolation qualifier flat."
-       *
-       * Note that prior to GLSL 1.50, this requirement applied to vertex
-       * outputs rather than fragment inputs.  That creates problems in the
-       * presence of geometry shaders, so we adopt the GLSL 1.50 rule for all
-       * desktop GL shaders.  For GLSL ES shaders, we follow the spec and
-       * apply the restriction to both vertex outputs and fragment inputs.
-       *
-       * Note also that the desktop GLSL specs are missing the text "or
-       * contain"; this is presumably an oversight, since there is no
-       * reasonable way to interpolate a fragment shader input that contains
-       * an integer.
-       */
-      if (state->is_version(130, 300) &&
-          var->type->contains_integer() &&
-          var->data.interpolation != INTERP_QUALIFIER_FLAT &&
-          ((state->stage == MESA_SHADER_FRAGMENT && var->data.mode == ir_var_shader_in)
-           || (state->stage == MESA_SHADER_VERTEX && var->data.mode == ir_var_shader_out
-               && state->es_shader))) {
-         const char *var_type = (state->stage == MESA_SHADER_VERTEX) ?
-            "vertex output" : "fragment input";
-         _mesa_glsl_error(&loc, state, "if a %s is (or contains) "
-                          "an integer, then it must be qualified with 'flat'",
-                          var_type);
-      }
-
-      /* Double fragment inputs must be qualified with 'flat'. */
-      if (var->type->contains_double() &&
-          var->data.interpolation != INTERP_QUALIFIER_FLAT &&
-          state->stage == MESA_SHADER_FRAGMENT &&
-          var->data.mode == ir_var_shader_in) {
-         _mesa_glsl_error(&loc, state, "if a fragment input is (or contains) "
-                          "a double, then it must be qualified with 'flat'",
-                          var_type);
-      }
-
-      /* Interpolation qualifiers cannot be applied to 'centroid' and
-       * 'centroid varying'.
-       *
-       * From page 29 (page 35 of the PDF) of the GLSL 1.30 spec:
-       *    "interpolation qualifiers may only precede the qualifiers in,
-       *    centroid in, out, or centroid out in a declaration. They do not apply
-       *    to the deprecated storage qualifiers varying or centroid varying."
-       *
-       * These deprecated storage qualifiers do not exist in GLSL ES 3.00.
-       */
-      if (state->is_version(130, 0)
-          && this->type->qualifier.has_interpolation()
-          && this->type->qualifier.flags.q.varying) {
-
-         const char *i = interpolation_string(var->data.interpolation);
-         const char *s;
-         if (this->type->qualifier.flags.q.centroid)
-            s = "centroid varying";
-         else
-            s = "varying";
-
-         _mesa_glsl_error(&loc, state,
-                          "qualifier '%s' cannot be applied to the "
-                          "deprecated storage qualifier '%s'", i, s);
-      }
-
-
-      /* Interpolation qualifiers can only apply to vertex shader outputs and
-       * fragment shader inputs.
-       *
-       * From page 29 (page 35 of the PDF) of the GLSL 1.30 spec:
-       *    "Outputs from a vertex shader (out) and inputs to a fragment
-       *    shader (in) can be further qualified with one or more of these
-       *    interpolation qualifiers"
-       *
-       * From page 31 (page 37 of the PDF) of the GLSL ES 3.00 spec:
-       *    "These interpolation qualifiers may only precede the qualifiers
-       *    in, centroid in, out, or centroid out in a declaration. They do
-       *    not apply to inputs into a vertex shader or outputs from a
-       *    fragment shader."
-       */
-      if (state->is_version(130, 300)
-          && this->type->qualifier.has_interpolation()) {
-
-         const char *i = interpolation_string(var->data.interpolation);
-         switch (state->stage) {
-         case MESA_SHADER_VERTEX:
-            if (this->type->qualifier.flags.q.in) {
-               _mesa_glsl_error(&loc, state,
-                                "qualifier '%s' cannot be applied to vertex "
-                                "shader inputs", i);
-            }
-            break;
-         case MESA_SHADER_FRAGMENT:
-            if (this->type->qualifier.flags.q.out) {
-               _mesa_glsl_error(&loc, state,
-                                "qualifier '%s' cannot be applied to fragment "
-                                "shader outputs", i);
-            }
-            break;
-         default:
-            break;
-         }
-      }
-
-
       /* From section 4.3.4 of the GLSL 4.00 spec:
        *    "Input variables may not be declared using the patch in qualifier
        *    in tessellation control or geometry shaders."
@@ -5313,6 +5400,15 @@ ast_function::hir(exec_list *instructions,
                        name);
    }
 
+   /**/
+   if (return_type->is_subroutine()) {
+      YYLTYPE loc = this->get_location();
+      _mesa_glsl_error(&loc, state,
+                       "function `%s' return type can't be a subroutine type",
+                       name);
+   }
+
+
    /* Create an ir_function if one doesn't already exist. */
    f = state->symbols->get_function(name);
    if (f == NULL) {
@@ -5446,6 +5542,24 @@ ast_function::hir(exec_list *instructions,
          type = state->symbols->get_type(decl->identifier);
          if (!type) {
             _mesa_glsl_error(& loc, state, "unknown type '%s' in subroutine function definition", decl->identifier);
+         }
+
+         for (int i = 0; i < state->num_subroutine_types; i++) {
+            ir_function *fn = state->subroutine_types[i];
+            ir_function_signature *tsig = NULL;
+
+            if (strcmp(fn->name, decl->identifier))
+               continue;
+
+            tsig = fn->matching_signature(state, &sig->parameters,
+                                          false);
+            if (!tsig) {
+               _mesa_glsl_error(& loc, state, "subroutine type mismatch '%s' - signatures do not match\n", decl->identifier);
+            } else {
+               if (tsig->return_type != sig->return_type) {
+                  _mesa_glsl_error(& loc, state, "subroutine type mismatch '%s' - return types do not match\n", decl->identifier);
+               }
+            }
          }
          f->subroutine_types[idx++] = type;
       }
@@ -6555,7 +6669,7 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
          xfb_buffer = (int) qual_xfb_buffer;
       } else {
          if (layout)
-            explicit_xfb_buffer = layout->flags.q.xfb_buffer;
+            explicit_xfb_buffer = layout->flags.q.explicit_xfb_buffer;
          xfb_buffer = (int) block_xfb_buffer;
       }
 
@@ -6608,7 +6722,8 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
          fields[i].type = field_type;
          fields[i].name = decl->identifier;
          fields[i].interpolation =
-            interpret_interpolation_qualifier(qual, var_mode, state, &loc);
+            interpret_interpolation_qualifier(qual, field_type,
+                                              var_mode, state, &loc);
          fields[i].centroid = qual->flags.q.centroid ? 1 : 0;
          fields[i].sample = qual->flags.q.sample ? 1 : 0;
          fields[i].patch = qual->flags.q.patch ? 1 : 0;
@@ -6704,9 +6819,7 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
                fields[i].offset = glsl_align(offset, expl_align);
                next_offset = glsl_align(fields[i].offset + size, align);
             }
-         }
-
-         if (!qual->flags.q.explicit_offset) {
+         } else if (!qual->flags.q.explicit_offset) {
             if (align != 0 && size != 0)
                next_offset = glsl_align(next_offset + size, align);
          }
@@ -6742,7 +6855,7 @@ ast_process_struct_or_iface_block_members(exec_list *instructions,
           * the structure may contain a structure that contains ... a matrix
           * that need the proper layout.
           */
-         if (is_interface &&
+         if (is_interface && layout &&
              (layout->flags.q.uniform || layout->flags.q.buffer) &&
              (field_type->without_array()->is_matrix()
               || field_type->without_array()->is_record())) {
@@ -6842,7 +6955,12 @@ ast_struct_specifier::hir(exec_list *instructions,
       glsl_type::get_record_instance(fields, decl_count, this->name);
 
    if (!state->symbols->add_type(name, t)) {
-      _mesa_glsl_error(& loc, state, "struct `%s' previously defined", name);
+      const glsl_type *match = state->symbols->get_type(name);
+      /* allow struct matching for desktop GL - older UE4 does this */
+      if (match != NULL && state->is_version(130, 0) && match->record_compare(t, false))
+         _mesa_glsl_warning(& loc, state, "struct `%s' previously defined", name);
+      else
+         _mesa_glsl_error(& loc, state, "struct `%s' previously defined", name);
    } else {
       const glsl_type **s = reralloc(state, state->user_structures,
                                      const glsl_type *,
@@ -6903,6 +7021,16 @@ is_unsized_array_last_element(ir_variable *v)
    if (strcmp(interface_type->fields.structure[length-1].name, v->name) == 0)
       return true;
    return false;
+}
+
+static void
+apply_memory_qualifiers(ir_variable *var, glsl_struct_field field)
+{
+   var->data.image_read_only = field.image_read_only;
+   var->data.image_write_only = field.image_write_only;
+   var->data.image_coherent = field.image_coherent;
+   var->data.image_volatile = field.image_volatile;
+   var->data.image_restrict = field.image_restrict;
 }
 
 ir_rvalue *
@@ -6979,6 +7107,12 @@ ast_interface_block::hir(exec_list *instructions,
    if (this->layout.flags.q.read_only && this->layout.flags.q.write_only) {
       _mesa_glsl_error(&loc, state,
                        "Interface block sets both readonly and writeonly");
+   }
+
+   if (this->layout.flags.q.explicit_component) {
+      _mesa_glsl_error(&loc, state, "component layout qualifier cannot be "
+                       "applied to a matrix, a structure, a block, or an "
+                       "array containing any of these.");
    }
 
    unsigned qual_stream;
@@ -7202,12 +7336,6 @@ ast_interface_block::hir(exec_list *instructions,
                                         packing,
                                         this->block_name);
 
-   unsigned component_size = block_type->contains_double() ? 8 : 4;
-   int xfb_offset =
-      layout.flags.q.explicit_xfb_offset ? (int) qual_xfb_offset : -1;
-   validate_xfb_offset_qualifier(&loc, state, xfb_offset, block_type,
-                                 component_size);
-
    if (!state->symbols->add_interface(block_type->name, block_type, var_mode)) {
       YYLTYPE loc = this->get_location();
       _mesa_glsl_error(&loc, state, "interface block `%s' with type `%s' "
@@ -7346,6 +7474,13 @@ ast_interface_block::hir(exec_list *instructions,
                                       var_mode);
       }
 
+      unsigned component_size = block_type->contains_double() ? 8 : 4;
+      int xfb_offset =
+         layout.flags.q.explicit_xfb_offset ? (int) qual_xfb_offset : -1;
+      const glsl_type *t = get_varying_type(var, state->stage);
+      validate_xfb_offset_qualifier(&loc, state, xfb_offset, t,
+                                    component_size);
+
       var->data.matrix_layout = matrix_layout == GLSL_MATRIX_LAYOUT_INHERITED
          ? GLSL_MATRIX_LAYOUT_COLUMN_MAJOR : matrix_layout;
 
@@ -7361,30 +7496,8 @@ ast_interface_block::hir(exec_list *instructions,
          handle_tess_ctrl_shader_output_decl(state, loc, var);
 
       for (unsigned i = 0; i < num_variables; i++) {
-         if (fields[i].type->is_unsized_array()) {
-            if (var_mode == ir_var_shader_storage) {
-               if (i != (num_variables - 1)) {
-                  _mesa_glsl_error(&loc, state, "unsized array `%s' definition: "
-                                   "only last member of a shader storage block "
-                                   "can be defined as unsized array",
-                                   fields[i].name);
-               }
-            } else {
-               /* From GLSL ES 3.10 spec, section 4.1.9 "Arrays":
-               *
-               * "If an array is declared as the last member of a shader storage
-               * block and the size is not specified at compile-time, it is
-               * sized at run-time. In all other cases, arrays are sized only
-               * at compile-time."
-               */
-               if (state->es_shader) {
-                  _mesa_glsl_error(&loc, state, "unsized array `%s' definition: "
-                                 "only last member of a shader storage block "
-                                 "can be defined as unsized array",
-                                 fields[i].name);
-               }
-            }
-         }
+         if (var->data.mode == ir_var_shader_storage)
+            apply_memory_qualifiers(var, fields[i]);
       }
 
       if (ir_variable *earlier =
@@ -7417,6 +7530,12 @@ ast_interface_block::hir(exec_list *instructions,
        * an instance name.
        */
       assert(this->array_specifier == NULL);
+
+      unsigned component_size = block_type->contains_double() ? 8 : 4;
+      int xfb_offset =
+         layout.flags.q.explicit_xfb_offset ? (int) qual_xfb_offset : -1;
+      validate_xfb_offset_qualifier(&loc, state, xfb_offset, block_type,
+                                    component_size);
 
       for (unsigned i = 0; i < num_variables; i++) {
          ir_variable *var =
@@ -7459,13 +7578,8 @@ ast_interface_block::hir(exec_list *instructions,
             var->data.matrix_layout = fields[i].matrix_layout;
          }
 
-         if (var->data.mode == ir_var_shader_storage) {
-            var->data.image_read_only = fields[i].image_read_only;
-            var->data.image_write_only = fields[i].image_write_only;
-            var->data.image_coherent = fields[i].image_coherent;
-            var->data.image_volatile = fields[i].image_volatile;
-            var->data.image_restrict = fields[i].image_restrict;
-         }
+         if (var->data.mode == ir_var_shader_storage)
+            apply_memory_qualifiers(var, fields[i]);
 
          /* Examine var name here since var may get deleted in the next call */
          bool var_is_gl_id = is_gl_identifier(var->name);
@@ -7503,26 +7617,8 @@ ast_interface_block::hir(exec_list *instructions,
 
          if (var->type->is_unsized_array()) {
             if (var->is_in_shader_storage_block()) {
-               if (!is_unsized_array_last_element(var)) {
-                  _mesa_glsl_error(&loc, state, "unsized array `%s' definition: "
-                                   "only last member of a shader storage block "
-                                   "can be defined as unsized array",
-                                   var->name);
-               }
-               var->data.from_ssbo_unsized_array = true;
-            } else {
-               /* From GLSL ES 3.10 spec, section 4.1.9 "Arrays":
-               *
-               * "If an array is declared as the last member of a shader storage
-               * block and the size is not specified at compile-time, it is
-               * sized at run-time. In all other cases, arrays are sized only
-               * at compile-time."
-               */
-               if (state->es_shader) {
-                  _mesa_glsl_error(&loc, state, "unsized array `%s' definition: "
-                                 "only last member of a shader storage block "
-                                 "can be defined as unsized array",
-                                 var->name);
+               if (is_unsized_array_last_element(var)) {
+                  var->data.from_ssbo_unsized_array = true;
                }
             }
          }
@@ -7616,7 +7712,7 @@ ast_tcs_output_layout::hir(exec_list *instructions,
       if (!var->type->is_unsized_array() || var->data.patch)
          continue;
 
-      if (var->data.max_array_access >= num_vertices) {
+      if (var->data.max_array_access >= (int)num_vertices) {
 	 _mesa_glsl_error(&loc, state,
 			  "this tessellation control shader output layout "
 			  "specifies %u vertices, but an access to element "
@@ -7677,7 +7773,7 @@ ast_gs_input_layout::hir(exec_list *instructions,
        */
 
       if (var->type->is_unsized_array()) {
-         if (var->data.max_array_access >= num_vertices) {
+         if (var->data.max_array_access >= (int)num_vertices) {
             _mesa_glsl_error(&loc, state,
                              "this geometry shader input layout implies %u"
                              " vertices, but an access to element %u of input"

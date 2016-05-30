@@ -62,6 +62,12 @@ enum qfile {
         QFILE_FRAG_REV_FLAG,
 
         /**
+         * Stores an immediate value in the index field that will be used
+         * directly by qpu_load_imm().
+         */
+        QFILE_LOAD_IMM,
+
+        /**
          * Stores an immediate value in the index field that can be turned
          * into a small immediate field by qpu_encode_small_immediate().
          */
@@ -147,6 +153,8 @@ enum qop {
          * the destination
          */
         QOP_TEX_RESULT,
+
+        QOP_LOAD_IMM,
 };
 
 struct queued_qpu_inst {
@@ -332,6 +340,7 @@ struct vc4_vs_key {
         enum pipe_format attr_formats[8];
         bool is_coord;
         bool per_vertex_point_size;
+        bool clamp_color;
 };
 
 struct vc4_compile {
@@ -374,13 +383,10 @@ struct vc4_compile {
 
         struct qreg line_x, point_x, point_y;
         struct qreg discard;
+        struct qreg payload_FRAG_Z;
+        struct qreg payload_FRAG_W;
 
         uint8_t vattr_sizes[8];
-
-        /* Bitfield for whether a given channel of a sampler needs sRGB
-         * decode.
-         */
-        uint8_t tex_srgb_decode[VC4_MAX_TEXTURE_SAMPLERS];
 
         /**
          * Array of the VARYING_SLOT_* of all FS QFILE_VARY reads.
@@ -483,11 +489,12 @@ void qir_dump(struct vc4_compile *c);
 void qir_dump_inst(struct vc4_compile *c, struct qinst *inst);
 const char *qir_get_stage_name(enum qstage stage);
 
+void qir_validate(struct vc4_compile *c);
+
 void qir_optimize(struct vc4_compile *c);
 bool qir_opt_algebraic(struct vc4_compile *c);
 bool qir_opt_constant_folding(struct vc4_compile *c);
 bool qir_opt_copy_propagation(struct vc4_compile *c);
-bool qir_opt_cse(struct vc4_compile *c);
 bool qir_opt_dead_code(struct vc4_compile *c);
 bool qir_opt_small_immediates(struct vc4_compile *c);
 bool qir_opt_vpm(struct vc4_compile *c);
@@ -537,6 +544,8 @@ static inline struct qinst *                                             \
 qir_##name##_dest(struct vc4_compile *c, struct qreg dest,               \
                   struct qreg a)                                         \
 {                                                                        \
+        if (dest.file == QFILE_TEMP)                                     \
+                c->defs[dest.index] = NULL;                              \
         return qir_emit_nodef(c, qir_inst(QOP_##name, dest, a,           \
                                           c->undef));                    \
 }
@@ -584,6 +593,21 @@ qir_##name(struct vc4_compile *c, struct qreg dest, struct qreg a)       \
         return dest;                                                     \
 }
 
+#define QIR_PAYLOAD(name)                                                \
+static inline struct qreg                                                \
+qir_##name(struct vc4_compile *c)                                        \
+{                                                                        \
+        struct qreg *payload = &c->payload_##name;                       \
+        if (payload->file != QFILE_NULL)                                 \
+                return *payload;                                         \
+        *payload = qir_get_temp(c);                                      \
+        struct qinst *inst = qir_inst(QOP_##name, *payload,              \
+                                      c->undef, c->undef);               \
+        list_add(&inst->link, &c->instructions);                         \
+        c->defs[payload->index] = inst;                                  \
+        return *payload;                                                 \
+}
+
 QIR_ALU1(MOV)
 QIR_ALU1(FMOV)
 QIR_ALU1(MMOV)
@@ -625,8 +649,8 @@ QIR_NODST_2(TEX_T)
 QIR_NODST_2(TEX_R)
 QIR_NODST_2(TEX_B)
 QIR_NODST_2(TEX_DIRECT)
-QIR_ALU0(FRAG_Z)
-QIR_ALU0(FRAG_W)
+QIR_PAYLOAD(FRAG_Z)
+QIR_PAYLOAD(FRAG_W)
 QIR_ALU0(TEX_RESULT)
 QIR_ALU0(TLB_COLOR_READ)
 QIR_NODST_1(MS_MASK)
@@ -704,6 +728,15 @@ static inline void
 qir_VPM_WRITE(struct vc4_compile *c, struct qreg val)
 {
         qir_MOV_dest(c, qir_reg(QFILE_VPM, 0), val);
+}
+
+static inline struct qreg
+qir_LOAD_IMM(struct vc4_compile *c, uint32_t val)
+{
+        struct qreg t = qir_get_temp(c);
+        qir_emit(c, qir_inst(QOP_LOAD_IMM, t,
+                             qir_reg(QFILE_LOAD_IMM, val), c->undef));
+        return t;
 }
 
 #endif /* VC4_QIR_H */

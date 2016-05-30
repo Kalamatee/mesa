@@ -245,6 +245,7 @@ OSALIGNLINE(struct) API_STATE
     // CS - Compute Shader
     PFN_CS_FUNC             pfnCsFunc;
     uint32_t                totalThreadsInGroup;
+    uint32_t                totalSpillFillSize;
 
     // FE - Frontend State
     SWR_FRONTEND_STATE      frontendState;
@@ -356,12 +357,7 @@ typedef void(*PFN_CALC_CENTROID_BARYCENTRICS)(const BarycentricCoeffs&, SWR_PS_C
 struct BACKEND_FUNCS
 {
     PFN_BACKEND_FUNC pfnBackend;
-    PFN_CALC_PIXEL_BARYCENTRICS pfnCalcPixelBarycentrics;
-    PFN_CALC_SAMPLE_BARYCENTRICS pfnCalcSampleBarycentrics;
-    PFN_CALC_CENTROID_BARYCENTRICS pfnCalcCentroidBarycentrics;
-    PFN_OUTPUT_MERGER pfnOutputMerger;
 };
-
 
 // Draw State
 struct DRAW_STATE

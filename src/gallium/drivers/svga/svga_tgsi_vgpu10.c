@@ -1022,7 +1022,7 @@ emit_src_register(struct svga_shader_emitter_v10 *emit,
          }
       }
       else if (file == TGSI_FILE_SYSTEM_VALUE) {
-         assert(index < Elements(emit->system_value_indexes));
+         assert(index < ARRAY_SIZE(emit->system_value_indexes));
          index = emit->system_value_indexes[index];
       }
    }
@@ -1078,7 +1078,7 @@ emit_src_register(struct svga_shader_emitter_v10 *emit,
    if (operand0.operandType == VGPU10_OPERAND_TYPE_IMMEDIATE32) {
       /* Emit the four float/int in-line immediate values */
       unsigned *c;
-      assert(index < Elements(emit->immediates));
+      assert(index < ARRAY_SIZE(emit->immediates));
       assert(file == TGSI_FILE_IMMEDIATE);
       assert(swizzleX < 4);
       assert(swizzleY < 4);
@@ -1735,7 +1735,7 @@ alloc_immediate_4(struct svga_shader_emitter_v10 *emit,
 {
    unsigned n = emit->num_immediates++;
    assert(!emit->immediates_emitted);
-   assert(n < Elements(emit->immediates));
+   assert(n < ARRAY_SIZE(emit->immediates));
    emit->immediates[n][0] = imm[0];
    emit->immediates[n][1] = imm[1];
    emit->immediates[n][2] = imm[2];
@@ -1785,7 +1785,7 @@ static unsigned
 alloc_system_value_index(struct svga_shader_emitter_v10 *emit, unsigned index)
 {
    const unsigned n = emit->info.file_max[TGSI_FILE_INPUT] + 1 + index;
-   assert(index < Elements(emit->system_value_indexes));
+   assert(index < ARRAY_SIZE(emit->system_value_indexes));
    emit->system_value_indexes[index] = n;
    return n;
 }
@@ -1922,14 +1922,14 @@ emit_vgpu10_property(struct svga_shader_emitter_v10 *emit,
 
    switch (prop->Property.PropertyName) {
    case TGSI_PROPERTY_GS_INPUT_PRIM:
-      assert(prop->u[0].Data < Elements(primType));
+      assert(prop->u[0].Data < ARRAY_SIZE(primType));
       emit->gs.prim_type = primType[prop->u[0].Data];
       assert(emit->gs.prim_type != VGPU10_PRIMITIVE_UNDEFINED);
       emit->gs.input_size = inputArraySize[emit->gs.prim_type];
       break;
 
    case TGSI_PROPERTY_GS_OUTPUT_PRIM:
-      assert(prop->u[0].Data < Elements(primTopology));
+      assert(prop->u[0].Data < ARRAY_SIZE(primTopology));
       emit->gs.prim_topology = primTopology[prop->u[0].Data];
       assert(emit->gs.prim_topology != VGPU10_PRIMITIVE_TOPOLOGY_UNDEFINED);
       break;
@@ -2269,7 +2269,7 @@ emit_vgpu10_declaration(struct svga_shader_emitter_v10 *emit,
           * have linked due to constbuf index out of bounds, so we shouldn't
           * have reached here.
           */
-         assert(constbuf < Elements(emit->num_shader_consts));
+         assert(constbuf < ARRAY_SIZE(emit->num_shader_consts));
 
          num_consts = MAX2(emit->num_shader_consts[constbuf],
                            decl->Range.Last + 1);
@@ -2490,7 +2490,7 @@ emit_output_declarations(struct svga_shader_emitter_v10 *emit)
 
       if (emit->unit == PIPE_SHADER_FRAGMENT) {
          if (semantic_name == TGSI_SEMANTIC_COLOR) {
-            assert(semantic_index < Elements(emit->fs.color_out_index));
+            assert(semantic_index < ARRAY_SIZE(emit->fs.color_out_index));
 
             emit->fs.color_out_index[semantic_index] = index;
 
@@ -2875,7 +2875,7 @@ emit_constant_declaration(struct svga_shader_emitter_v10 *emit)
    }
 
    /* Declare remaining constant buffers (UBOs) */
-   for (i = 1; i < Elements(emit->num_shader_consts); i++) {
+   for (i = 1; i < ARRAY_SIZE(emit->num_shader_consts); i++) {
       if (emit->num_shader_consts[i] > 0) {
          begin_emit_instruction(emit);
          emit_dword(emit, opcode0.value);
@@ -5049,20 +5049,20 @@ end_tex_swizzle(struct svga_shader_emitter_v10 *emit,
       /* Swizzle w/out zero/one terms */
       struct tgsi_full_src_register src_swizzled =
          swizzle_src(&swz->tmp_src,
-                     swz_r < PIPE_SWIZZLE_ZERO ? swz_r : PIPE_SWIZZLE_RED,
-                     swz_g < PIPE_SWIZZLE_ZERO ? swz_g : PIPE_SWIZZLE_GREEN,
-                     swz_b < PIPE_SWIZZLE_ZERO ? swz_b : PIPE_SWIZZLE_BLUE,
-                     swz_a < PIPE_SWIZZLE_ZERO ? swz_a : PIPE_SWIZZLE_ALPHA);
+                     swz_r < PIPE_SWIZZLE_0 ? swz_r : PIPE_SWIZZLE_X,
+                     swz_g < PIPE_SWIZZLE_0 ? swz_g : PIPE_SWIZZLE_Y,
+                     swz_b < PIPE_SWIZZLE_0 ? swz_b : PIPE_SWIZZLE_Z,
+                     swz_a < PIPE_SWIZZLE_0 ? swz_a : PIPE_SWIZZLE_W);
 
       /* MOV dst, color(tmp).<swizzle> */
       emit_instruction_op1(emit, VGPU10_OPCODE_MOV,
                            swz->inst_dst, &src_swizzled, FALSE);
 
       /* handle swizzle zero terms */
-      writemask_0 = (((swz_r == PIPE_SWIZZLE_ZERO) << 0) |
-                     ((swz_g == PIPE_SWIZZLE_ZERO) << 1) |
-                     ((swz_b == PIPE_SWIZZLE_ZERO) << 2) |
-                     ((swz_a == PIPE_SWIZZLE_ZERO) << 3));
+      writemask_0 = (((swz_r == PIPE_SWIZZLE_0) << 0) |
+                     ((swz_g == PIPE_SWIZZLE_0) << 1) |
+                     ((swz_b == PIPE_SWIZZLE_0) << 2) |
+                     ((swz_a == PIPE_SWIZZLE_0) << 3));
 
       if (writemask_0) {
          struct tgsi_full_src_register zero = int_tex ?
@@ -5077,10 +5077,10 @@ end_tex_swizzle(struct svga_shader_emitter_v10 *emit,
       }
 
       /* handle swizzle one terms */
-      writemask_1 = (((swz_r == PIPE_SWIZZLE_ONE) << 0) |
-                     ((swz_g == PIPE_SWIZZLE_ONE) << 1) |
-                     ((swz_b == PIPE_SWIZZLE_ONE) << 2) |
-                     ((swz_a == PIPE_SWIZZLE_ONE) << 3));
+      writemask_1 = (((swz_r == PIPE_SWIZZLE_1) << 0) |
+                     ((swz_g == PIPE_SWIZZLE_1) << 1) |
+                     ((swz_b == PIPE_SWIZZLE_1) << 2) |
+                     ((swz_a == PIPE_SWIZZLE_1) << 3));
 
       if (writemask_1) {
          struct tgsi_full_src_register one = int_tex ?
@@ -6295,7 +6295,7 @@ alloc_common_immediates(struct svga_shader_emitter_v10 *emit)
          alloc_immediate_int4(emit, 22, 30, 0, 0);
    }
 
-   assert(n <= Elements(emit->common_immediate_pos));
+   assert(n <= ARRAY_SIZE(emit->common_immediate_pos));
    emit->num_common_immediates = n;
 }
 

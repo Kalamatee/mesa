@@ -504,14 +504,20 @@ static boolean do_winsys_init(struct radeon_drm_winsys *ws)
         return FALSE;
     }
 
-    if (radeon_get_drm_value(ws->fd, RADEON_INFO_SI_TILE_MODE_ARRAY, NULL,
-                             ws->info.si_tile_mode_array)) {
-        ws->info.si_tile_mode_array_valid = TRUE;
+    if (ws->info.chip_class == CIK) {
+        if (!radeon_get_drm_value(ws->fd, RADEON_INFO_CIK_MACROTILE_MODE_ARRAY, NULL,
+                                  ws->info.cik_macrotile_mode_array)) {
+            fprintf(stderr, "radeon: Kernel 3.13 is required for CIK support.\n");
+            return FALSE;
+        }
     }
 
-    if (radeon_get_drm_value(ws->fd, RADEON_INFO_CIK_MACROTILE_MODE_ARRAY, NULL,
-                             ws->info.cik_macrotile_mode_array)) {
-        ws->info.cik_macrotile_mode_array_valid = TRUE;
+    if (ws->info.chip_class >= SI) {
+        if (!radeon_get_drm_value(ws->fd, RADEON_INFO_SI_TILE_MODE_ARRAY, NULL,
+                                  ws->info.si_tile_mode_array)) {
+            fprintf(stderr, "radeon: Kernel 3.10 is required for SI support.\n");
+            return FALSE;
+        }
     }
 
     /* Hawaii with old firmware needs type2 nop packet.
@@ -828,7 +834,7 @@ radeon_drm_winsys_create(int fd, radeon_screen_create_t screen_create)
     list_inithead(&ws->va_holes);
 
     /* TTM aligns the BO size to the CPU page size */
-    ws->size_align = sysconf(_SC_PAGESIZE);
+    ws->info.gart_page_size = sysconf(_SC_PAGESIZE);
 
     ws->ncs = 0;
     pipe_semaphore_init(&ws->cs_queued, 0);

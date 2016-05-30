@@ -35,13 +35,12 @@
 static inline unsigned evergreen_array_mode(unsigned mode)
 {
 	switch (mode) {
+	default:
 	case RADEON_SURF_MODE_LINEAR_ALIGNED:	return V_028C70_ARRAY_LINEAR_ALIGNED;
 		break;
 	case RADEON_SURF_MODE_1D:		return V_028C70_ARRAY_1D_TILED_THIN1;
 		break;
 	case RADEON_SURF_MODE_2D:		return V_028C70_ARRAY_2D_TILED_THIN1;
-	default:
-	case RADEON_SURF_MODE_LINEAR:		return V_028C70_ARRAY_LINEAR_GENERAL;
 	}
 }
 
@@ -213,13 +212,14 @@ static uint32_t r600_translate_dbformat(enum pipe_format format)
 
 static bool r600_is_sampler_format_supported(struct pipe_screen *screen, enum pipe_format format)
 {
-	return r600_translate_texformat(screen, format, NULL, NULL, NULL) != ~0U;
+	return r600_translate_texformat(screen, format, NULL, NULL, NULL,
+                                   FALSE) != ~0U;
 }
 
 static bool r600_is_colorbuffer_format_supported(enum chip_class chip, enum pipe_format format)
 {
-	return r600_translate_colorformat(chip, format) != ~0U &&
-		r600_translate_colorswap(format) != ~0U;
+	return r600_translate_colorformat(chip, format, FALSE) != ~0U &&
+		r600_translate_colorswap(format, FALSE) != ~0U;
 }
 
 static bool r600_is_zs_format_supported(enum pipe_format format)
@@ -677,6 +677,7 @@ evergreen_create_sampler_view_custom(struct pipe_context *ctx,
 	unsigned base_level, first_level, last_level;
 	unsigned dim, last_layer;
 	uint64_t va;
+	bool do_endian_swap = FALSE;
 
 	if (!view)
 		return NULL;
@@ -722,16 +723,19 @@ evergreen_create_sampler_view_custom(struct pipe_context *ctx,
 		}
 	}
 
+	if (R600_BIG_ENDIAN)
+		do_endian_swap = !(tmp->is_depth && !tmp->is_flushing_texture);
+
 	format = r600_translate_texformat(ctx->screen, pipe_format,
 					  swizzle,
-					  &word4, &yuv_format);
+					  &word4, &yuv_format, do_endian_swap);
 	assert(format != ~0);
 	if (format == ~0) {
 		FREE(view);
 		return NULL;
 	}
 
-	endian = r600_colorformat_endian_swap(format);
+	endian = r600_colorformat_endian_swap(format, do_endian_swap);
 
 	base_level = 0;
 	first_level = state->u.tex.first_level;
@@ -753,6 +757,7 @@ evergreen_create_sampler_view_custom(struct pipe_context *ctx,
 	non_disp_tiling = tmp->non_disp_tiling;
 
 	switch (surflevel[base_level].mode) {
+	default:
 	case RADEON_SURF_MODE_LINEAR_ALIGNED:
 		array_mode = V_028C70_ARRAY_LINEAR_ALIGNED;
 		break;
@@ -761,10 +766,6 @@ evergreen_create_sampler_view_custom(struct pipe_context *ctx,
 		break;
 	case RADEON_SURF_MODE_1D:
 		array_mode = V_028C70_ARRAY_1D_TILED_THIN1;
-		break;
-	case RADEON_SURF_MODE_LINEAR:
-	default:
-		array_mode = V_028C70_ARRAY_LINEAR_GENERAL;
 		break;
 	}
 	macro_aspect = tmp->surface.mtilea;
@@ -943,9 +944,9 @@ void evergreen_init_color_surface_rat(struct r600_context *rctx,
 {
 	struct pipe_resource *pipe_buffer = surf->base.texture;
 	unsigned format = r600_translate_colorformat(rctx->b.chip_class,
-						     surf->base.format);
-	unsigned endian = r600_colorformat_endian_swap(format);
-	unsigned swap = r600_translate_colorswap(surf->base.format);
+						     surf->base.format, FALSE);
+	unsigned endian = r600_colorformat_endian_swap(format, FALSE);
+	unsigned swap = r600_translate_colorswap(surf->base.format, FALSE);
 	unsigned block_size =
 		align(util_format_get_blocksize(pipe_buffer->format), 4);
 	unsigned pitch_alignment =
@@ -998,17 +999,11 @@ void evergreen_init_color_surface(struct r600_context *rctx,
 	unsigned non_disp_tiling, macro_aspect, tile_split, bankh, bankw, fmask_bankh, nbanks;
 	const struct util_format_description *desc;
 	int i;
-	bool blend_clamp = 0, blend_bypass = 0;
+	bool blend_clamp = 0, blend_bypass = 0, do_endian_swap = FALSE;
 
 	offset = rtex->surface.level[level].offset;
-	if (rtex->surface.level[level].mode == RADEON_SURF_MODE_LINEAR) {
-		assert(surf->base.u.tex.first_layer == surf->base.u.tex.last_layer);
-		offset += rtex->surface.level[level].slice_size *
-			  surf->base.u.tex.first_layer;
-		color_view = 0;
-	} else
-		color_view = S_028C6C_SLICE_START(surf->base.u.tex.first_layer) |
-			     S_028C6C_SLICE_MAX(surf->base.u.tex.last_layer);
+	color_view = S_028C6C_SLICE_START(surf->base.u.tex.first_layer) |
+		     S_028C6C_SLICE_MAX(surf->base.u.tex.last_layer);
 
 	pitch = (rtex->surface.level[level].nblk_x) / 8 - 1;
 	slice = (rtex->surface.level[level].nblk_x * rtex->surface.level[level].nblk_y) / 64;
@@ -1017,6 +1012,7 @@ void evergreen_init_color_surface(struct r600_context *rctx,
 	}
 	color_info = 0;
 	switch (rtex->surface.level[level].mode) {
+	default:
 	case RADEON_SURF_MODE_LINEAR_ALIGNED:
 		color_info = S_028C70_ARRAY_MODE(V_028C70_ARRAY_LINEAR_ALIGNED);
 		non_disp_tiling = 1;
@@ -1028,11 +1024,6 @@ void evergreen_init_color_surface(struct r600_context *rctx,
 	case RADEON_SURF_MODE_2D:
 		color_info = S_028C70_ARRAY_MODE(V_028C70_ARRAY_2D_TILED_THIN1);
 		non_disp_tiling = rtex->non_disp_tiling;
-		break;
-	case RADEON_SURF_MODE_LINEAR:
-	default:
-		color_info = S_028C70_ARRAY_MODE(V_028C70_ARRAY_LINEAR_GENERAL);
-		non_disp_tiling = 1;
 		break;
 	}
 	tile_split = rtex->surface.tile_split;
@@ -1072,7 +1063,7 @@ void evergreen_init_color_surface(struct r600_context *rctx,
 
 	if (rctx->b.chip_class == CAYMAN) {
 		color_attrib |=	S_028C74_FORCE_DST_ALPHA_1(desc->swizzle[3] ==
-							   UTIL_FORMAT_SWIZZLE_1);
+							   PIPE_SWIZZLE_1);
 
 		if (rtex->resource.b.b.nr_samples > 1) {
 			unsigned log_samples = util_logbase2(rtex->resource.b.b.nr_samples);
@@ -1096,13 +1087,17 @@ void evergreen_init_color_surface(struct r600_context *rctx,
 			ntype = V_028C70_NUMBER_UINT;
 	}
 
-	format = r600_translate_colorformat(rctx->b.chip_class, surf->base.format);
+	if (R600_BIG_ENDIAN)
+		do_endian_swap = !(rtex->is_depth && !rtex->is_flushing_texture);
+
+	format = r600_translate_colorformat(rctx->b.chip_class, surf->base.format,
+			                              do_endian_swap);
 	assert(format != ~0);
 
-	swap = r600_translate_colorswap(surf->base.format);
+	swap = r600_translate_colorswap(surf->base.format, do_endian_swap);
 	assert(swap != ~0);
 
-	endian = r600_colorformat_endian_swap(format);
+	endian = r600_colorformat_endian_swap(format, do_endian_swap);
 
 	/* blend clamp should be set for all NORM/SRGB types */
 	if (ntype == V_028C70_NUMBER_UNORM || ntype == V_028C70_NUMBER_SNORM ||
@@ -1192,7 +1187,6 @@ static void evergreen_init_depth_surface(struct r600_context *rctx,
 		break;
 	case RADEON_SURF_MODE_1D:
 	case RADEON_SURF_MODE_LINEAR_ALIGNED:
-	case RADEON_SURF_MODE_LINEAR:
 	default:
 		array_mode = V_028C70_ARRAY_1D_TILED_THIN1;
 		break;
@@ -1510,18 +1504,18 @@ static void evergreen_emit_msaa_state(struct r600_context *rctx, int nr_samples,
 		nr_samples = 0;
 		break;
 	case 2:
-		radeon_set_context_reg_seq(cs, R_028C1C_PA_SC_AA_SAMPLE_LOCS_0, Elements(eg_sample_locs_2x));
-		radeon_emit_array(cs, eg_sample_locs_2x, Elements(eg_sample_locs_2x));
+		radeon_set_context_reg_seq(cs, R_028C1C_PA_SC_AA_SAMPLE_LOCS_0, ARRAY_SIZE(eg_sample_locs_2x));
+		radeon_emit_array(cs, eg_sample_locs_2x, ARRAY_SIZE(eg_sample_locs_2x));
 		max_dist = eg_max_dist_2x;
 		break;
 	case 4:
-		radeon_set_context_reg_seq(cs, R_028C1C_PA_SC_AA_SAMPLE_LOCS_0, Elements(eg_sample_locs_4x));
-		radeon_emit_array(cs, eg_sample_locs_4x, Elements(eg_sample_locs_4x));
+		radeon_set_context_reg_seq(cs, R_028C1C_PA_SC_AA_SAMPLE_LOCS_0, ARRAY_SIZE(eg_sample_locs_4x));
+		radeon_emit_array(cs, eg_sample_locs_4x, ARRAY_SIZE(eg_sample_locs_4x));
 		max_dist = eg_max_dist_4x;
 		break;
 	case 8:
-		radeon_set_context_reg_seq(cs, R_028C1C_PA_SC_AA_SAMPLE_LOCS_0, Elements(sample_locs_8x));
-		radeon_emit_array(cs, sample_locs_8x, Elements(sample_locs_8x));
+		radeon_set_context_reg_seq(cs, R_028C1C_PA_SC_AA_SAMPLE_LOCS_0, ARRAY_SIZE(sample_locs_8x));
+		radeon_emit_array(cs, sample_locs_8x, ARRAY_SIZE(sample_locs_8x));
 		max_dist = max_dist_8x;
 		break;
 	}
@@ -1742,8 +1736,8 @@ static void evergreen_emit_db_state(struct r600_context *rctx, struct r600_atom 
 		radeon_set_context_reg(cs, R_028014_DB_HTILE_DATA_BASE, a->rsurf->db_htile_data_base);
 		reloc_idx = radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx, rtex->htile_buffer,
 						  RADEON_USAGE_READWRITE, RADEON_PRIO_HTILE);
-		cs->buf[cs->cdw++] = PKT3(PKT3_NOP, 0, 0);
-		cs->buf[cs->cdw++] = reloc_idx;
+		radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+		radeon_emit(cs, reloc_idx);
 	} else {
 		radeon_set_context_reg(cs, R_028ABC_DB_HTILE_SURFACE, 0);
 		radeon_set_context_reg(cs, R_028AC8_DB_PRELOAD_CONTROL, 0);
@@ -2994,6 +2988,10 @@ void evergreen_update_ps_state(struct pipe_context *ctx, struct r600_pipe_shader
 		if (sid) {
 			tmp = S_028644_SEMANTIC(sid);
 
+			/* D3D 9 behaviour. GL is undefined */
+			if (rshader->input[i].name == TGSI_SEMANTIC_COLOR && rshader->input[i].sid == 0)
+				tmp |= S_028644_DEFAULT_VAL(3);
+
 			if (rshader->input[i].name == TGSI_SEMANTIC_POSITION ||
 				rshader->input[i].interpolate == TGSI_INTERPOLATE_CONSTANT ||
 				(rshader->input[i].interpolate == TGSI_INTERPOLATE_COLOR &&
@@ -3382,9 +3380,6 @@ static void evergreen_dma_copy_tile(struct r600_context *rctx,
 
 	dst_mode = rdst->surface.level[dst_level].mode;
 	src_mode = rsrc->surface.level[src_level].mode;
-	/* downcast linear aligned to linear to simplify test */
-	src_mode = src_mode == RADEON_SURF_MODE_LINEAR_ALIGNED ? RADEON_SURF_MODE_LINEAR : src_mode;
-	dst_mode = dst_mode == RADEON_SURF_MODE_LINEAR_ALIGNED ? RADEON_SURF_MODE_LINEAR : dst_mode;
 	assert(dst_mode != src_mode);
 
 	/* non_disp_tiling bit needs to be set for depth, stencil, and fmask surfaces */
@@ -3397,7 +3392,7 @@ static void evergreen_dma_copy_tile(struct r600_context *rctx,
 	pitch_tile_max = ((pitch / bpp) / 8) - 1;
 	nbanks = eg_num_banks(rctx->screen->b.info.r600_num_banks);
 
-	if (dst_mode == RADEON_SURF_MODE_LINEAR) {
+	if (dst_mode == RADEON_SURF_MODE_LINEAR_ALIGNED) {
 		/* T2L */
 		array_mode = evergreen_array_mode(src_mode);
 		slice_tile_max = (rsrc->surface.level[src_level].nblk_x * rsrc->surface.level[src_level].nblk_y) / (8*8);
@@ -3451,7 +3446,7 @@ static void evergreen_dma_copy_tile(struct r600_context *rctx,
 
 	size = (copy_height * pitch) / 4;
 	ncopy = (size / EG_DMA_COPY_MAX_SIZE) + !!(size % EG_DMA_COPY_MAX_SIZE);
-	r600_need_dma_space(&rctx->b, ncopy * 9);
+	r600_need_dma_space(&rctx->b, ncopy * 9, &rdst->resource, &rsrc->resource);
 
 	for (i = 0; i < ncopy; i++) {
 		cheight = copy_height;
@@ -3464,21 +3459,22 @@ static void evergreen_dma_copy_tile(struct r600_context *rctx,
 				      RADEON_USAGE_READ, RADEON_PRIO_SDMA_TEXTURE);
 		radeon_add_to_buffer_list(&rctx->b, &rctx->b.dma, &rdst->resource,
 				      RADEON_USAGE_WRITE, RADEON_PRIO_SDMA_TEXTURE);
-		cs->buf[cs->cdw++] = DMA_PACKET(DMA_PACKET_COPY, sub_cmd, size);
-		cs->buf[cs->cdw++] = base >> 8;
-		cs->buf[cs->cdw++] = (detile << 31) | (array_mode << 27) |
-					(lbpp << 24) | (bank_h << 21) |
-					(bank_w << 18) | (mt_aspect << 16);
-		cs->buf[cs->cdw++] = (pitch_tile_max << 0) | ((height - 1) << 16);
-		cs->buf[cs->cdw++] = (slice_tile_max << 0);
-		cs->buf[cs->cdw++] = (x << 0) | (z << 18);
-		cs->buf[cs->cdw++] = (y << 0) | (tile_split << 21) | (nbanks << 25) | (non_disp_tiling << 28);
-		cs->buf[cs->cdw++] = addr & 0xfffffffc;
-		cs->buf[cs->cdw++] = (addr >> 32UL) & 0xff;
+		radeon_emit(cs, DMA_PACKET(DMA_PACKET_COPY, sub_cmd, size));
+		radeon_emit(cs, base >> 8);
+		radeon_emit(cs, (detile << 31) | (array_mode << 27) |
+				(lbpp << 24) | (bank_h << 21) |
+				(bank_w << 18) | (mt_aspect << 16));
+		radeon_emit(cs, (pitch_tile_max << 0) | ((height - 1) << 16));
+		radeon_emit(cs, (slice_tile_max << 0));
+		radeon_emit(cs, (x << 0) | (z << 18));
+		radeon_emit(cs, (y << 0) | (tile_split << 21) | (nbanks << 25) | (non_disp_tiling << 28));
+		radeon_emit(cs, addr & 0xfffffffc);
+		radeon_emit(cs, (addr >> 32UL) & 0xff);
 		copy_height -= cheight;
 		addr += cheight * pitch;
 		y += cheight;
 	}
+	r600_dma_emit_wait_idle(&rctx->b);
 }
 
 static void evergreen_dma_copy(struct pipe_context *ctx,
@@ -3506,14 +3502,10 @@ static void evergreen_dma_copy(struct pipe_context *ctx,
 		return;
 	}
 
-	if (src->format != dst->format || src_box->depth > 1 ||
-	    (rdst->dirty_level_mask | rdst->stencil_dirty_level_mask) & (1 << dst_level)) {
+	if (src_box->depth > 1 ||
+	    !r600_prepare_for_dma_blit(&rctx->b, rdst, dst_level, dstx, dsty,
+					dstz, rsrc, src_level, src_box))
 		goto fallback;
-	}
-
-	if (rsrc->dirty_level_mask & (1 << src_level)) {
-		ctx->flush_resource(ctx, src);
-	}
 
 	src_x = util_format_get_nblocksx(src->format, src_box->x);
 	dst_x = util_format_get_nblocksx(src->format, dst_x);
@@ -3529,9 +3521,6 @@ static void evergreen_dma_copy(struct pipe_context *ctx,
 
 	dst_mode = rdst->surface.level[dst_level].mode;
 	src_mode = rsrc->surface.level[src_level].mode;
-	/* downcast linear aligned to linear to simplify test */
-	src_mode = src_mode == RADEON_SURF_MODE_LINEAR_ALIGNED ? RADEON_SURF_MODE_LINEAR : src_mode;
-	dst_mode = dst_mode == RADEON_SURF_MODE_LINEAR_ALIGNED ? RADEON_SURF_MODE_LINEAR : dst_mode;
 
 	if (src_pitch != dst_pitch || src_box->x || dst_x || src_w != dst_w) {
 		/* FIXME evergreen can do partial blit */

@@ -88,10 +88,11 @@ nir_ssa_undef(nir_builder *build, unsigned num_components, unsigned bit_size)
 }
 
 static inline nir_ssa_def *
-nir_build_imm(nir_builder *build, unsigned num_components, nir_const_value value)
+nir_build_imm(nir_builder *build, unsigned num_components,
+              unsigned bit_size, nir_const_value value)
 {
    nir_load_const_instr *load_const =
-      nir_load_const_instr_create(build->shader, num_components, 32);
+      nir_load_const_instr_create(build->shader, num_components, bit_size);
    if (!load_const)
       return NULL;
 
@@ -110,7 +111,18 @@ nir_imm_float(nir_builder *build, float x)
    memset(&v, 0, sizeof(v));
    v.f32[0] = x;
 
-   return nir_build_imm(build, 1, v);
+   return nir_build_imm(build, 1, 32, v);
+}
+
+static inline nir_ssa_def *
+nir_imm_double(nir_builder *build, double x)
+{
+   nir_const_value v;
+
+   memset(&v, 0, sizeof(v));
+   v.f64[0] = x;
+
+   return nir_build_imm(build, 1, 64, v);
 }
 
 static inline nir_ssa_def *
@@ -124,7 +136,7 @@ nir_imm_vec4(nir_builder *build, float x, float y, float z, float w)
    v.f32[2] = z;
    v.f32[3] = w;
 
-   return nir_build_imm(build, 4, v);
+   return nir_build_imm(build, 4, 32, v);
 }
 
 static inline nir_ssa_def *
@@ -135,7 +147,7 @@ nir_imm_int(nir_builder *build, int x)
    memset(&v, 0, sizeof(v));
    v.i32[0] = x;
 
-   return nir_build_imm(build, 1, v);
+   return nir_build_imm(build, 1, 32, v);
 }
 
 static inline nir_ssa_def *
@@ -149,7 +161,7 @@ nir_imm_ivec4(nir_builder *build, int x, int y, int z, int w)
    v.i32[2] = z;
    v.i32[3] = w;
 
-   return nir_build_imm(build, 4, v);
+   return nir_build_imm(build, 4, 32, v);
 }
 
 static inline nir_ssa_def *
@@ -219,36 +231,6 @@ nir_build_alu(nir_builder *build, nir_op op, nir_ssa_def *src0,
    nir_builder_instr_insert(build, &instr->instr);
 
    return &instr->dest.dest.ssa;
-}
-
-#define ALU1(op)                                                          \
-static inline nir_ssa_def *                                               \
-nir_##op(nir_builder *build, nir_ssa_def *src0)                           \
-{                                                                         \
-   return nir_build_alu(build, nir_op_##op, src0, NULL, NULL, NULL);      \
-}
-
-#define ALU2(op)                                                          \
-static inline nir_ssa_def *                                               \
-nir_##op(nir_builder *build, nir_ssa_def *src0, nir_ssa_def *src1)        \
-{                                                                         \
-   return nir_build_alu(build, nir_op_##op, src0, src1, NULL, NULL);      \
-}
-
-#define ALU3(op)                                                          \
-static inline nir_ssa_def *                                               \
-nir_##op(nir_builder *build, nir_ssa_def *src0,                           \
-         nir_ssa_def *src1, nir_ssa_def *src2)                            \
-{                                                                         \
-   return nir_build_alu(build, nir_op_##op, src0, src1, src2, NULL);      \
-}
-
-#define ALU4(op)                                                          \
-static inline nir_ssa_def *                                               \
-nir_##op(nir_builder *build, nir_ssa_def *src0,                           \
-         nir_ssa_def *src1, nir_ssa_def *src2, nir_ssa_def *src3)         \
-{                                                                         \
-   return nir_build_alu(build, nir_op_##op, src0, src1, src2, src3);      \
 }
 
 #include "nir_builder_opcodes.h"
@@ -342,6 +324,20 @@ nir_channel(nir_builder *b, nir_ssa_def *def, unsigned c)
    return nir_swizzle(b, def, swizzle, 1, false);
 }
 
+static inline nir_ssa_def *
+nir_channels(nir_builder *b, nir_ssa_def *def, unsigned mask)
+{
+   unsigned num_channels = 0, swizzle[4] = { 0, 0, 0, 0 };
+
+   for (unsigned i = 0; i < 4; i++) {
+      if ((mask & (1 << i)) == 0)
+         continue;
+      swizzle[num_channels++] = i;
+   }
+
+   return nir_swizzle(b, def, swizzle, num_channels, false);
+}
+
 /**
  * Turns a nir_src into a nir_ssa_def * so it can be passed to
  * nir_build_alu()-based builder calls.
@@ -391,7 +387,7 @@ nir_load_var(nir_builder *build, nir_variable *var)
    load->num_components = num_components;
    load->variables[0] = nir_deref_var_create(load, var);
    nir_ssa_dest_init(&load->instr, &load->dest, num_components,
-                     glsl_get_bit_size(glsl_get_base_type(var->type)), NULL);
+                     glsl_get_bit_size(var->type), NULL);
    nir_builder_instr_insert(build, &load->instr);
    return &load->dest.ssa;
 }

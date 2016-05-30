@@ -23,6 +23,7 @@
 
 #define NVC0_MAX_BUFFERS 32
 
+#define NVC0_MAX_IMAGES 8
 
 struct nvc0_context;
 
@@ -64,7 +65,6 @@ struct nvc0_screen {
    int num_occlusion_queries_active;
 
    struct nouveau_bo *text;
-   struct nouveau_bo *parm;       /* for COMPUTE */
    struct nouveau_bo *uniform_bo;
    struct nouveau_bo *tls;
    struct nouveau_bo *txc; /* TIC (offset 0) and TSC (65536) */

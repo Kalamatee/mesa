@@ -43,12 +43,12 @@ static unsigned si_ce_needed_cs_space(void)
 	unsigned space = 0;
 
 	space += si_descriptor_list_cs_space(SI_NUM_CONST_BUFFERS, 4);
-	space += si_descriptor_list_cs_space(SI_NUM_RW_BUFFERS, 4);
 	space += si_descriptor_list_cs_space(SI_NUM_SHADER_BUFFERS, 4);
 	space += si_descriptor_list_cs_space(SI_NUM_SAMPLERS, 16);
 	space += si_descriptor_list_cs_space(SI_NUM_IMAGES, 8);
-
 	space *= SI_NUM_SHADERS;
+
+	space += si_descriptor_list_cs_space(SI_NUM_RW_BUFFERS, 4);
 
 	/* Increment CE counter packet */
 	space += 2;
@@ -64,7 +64,7 @@ void si_need_cs_space(struct si_context *ctx)
 	struct radeon_winsys_cs *dma = ctx->b.dma.cs;
 
 	/* Flush the DMA IB if it's not empty. */
-	if (dma && dma->cdw)
+	if (radeon_emitted(dma, 0))
 		ctx->b.dma.flush(ctx, RADEON_FLUSH_ASYNC, NULL);
 
 	/* There are two memory usage counters in the winsys for all buffers
@@ -102,7 +102,7 @@ void si_context_gfx_flush(void *context, unsigned flags,
 
 	ctx->gfx_flush_in_progress = true;
 
-	if (cs->cdw == ctx->b.initial_gfx_cs_size &&
+	if (!radeon_emitted(cs, ctx->b.initial_gfx_cs_size) &&
 	    (!fence || ctx->last_gfx_fence)) {
 		if (fence)
 			ws->fence_reference(fence, ctx->last_gfx_fence);
@@ -114,12 +114,13 @@ void si_context_gfx_flush(void *context, unsigned flags,
 
 	r600_preflush_suspend_features(&ctx->b);
 
-	ctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_FRAMEBUFFER |
-			SI_CONTEXT_INV_VMEM_L1 |
-			SI_CONTEXT_INV_GLOBAL_L2 |
-			SI_CONTEXT_CS_PARTIAL_FLUSH |
-			/* this is probably not needed anymore */
+	ctx->b.flags |= SI_CONTEXT_CS_PARTIAL_FLUSH |
 			SI_CONTEXT_PS_PARTIAL_FLUSH;
+	/* The kernel doesn't flush TC for VI correctly (need TC_WB_ACTION_ENA). */
+	if (ctx->b.chip_class == VI)
+		ctx->b.flags |= SI_CONTEXT_INV_GLOBAL_L2 |
+				SI_CONTEXT_INV_VMEM_L1;
+
 	si_emit_cache_flush(ctx, NULL);
 
 	/* force to keep tiling flags */
@@ -184,13 +185,12 @@ void si_begin_new_cs(struct si_context *ctx)
 	if (ctx->trace_buf)
 		si_trace_emit(ctx);
 
-	/* Flush read caches at the beginning of CS. */
-	ctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_FRAMEBUFFER |
-			SI_CONTEXT_INV_VMEM_L1 |
-			SI_CONTEXT_INV_GLOBAL_L2 |
-			SI_CONTEXT_INV_SMEM_L1 |
-			SI_CONTEXT_INV_ICACHE |
-			R600_CONTEXT_START_PIPELINE_STATS;
+	/* Flush read caches at the beginning of CS not flushed by the kernel. */
+	if (ctx->b.chip_class >= CIK)
+		ctx->b.flags |= SI_CONTEXT_INV_SMEM_L1 |
+				SI_CONTEXT_INV_ICACHE;
+
+	ctx->b.flags |= R600_CONTEXT_START_PIPELINE_STATS;
 
 	/* set all valid group as dirty so they get reemited on
 	 * next draw command
@@ -201,6 +201,11 @@ void si_begin_new_cs(struct si_context *ctx)
 	si_pm4_emit(ctx, ctx->init_config);
 	if (ctx->init_config_gs_rings)
 		si_pm4_emit(ctx, ctx->init_config_gs_rings);
+
+	if (ctx->ce_preamble_ib)
+		si_ce_enable_loads(ctx->ce_preamble_ib);
+	else if (ctx->ce_ib)
+		si_ce_enable_loads(ctx->ce_ib);
 
 	ctx->framebuffer.dirty_cbufs = (1 << 8) - 1;
 	ctx->framebuffer.dirty_zsbuf = true;

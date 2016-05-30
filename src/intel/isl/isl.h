@@ -41,6 +41,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "c99_compat.h"
 #include "util/macros.h"
 
 #ifdef __cplusplus
@@ -58,6 +59,10 @@ struct brw_image_param;
  * `gcc -DISL_DEV_GEN(dev)=9 ...`.
  */
 #define ISL_DEV_GEN(__dev) ((__dev)->info->gen)
+#define ISL_DEV_GEN_SANITIZE(__dev)
+#else
+#define ISL_DEV_GEN_SANITIZE(__dev) \
+   (assert(ISL_DEV_GEN(__dev) == (__dev)->info->gen))
 #endif
 
 #ifndef ISL_DEV_IS_HASWELL
@@ -76,6 +81,10 @@ struct brw_image_param;
  * `gcc -DISL_DEV_USE_SEPARATE_STENCIL(dev)=1 ...`.
  */
 #define ISL_DEV_USE_SEPARATE_STENCIL(__dev) ((__dev)->use_separate_stencil)
+#define ISL_DEV_USE_SEPARATE_STENCIL_SANITIZE(__dev)
+#else
+#define ISL_DEV_USE_SEPARATE_STENCIL_SANITIZE(__dev) \
+   (assert(ISL_DEV_USE_SEPARATE_STENCIL(__dev) == (__dev)->use_separate_stencil))
 #endif
 
 /**
@@ -127,6 +136,7 @@ enum isl_format {
    ISL_FORMAT_R16G16B16A16_USCALED =                           148,
    ISL_FORMAT_R32G32_SSCALED =                                 149,
    ISL_FORMAT_R32G32_USCALED =                                 150,
+   ISL_FORMAT_R32G32_FLOAT_LD =                                151,
    ISL_FORMAT_R32G32_SFIXED =                                  160,
    ISL_FORMAT_R64_PASSTHRU =                                   161,
    ISL_FORMAT_B8G8R8A8_UNORM =                                 192,
@@ -306,6 +316,34 @@ enum isl_format {
    ISL_FORMAT_R8G8B8_UINT =                                    456,
    ISL_FORMAT_R8G8B8_SINT =                                    457,
    ISL_FORMAT_RAW =                                            511,
+   ISL_FORMAT_ASTC_LDR_2D_4X4_U8SRGB =                         512,
+   ISL_FORMAT_ASTC_LDR_2D_5X4_U8SRGB =                         520,
+   ISL_FORMAT_ASTC_LDR_2D_5X5_U8SRGB =                         521,
+   ISL_FORMAT_ASTC_LDR_2D_6X5_U8SRGB =                         529,
+   ISL_FORMAT_ASTC_LDR_2D_6X6_U8SRGB =                         530,
+   ISL_FORMAT_ASTC_LDR_2D_8X5_U8SRGB =                         545,
+   ISL_FORMAT_ASTC_LDR_2D_8X6_U8SRGB =                         546,
+   ISL_FORMAT_ASTC_LDR_2D_8X8_U8SRGB =                         548,
+   ISL_FORMAT_ASTC_LDR_2D_10X5_U8SRGB =                        561,
+   ISL_FORMAT_ASTC_LDR_2D_10X6_U8SRGB =                        562,
+   ISL_FORMAT_ASTC_LDR_2D_10X8_U8SRGB =                        564,
+   ISL_FORMAT_ASTC_LDR_2D_10X10_U8SRGB =                       566,
+   ISL_FORMAT_ASTC_LDR_2D_12X10_U8SRGB =                       574,
+   ISL_FORMAT_ASTC_LDR_2D_12X12_U8SRGB =                       575,
+   ISL_FORMAT_ASTC_LDR_2D_4X4_FLT16 =                          576,
+   ISL_FORMAT_ASTC_LDR_2D_5X4_FLT16 =                          584,
+   ISL_FORMAT_ASTC_LDR_2D_5X5_FLT16 =                          585,
+   ISL_FORMAT_ASTC_LDR_2D_6X5_FLT16 =                          593,
+   ISL_FORMAT_ASTC_LDR_2D_6X6_FLT16 =                          594,
+   ISL_FORMAT_ASTC_LDR_2D_8X5_FLT16 =                          609,
+   ISL_FORMAT_ASTC_LDR_2D_8X6_FLT16 =                          610,
+   ISL_FORMAT_ASTC_LDR_2D_8X8_FLT16 =                          612,
+   ISL_FORMAT_ASTC_LDR_2D_10X5_FLT16 =                         625,
+   ISL_FORMAT_ASTC_LDR_2D_10X6_FLT16 =                         626,
+   ISL_FORMAT_ASTC_LDR_2D_10X8_FLT16 =                         628,
+   ISL_FORMAT_ASTC_LDR_2D_10X10_FLT16 =                        630,
+   ISL_FORMAT_ASTC_LDR_2D_12X10_FLT16 =                        638,
+   ISL_FORMAT_ASTC_LDR_2D_12X12_FLT16 =                        639,
 
    /* Hardware doesn't understand this out-of-band value */
    ISL_FORMAT_UNSUPPORTED =                             UINT16_MAX,
@@ -353,6 +391,7 @@ enum isl_txc {
    ISL_TXC_BPTC,
    ISL_TXC_ETC1,
    ISL_TXC_ETC2,
+   ISL_TXC_ASTC,
 };
 
 /**
@@ -598,6 +637,7 @@ struct isl_channel_layout {
  */
 struct isl_format_layout {
    enum isl_format format;
+   const char *name;
 
    uint8_t bs; /**< Block size, in bytes, rounded towards 0 */
    uint8_t bw; /**< Block width, in pixels */
@@ -825,11 +865,45 @@ isl_format_get_layout(enum isl_format fmt)
    return &isl_format_layouts[fmt];
 }
 
-bool
-isl_format_has_uint_channel(enum isl_format fmt) ATTRIBUTE_CONST;
+static inline const char * ATTRIBUTE_CONST
+isl_format_get_name(enum isl_format fmt)
+{
+   return isl_format_layouts[fmt].name;
+}
 
-bool
-isl_format_has_sint_channel(enum isl_format fmt) ATTRIBUTE_CONST;
+bool isl_format_supports_rendering(const struct brw_device_info *devinfo,
+                                   enum isl_format format);
+bool isl_format_supports_alpha_blending(const struct brw_device_info *devinfo,
+                                        enum isl_format format);
+bool isl_format_supports_sampling(const struct brw_device_info *devinfo,
+                                  enum isl_format format);
+bool isl_format_supports_filtering(const struct brw_device_info *devinfo,
+                                   enum isl_format format);
+bool isl_format_supports_vertex_fetch(const struct brw_device_info *devinfo,
+                                      enum isl_format format);
+bool isl_format_supports_lossless_compression(const struct brw_device_info *devinfo,
+                                              enum isl_format format);
+
+bool isl_format_has_unorm_channel(enum isl_format fmt) ATTRIBUTE_CONST;
+bool isl_format_has_snorm_channel(enum isl_format fmt) ATTRIBUTE_CONST;
+bool isl_format_has_ufloat_channel(enum isl_format fmt) ATTRIBUTE_CONST;
+bool isl_format_has_sfloat_channel(enum isl_format fmt) ATTRIBUTE_CONST;
+bool isl_format_has_uint_channel(enum isl_format fmt) ATTRIBUTE_CONST;
+bool isl_format_has_sint_channel(enum isl_format fmt) ATTRIBUTE_CONST;
+
+static inline bool
+isl_format_has_normalized_channel(enum isl_format fmt)
+{
+   return isl_format_has_unorm_channel(fmt) ||
+          isl_format_has_snorm_channel(fmt);
+}
+
+static inline bool
+isl_format_has_float_channel(enum isl_format fmt)
+{
+   return isl_format_has_ufloat_channel(fmt) ||
+          isl_format_has_sfloat_channel(fmt);
+}
 
 static inline bool
 isl_format_has_int_channel(enum isl_format fmt)
@@ -837,6 +911,8 @@ isl_format_has_int_channel(enum isl_format fmt)
    return isl_format_has_uint_channel(fmt) ||
           isl_format_has_sint_channel(fmt);
 }
+
+unsigned isl_format_get_num_channels(enum isl_format fmt);
 
 static inline bool
 isl_format_is_compressed(enum isl_format fmt)
@@ -861,6 +937,7 @@ isl_format_has_bc_compression(enum isl_format fmt)
    case ISL_TXC_BPTC:
    case ISL_TXC_ETC1:
    case ISL_TXC_ETC2:
+   case ISL_TXC_ASTC:
       return false;
    }
 
@@ -899,8 +976,15 @@ enum isl_format isl_format_rgb_to_rgbx(enum isl_format rgb) ATTRIBUTE_CONST;
 bool isl_is_storage_image_format(enum isl_format fmt);
 
 enum isl_format
-isl_lower_storage_image_format(const struct isl_device *dev,
+isl_lower_storage_image_format(const struct brw_device_info *devinfo,
                                enum isl_format fmt);
+
+/* Returns true if this hardware supports typed load/store on a format with
+ * the same size as the given format.
+ */
+bool
+isl_has_matching_typed_storage_image_format(const struct brw_device_info *devinfo,
+                                            enum isl_format fmt);
 
 static inline bool
 isl_tiling_is_any_y(enum isl_tiling tiling)
@@ -978,25 +1062,38 @@ isl_surf_info_is_z32_float(const struct isl_surf_init_info *info)
 static inline struct isl_extent2d
 isl_extent2d(uint32_t width, uint32_t height)
 {
-   return (struct isl_extent2d) { .w = width, .h = height };
+   struct isl_extent2d e = { { 0 } };
+
+   e.width = width;
+   e.height = height;
+
+   return e;
 }
 
 static inline struct isl_extent3d
 isl_extent3d(uint32_t width, uint32_t height, uint32_t depth)
 {
-   return (struct isl_extent3d) { .w = width, .h = height, .d = depth };
+   struct isl_extent3d e = { { 0 } };
+
+   e.width = width;
+   e.height = height;
+   e.depth = depth;
+
+   return e;
 }
 
 static inline struct isl_extent4d
 isl_extent4d(uint32_t width, uint32_t height, uint32_t depth,
              uint32_t array_len)
 {
-   return (struct isl_extent4d) {
-      .w = width,
-      .h = height,
-      .d = depth,
-      .a = array_len,
-   };
+   struct isl_extent4d e = { { 0 } };
+
+   e.width = width;
+   e.height = height;
+   e.depth = depth;
+   e.array_len = array_len;
+
+   return e;
 }
 
 #define isl_surf_init(dev, surf, ...) \
@@ -1060,11 +1157,9 @@ isl_surf_get_image_alignment_sa(const struct isl_surf *surf)
 {
    const struct isl_format_layout *fmtl = isl_format_get_layout(surf->format);
 
-   return (struct isl_extent3d) {
-      .w = fmtl->bw * surf->image_alignment_el.w,
-      .h = fmtl->bh * surf->image_alignment_el.h,
-      .d = fmtl->bd * surf->image_alignment_el.d,
-   };
+   return isl_extent3d(fmtl->bw * surf->image_alignment_el.w,
+                       fmtl->bh * surf->image_alignment_el.h,
+                       fmtl->bd * surf->image_alignment_el.d);
 }
 
 /**

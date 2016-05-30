@@ -32,6 +32,93 @@
 #include <errno.h>
 #include <inttypes.h>
 
+static void r600_texture_discard_dcc(struct r600_common_screen *rscreen,
+				     struct r600_texture *rtex);
+static void r600_texture_discard_cmask(struct r600_common_screen *rscreen,
+				       struct r600_texture *rtex);
+
+
+static bool range_covers_whole_texture(struct pipe_resource *tex,
+				       unsigned level, unsigned x, unsigned y,
+				       unsigned z, unsigned width,
+				       unsigned height, unsigned depth)
+{
+	return x == 0 && y == 0 && z == 0 &&
+	       width == u_minify(tex->width0, level) &&
+	       height == u_minify(tex->height0, level) &&
+	       depth == util_max_layer(tex, level) + 1;
+}
+
+bool r600_prepare_for_dma_blit(struct r600_common_context *rctx,
+			       struct r600_texture *rdst,
+			       unsigned dst_level, unsigned dstx,
+			       unsigned dsty, unsigned dstz,
+			       struct r600_texture *rsrc,
+			       unsigned src_level,
+			       const struct pipe_box *src_box)
+{
+	if (!rctx->dma.cs)
+		return false;
+
+	if (util_format_get_blocksizebits(rdst->resource.b.b.format) !=
+	    util_format_get_blocksizebits(rsrc->resource.b.b.format))
+		return false;
+
+	/* MSAA: Blits don't exist in the real world. */
+	if (rsrc->resource.b.b.nr_samples > 1 ||
+	    rdst->resource.b.b.nr_samples > 1)
+		return false;
+
+	/* Depth-stencil surfaces:
+	 *   When dst is linear, the DB->CB copy preserves HTILE.
+	 *   When dst is tiled, the 3D path must be used to update HTILE.
+	 */
+	if (rsrc->is_depth || rdst->is_depth)
+		return false;
+
+	/* DCC as:
+	 *   src: Use the 3D path. DCC decompression is expensive.
+	 *   dst: If overwriting the whole texture, discard DCC and use SDMA.
+	 *        Otherwise, use the 3D path.
+	 */
+	if (rsrc->dcc_offset)
+		return false;
+
+	if (rdst->dcc_offset) {
+		/* We can't discard DCC if the texture has been exported. */
+		if (rdst->resource.is_shared ||
+		    !range_covers_whole_texture(&rdst->resource.b.b, dst_level,
+						dstx, dsty, dstz, src_box->width,
+						src_box->height, src_box->depth))
+			return false;
+
+		r600_texture_discard_dcc(rctx->screen, rdst);
+	}
+
+	/* CMASK as:
+	 *   src: Both texture and SDMA paths need decompression. Use SDMA.
+	 *   dst: If overwriting the whole texture, discard CMASK and use
+	 *        SDMA. Otherwise, use the 3D path.
+	 */
+	if (rdst->cmask.size && rdst->dirty_level_mask & (1 << dst_level)) {
+		if (!range_covers_whole_texture(&rdst->resource.b.b, dst_level,
+						dstx, dsty, dstz, src_box->width,
+						src_box->height, src_box->depth))
+			return false;
+
+		r600_texture_discard_cmask(rctx->screen, rdst);
+	}
+
+	/* All requirements are met. Prepare textures for SDMA. */
+	if (rsrc->cmask.size && rsrc->dirty_level_mask & (1 << src_level))
+		rctx->b.flush_resource(&rctx->b, &rsrc->resource.b.b);
+
+	assert(!(rsrc->dirty_level_mask & (1 << src_level)));
+	assert(!(rdst->dirty_level_mask & (1 << dst_level)));
+
+	return true;
+}
+
 /* Same as resource_copy_region, except that both upsampling and downsampling are allowed. */
 static void r600_copy_region_with_blit(struct pipe_context *pipe,
 				       struct pipe_resource *dst,
@@ -169,8 +256,9 @@ static int r600_init_surface(struct r600_common_screen *rscreen,
 		surface->flags |= RADEON_SURF_SET(RADEON_SURF_TYPE_1D_ARRAY, TYPE);
 		surface->array_size = ptex->array_size;
 		break;
-	case PIPE_TEXTURE_2D_ARRAY:
 	case PIPE_TEXTURE_CUBE_ARRAY: /* cube array layout like 2d array */
+		assert(ptex->array_size % 6 == 0);
+	case PIPE_TEXTURE_2D_ARRAY:
 		surface->flags |= RADEON_SURF_SET(RADEON_SURF_TYPE_2D_ARRAY, TYPE);
 		surface->array_size = ptex->array_size;
 		break;
@@ -225,7 +313,7 @@ static int r600_setup_surface(struct pipe_screen *screen,
 	}
 
 	if (offset) {
-		for (i = 0; i < Elements(rtex->surface.level); ++i)
+		for (i = 0; i < ARRAY_SIZE(rtex->surface.level); ++i)
 			rtex->surface.level[i].offset += offset;
 	}
 	return 0;
@@ -245,7 +333,6 @@ static void r600_texture_init_metadata(struct r600_texture *rtex,
 	metadata->bankw = surface->bankw;
 	metadata->bankh = surface->bankh;
 	metadata->tile_split = surface->tile_split;
-	metadata->stencil_tile_split = surface->stencil_tile_split;
 	metadata->mtilea = surface->mtilea;
 	metadata->num_banks = surface->num_banks;
 	metadata->stride = surface->level[0].pitch_bytes;
@@ -268,7 +355,7 @@ static void r600_eliminate_fast_color_clear(struct r600_common_screen *rscreen,
 	pipe_mutex_unlock(rscreen->aux_context_lock);
 }
 
-static void r600_texture_disable_cmask(struct r600_common_screen *rscreen,
+static void r600_texture_discard_cmask(struct r600_common_screen *rscreen,
 				       struct r600_texture *rtex)
 {
 	if (!rtex->cmask.size)
@@ -293,6 +380,17 @@ static void r600_texture_disable_cmask(struct r600_common_screen *rscreen,
 	p_atomic_inc(&rscreen->compressed_colortex_counter);
 }
 
+static void r600_texture_discard_dcc(struct r600_common_screen *rscreen,
+				     struct r600_texture *rtex)
+{
+	/* Disable DCC. */
+	rtex->dcc_offset = 0;
+	rtex->cb_color_info &= ~VI_S_028C70_DCC_ENABLE(1);
+
+	/* Notify all contexts about the change. */
+	r600_dirty_all_framebuffer_states(rscreen);
+}
+
 void r600_texture_disable_dcc(struct r600_common_screen *rscreen,
 			      struct r600_texture *rtex)
 {
@@ -308,12 +406,7 @@ void r600_texture_disable_dcc(struct r600_common_screen *rscreen,
 	rctx->b.flush(&rctx->b, NULL, 0);
 	pipe_mutex_unlock(rscreen->aux_context_lock);
 
-	/* Disable DCC. */
-	rtex->dcc_offset = 0;
-	rtex->cb_color_info &= ~VI_S_028C70_DCC_ENABLE(1);
-
-	/* Notify all contexts about the change. */
-	r600_dirty_all_framebuffer_states(rscreen);
+	r600_texture_discard_dcc(rscreen, rtex);
 }
 
 static boolean r600_texture_get_handle(struct pipe_screen* screen,
@@ -352,7 +445,7 @@ static boolean r600_texture_get_handle(struct pipe_screen* screen,
 			/* Disable CMASK if flush_resource isn't going
 			 * to be called.
 			 */
-			r600_texture_disable_cmask(rscreen, rtex);
+			r600_texture_discard_cmask(rscreen, rtex);
 			update_metadata = true;
 		}
 
@@ -717,7 +810,7 @@ static void r600_texture_allocate_htile(struct r600_common_screen *rscreen,
 		R600_ERR("Failed to create buffer object for htile buffer.\n");
 	} else {
 		r600_screen_clear_buffer(rscreen, &rtex->htile_buffer->b.b, 0,
-					 htile_size, 0, true);
+					 htile_size, 0, R600_COHERENCY_NONE);
 	}
 }
 
@@ -878,7 +971,7 @@ r600_texture_create_object(struct pipe_screen *screen,
 	/* Now create the backing buffer. */
 	if (!buf) {
 		if (!r600_init_resource(rscreen, resource, rtex->size,
-					rtex->surface.bo_alignment, TRUE)) {
+					rtex->surface.bo_alignment)) {
 			FREE(rtex);
 			return NULL;
 		}
@@ -892,13 +985,13 @@ r600_texture_create_object(struct pipe_screen *screen,
 		/* Initialize the cmask to 0xCC (= compressed state). */
 		r600_screen_clear_buffer(rscreen, &rtex->cmask_buffer->b.b,
 					 rtex->cmask.offset, rtex->cmask.size,
-					 0xCCCCCCCC, true);
+					 0xCCCCCCCC, R600_COHERENCY_NONE);
 	}
 	if (rtex->dcc_offset) {
 		r600_screen_clear_buffer(rscreen, &rtex->resource.b.b,
 					 rtex->dcc_offset,
 					 rtex->surface.dcc_size,
-					 0xFFFFFFFF, true);
+					 0xFFFFFFFF, R600_COHERENCY_NONE);
 	}
 
 	/* Initialize the CMASK base register value. */
@@ -1031,11 +1124,12 @@ static struct pipe_resource *r600_texture_from_handle(struct pipe_screen *screen
 
 	rscreen->ws->buffer_get_metadata(buf, &metadata);
 
+	surface.pipe_config = metadata.pipe_config;
 	surface.bankw = metadata.bankw;
 	surface.bankh = metadata.bankh;
 	surface.tile_split = metadata.tile_split;
-	surface.stencil_tile_split = metadata.stencil_tile_split;
 	surface.mtilea = metadata.mtilea;
+	surface.num_banks = metadata.num_banks;
 
 	if (metadata.macrotile == RADEON_LAYOUT_TILED)
 		array_mode = RADEON_SURF_MODE_2D;
@@ -1120,21 +1214,11 @@ static void r600_init_temp_resource_from_box(struct pipe_resource *res,
 	res->flags = flags;
 
 	/* We must set the correct texture target and dimensions for a 3D box. */
-	if (box->depth > 1 && util_max_layer(orig, level) > 0)
-		res->target = orig->target;
-	else
-		res->target = PIPE_TEXTURE_2D;
-
-	switch (res->target) {
-	case PIPE_TEXTURE_1D_ARRAY:
-	case PIPE_TEXTURE_2D_ARRAY:
-	case PIPE_TEXTURE_CUBE_ARRAY:
+	if (box->depth > 1 && util_max_layer(orig, level) > 0) {
+		res->target = PIPE_TEXTURE_2D_ARRAY;
 		res->array_size = box->depth;
-		break;
-	case PIPE_TEXTURE_3D:
-		res->depth0 = box->depth;
-		break;
-	default:;
+	} else {
+		res->target = PIPE_TEXTURE_2D;
 	}
 }
 
@@ -1153,6 +1237,8 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 	unsigned offset = 0;
 	char *map;
 
+	assert(!(texture->flags & R600_RESOURCE_FLAG_TRANSFER));
+
 	/* We cannot map a tiled texture directly because the data is
 	 * in a different order, therefore we do detiling using a blit.
 	 *
@@ -1162,8 +1248,8 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 	 */
 	if (rtex->surface.level[0].mode >= RADEON_SURF_MODE_1D) {
 		use_staging_texture = TRUE;
-	} else if ((usage & PIPE_TRANSFER_READ) && !(usage & PIPE_TRANSFER_MAP_DIRECTLY) &&
-	    (rtex->resource.domains == RADEON_DOMAIN_VRAM)) {
+	} else if ((usage & PIPE_TRANSFER_READ) &&
+		   rtex->resource.domains & RADEON_DOMAIN_VRAM) {
 		/* Untiled buffers in VRAM, which is slow for CPU reads */
 		use_staging_texture = TRUE;
 	} else if (!(usage & PIPE_TRANSFER_READ) &&
@@ -1171,14 +1257,6 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 	     !rctx->ws->buffer_wait(rtex->resource.buf, 0, RADEON_USAGE_READWRITE))) {
 		/* Use a staging texture for uploads if the underlying BO is busy. */
 		use_staging_texture = TRUE;
-	}
-
-	if (texture->flags & R600_RESOURCE_FLAG_TRANSFER) {
-		use_staging_texture = FALSE;
-	}
-
-	if (use_staging_texture && (usage & PIPE_TRANSFER_MAP_DIRECTLY)) {
-		return NULL;
 	}
 
 	trans = CALLOC_STRUCT(r600_transfer);
@@ -1247,6 +1325,7 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 		trans->transfer.stride = staging_depth->surface.level[level].pitch_bytes;
 		trans->transfer.layer_stride = staging_depth->surface.level[level].slice_size;
 		trans->staging = (struct r600_resource*)staging_depth;
+		buf = trans->staging;
 	} else if (use_staging_texture) {
 		struct pipe_resource resource;
 		struct r600_texture *staging;
@@ -1266,21 +1345,18 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 		trans->staging = &staging->resource;
 		trans->transfer.stride = staging->surface.level[0].pitch_bytes;
 		trans->transfer.layer_stride = staging->surface.level[0].slice_size;
-		if (usage & PIPE_TRANSFER_READ) {
+
+		if (usage & PIPE_TRANSFER_READ)
 			r600_copy_to_staging_texture(ctx, trans);
-		}
+		else
+			usage |= PIPE_TRANSFER_UNSYNCHRONIZED;
+
+		buf = trans->staging;
 	} else {
 		/* the resource is mapped directly */
 		trans->transfer.stride = rtex->surface.level[level].pitch_bytes;
 		trans->transfer.layer_stride = rtex->surface.level[level].slice_size;
 		offset = r600_texture_get_offset(rtex, level, box);
-	}
-
-	if (trans->staging) {
-		buf = trans->staging;
-		if (!rtex->is_depth && !(usage & PIPE_TRANSFER_READ))
-			usage |= PIPE_TRANSFER_UNSYNCHRONIZED;
-	} else {
 		buf = &rtex->resource;
 	}
 
@@ -1392,11 +1468,11 @@ static void r600_surface_destroy(struct pipe_context *pipe,
 	FREE(surface);
 }
 
-unsigned r600_translate_colorswap(enum pipe_format format)
+unsigned r600_translate_colorswap(enum pipe_format format, bool do_endian_swap)
 {
 	const struct util_format_description *desc = util_format_description(format);
 
-#define HAS_SWIZZLE(chan,swz) (desc->swizzle[chan] == UTIL_FORMAT_SWIZZLE_##swz)
+#define HAS_SWIZZLE(chan,swz) (desc->swizzle[chan] == PIPE_SWIZZLE_##swz)
 
 	if (format == PIPE_FORMAT_R11G11B10_FLOAT) /* isn't plain */
 		return V_0280A0_SWAP_STD;
@@ -1419,7 +1495,8 @@ unsigned r600_translate_colorswap(enum pipe_format format)
 		else if ((HAS_SWIZZLE(0,Y) && HAS_SWIZZLE(1,X)) ||
 			 (HAS_SWIZZLE(0,Y) && HAS_SWIZZLE(1,NONE)) ||
 		         (HAS_SWIZZLE(0,NONE) && HAS_SWIZZLE(1,X)))
-			return V_0280A0_SWAP_STD_REV; /* YX__ */
+			/* YX__ */
+			return (do_endian_swap ? V_0280A0_SWAP_STD : V_0280A0_SWAP_STD_REV);
 		else if (HAS_SWIZZLE(0,X) && HAS_SWIZZLE(3,Y))
 			return V_0280A0_SWAP_ALT; /* X__Y */
 		else if (HAS_SWIZZLE(0,Y) && HAS_SWIZZLE(3,X))
@@ -1427,20 +1504,25 @@ unsigned r600_translate_colorswap(enum pipe_format format)
 		break;
 	case 3:
 		if (HAS_SWIZZLE(0,X))
-			return V_0280A0_SWAP_STD; /* XYZ */
+			return (do_endian_swap ? V_0280A0_SWAP_STD_REV : V_0280A0_SWAP_STD);
 		else if (HAS_SWIZZLE(0,Z))
 			return V_0280A0_SWAP_STD_REV; /* ZYX */
 		break;
 	case 4:
 		/* check the middle channels, the 1st and 4th channel can be NONE */
-		if (HAS_SWIZZLE(1,Y) && HAS_SWIZZLE(2,Z))
+		if (HAS_SWIZZLE(1,Y) && HAS_SWIZZLE(2,Z)) {
 			return V_0280A0_SWAP_STD; /* XYZW */
-		else if (HAS_SWIZZLE(1,Z) && HAS_SWIZZLE(2,Y))
+		} else if (HAS_SWIZZLE(1,Z) && HAS_SWIZZLE(2,Y)) {
 			return V_0280A0_SWAP_STD_REV; /* WZYX */
-		else if (HAS_SWIZZLE(1,Y) && HAS_SWIZZLE(2,X))
+		} else if (HAS_SWIZZLE(1,Y) && HAS_SWIZZLE(2,X)) {
 			return V_0280A0_SWAP_ALT; /* ZYXW */
-		else if (HAS_SWIZZLE(1,Z) && HAS_SWIZZLE(2,W))
-			return V_0280A0_SWAP_ALT_REV; /* YZWX */
+		} else if (HAS_SWIZZLE(1,Z) && HAS_SWIZZLE(2,W)) {
+			/* YZWX */
+			if (desc->is_array)
+				return V_0280A0_SWAP_ALT_REV;
+			else
+				return (do_endian_swap ? V_0280A0_SWAP_ALT : V_0280A0_SWAP_ALT_REV);
+		}
 		break;
 	}
 	return ~0U;
@@ -1491,7 +1573,7 @@ static void vi_get_fast_clear_parameters(enum pipe_format surface_format,
 	    surface_format == PIPE_FORMAT_B5G6R5_SRGB) {
 		extra_channel = -1;
 	} else if (desc->layout == UTIL_FORMAT_LAYOUT_PLAIN) {
-		if(r600_translate_colorswap(surface_format) <= 1)
+		if(r600_translate_colorswap(surface_format, FALSE) <= 1)
 			extra_channel = desc->nr_channels - 1;
 		else
 			extra_channel = 0;
@@ -1499,10 +1581,10 @@ static void vi_get_fast_clear_parameters(enum pipe_format surface_format,
 		return;
 
 	for (i = 0; i < 4; ++i) {
-		int index = desc->swizzle[i] - UTIL_FORMAT_SWIZZLE_X;
+		int index = desc->swizzle[i] - PIPE_SWIZZLE_X;
 
-		if (desc->swizzle[i] < UTIL_FORMAT_SWIZZLE_X ||
-		    desc->swizzle[i] > UTIL_FORMAT_SWIZZLE_W)
+		if (desc->swizzle[i] < PIPE_SWIZZLE_X ||
+		    desc->swizzle[i] > PIPE_SWIZZLE_W)
 			continue;
 
 		if (util_format_is_pure_sint(surface_format)) {
@@ -1527,9 +1609,9 @@ static void vi_get_fast_clear_parameters(enum pipe_format surface_format,
 
 	for (int i = 0; i < 4; ++i)
 		if (values[i] != main_value &&
-		    desc->swizzle[i] - UTIL_FORMAT_SWIZZLE_X != extra_channel &&
-		    desc->swizzle[i] >= UTIL_FORMAT_SWIZZLE_X &&
-		    desc->swizzle[i] <= UTIL_FORMAT_SWIZZLE_W)
+		    desc->swizzle[i] - PIPE_SWIZZLE_X != extra_channel &&
+		    desc->swizzle[i] >= PIPE_SWIZZLE_X &&
+		    desc->swizzle[i] <= PIPE_SWIZZLE_W)
 			return;
 
 	*clear_words_needed = false;
@@ -1617,7 +1699,7 @@ void evergreen_do_fast_color_clear(struct r600_common_context *rctx,
 
 			rctx->clear_buffer(&rctx->b, &tex->resource.b.b,
 					   tex->dcc_offset, tex->surface.dcc_size,
-					   reset_value, true);
+					   reset_value, R600_COHERENCY_CB_META);
 
 			if (clear_words_needed)
 				tex->dirty_level_mask |= 1 << fb->cbufs[i]->u.tex.level;
@@ -1634,7 +1716,8 @@ void evergreen_do_fast_color_clear(struct r600_common_context *rctx,
 
 			/* Do the fast clear. */
 			rctx->clear_buffer(&rctx->b, &tex->cmask_buffer->b.b,
-					tex->cmask.offset, tex->cmask.size, 0, true);
+					   tex->cmask.offset, tex->cmask.size, 0,
+					   R600_COHERENCY_CB_META);
 
 			tex->dirty_level_mask |= 1 << fb->cbufs[i]->u.tex.level;
 		}

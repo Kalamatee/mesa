@@ -28,6 +28,7 @@
 ******************************************************************************/
 #pragma once
 #include "context.h"
+#include <type_traits>
 
 INLINE
 __m128i fpToFixedPoint(const __m128 vIn)
@@ -306,12 +307,26 @@ bool CanUseSimplePoints(DRAW_CONTEXT *pDC)
             !state.rastState.pointSpriteEnable);
 }
 
+INLINE
+bool vHasNaN(const __m128& vec)
+{
+    const __m128 result = _mm_cmpunord_ps(vec, vec);
+    const int32_t mask = _mm_movemask_ps(result);
+    return (mask != 0);
+}
+
 uint32_t GetNumPrims(PRIMITIVE_TOPOLOGY mode, uint32_t numElements);
 uint32_t NumVertsPerPrim(PRIMITIVE_TOPOLOGY topology, bool includeAdjVerts);
 
-// Templated Draw front-end function.  All combinations of template parameter values are available
-template <bool IsIndexedT, bool HasTessellationT, bool HasGeometryShaderT, bool HasStreamOutT, bool HasRastT>
-void ProcessDraw(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
+
+// ProcessDraw front-end function.  All combinations of parameter values are available
+PFN_FE_WORK_FUNC GetProcessDrawFunc(
+    bool IsIndexed,
+    bool IsCutIndexEnabled,
+    bool HasTessellation,
+    bool HasGeometryShader,
+    bool HasStreamOut,
+    bool HasRasterization);
 
 void ProcessClear(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
 void ProcessStoreTiles(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);

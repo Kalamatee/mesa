@@ -518,7 +518,7 @@ emit_consts_vgpu9(struct svga_context *svga, unsigned shader)
 
       assert(variant);
       offset = variant->shader->info.file_max[TGSI_FILE_CONSTANT] + 1;
-      assert(count <= Elements(extras));
+      assert(count <= ARRAY_SIZE(extras));
 
       if (count > 0) {
          if (ss->hw_version >= SVGA3D_HWVERSION_WS8_B1) {
@@ -788,7 +788,7 @@ struct svga_tracked_state svga_hw_fs_constants =
    "hw fs params",
    (SVGA_NEW_FS_CONST_BUFFER |
     SVGA_NEW_FS_VARIANT |
-    SVGA_NEW_TEXTURE_BINDING),
+    SVGA_NEW_TEXTURE_CONSTS),
    emit_fs_consts
 };
 

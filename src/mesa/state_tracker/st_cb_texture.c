@@ -900,10 +900,10 @@ format_is_alpha(enum pipe_format format)
    const struct util_format_description *desc = util_format_description(format);
 
    if (desc->nr_channels == 1 &&
-       desc->swizzle[0] == UTIL_FORMAT_SWIZZLE_0 &&
-       desc->swizzle[1] == UTIL_FORMAT_SWIZZLE_0 &&
-       desc->swizzle[2] == UTIL_FORMAT_SWIZZLE_0 &&
-       desc->swizzle[3] == UTIL_FORMAT_SWIZZLE_X)
+       desc->swizzle[0] == PIPE_SWIZZLE_0 &&
+       desc->swizzle[1] == PIPE_SWIZZLE_0 &&
+       desc->swizzle[2] == PIPE_SWIZZLE_0 &&
+       desc->swizzle[3] == PIPE_SWIZZLE_X)
       return true;
 
    return false;
@@ -918,10 +918,10 @@ format_is_red(enum pipe_format format)
    const struct util_format_description *desc = util_format_description(format);
 
    if (desc->nr_channels == 1 &&
-       desc->swizzle[0] == UTIL_FORMAT_SWIZZLE_X &&
-       desc->swizzle[1] == UTIL_FORMAT_SWIZZLE_0 &&
-       desc->swizzle[2] == UTIL_FORMAT_SWIZZLE_0 &&
-       desc->swizzle[3] == UTIL_FORMAT_SWIZZLE_1)
+       desc->swizzle[0] == PIPE_SWIZZLE_X &&
+       desc->swizzle[1] == PIPE_SWIZZLE_0 &&
+       desc->swizzle[2] == PIPE_SWIZZLE_0 &&
+       desc->swizzle[3] == PIPE_SWIZZLE_1)
       return true;
 
    return false;
@@ -937,10 +937,10 @@ format_is_luminance(enum pipe_format format)
    const struct util_format_description *desc = util_format_description(format);
 
    if (desc->nr_channels == 1 &&
-       desc->swizzle[0] == UTIL_FORMAT_SWIZZLE_X &&
-       desc->swizzle[1] == UTIL_FORMAT_SWIZZLE_X &&
-       desc->swizzle[2] == UTIL_FORMAT_SWIZZLE_X &&
-       desc->swizzle[3] == UTIL_FORMAT_SWIZZLE_1)
+       desc->swizzle[0] == PIPE_SWIZZLE_X &&
+       desc->swizzle[1] == PIPE_SWIZZLE_X &&
+       desc->swizzle[2] == PIPE_SWIZZLE_X &&
+       desc->swizzle[3] == PIPE_SWIZZLE_1)
       return true;
 
    return false;
@@ -955,10 +955,10 @@ format_is_red_alpha(enum pipe_format format)
    const struct util_format_description *desc = util_format_description(format);
 
    if (desc->nr_channels == 2 &&
-       desc->swizzle[0] == UTIL_FORMAT_SWIZZLE_X &&
-       desc->swizzle[1] == UTIL_FORMAT_SWIZZLE_0 &&
-       desc->swizzle[2] == UTIL_FORMAT_SWIZZLE_0 &&
-       desc->swizzle[3] == UTIL_FORMAT_SWIZZLE_Y)
+       desc->swizzle[0] == PIPE_SWIZZLE_X &&
+       desc->swizzle[1] == PIPE_SWIZZLE_0 &&
+       desc->swizzle[2] == PIPE_SWIZZLE_0 &&
+       desc->swizzle[3] == PIPE_SWIZZLE_Y)
       return true;
 
    return false;
@@ -969,10 +969,10 @@ format_is_swizzled_rgba(enum pipe_format format)
 {
     const struct util_format_description *desc = util_format_description(format);
 
-    if ((desc->swizzle[0] == TGSI_SWIZZLE_X || desc->swizzle[0] == UTIL_FORMAT_SWIZZLE_0) &&
-        (desc->swizzle[1] == TGSI_SWIZZLE_Y || desc->swizzle[1] == UTIL_FORMAT_SWIZZLE_0) &&
-        (desc->swizzle[2] == TGSI_SWIZZLE_Z || desc->swizzle[2] == UTIL_FORMAT_SWIZZLE_0) &&
-        (desc->swizzle[3] == TGSI_SWIZZLE_W || desc->swizzle[3] == UTIL_FORMAT_SWIZZLE_1))
+    if ((desc->swizzle[0] == TGSI_SWIZZLE_X || desc->swizzle[0] == PIPE_SWIZZLE_0) &&
+        (desc->swizzle[1] == TGSI_SWIZZLE_Y || desc->swizzle[1] == PIPE_SWIZZLE_0) &&
+        (desc->swizzle[2] == TGSI_SWIZZLE_Z || desc->swizzle[2] == PIPE_SWIZZLE_0) &&
+        (desc->swizzle[3] == TGSI_SWIZZLE_W || desc->swizzle[3] == PIPE_SWIZZLE_1))
        return false;
 
     return true;
@@ -1101,10 +1101,10 @@ reinterpret_formats(enum pipe_format *src_format, enum pipe_format *dst_format)
       unsigned i;
 
       /* Make sure the format is an RGBA and not an RGBX format */
-      if (src_desc->nr_channels != 4 || src_desc->swizzle[3] == UTIL_FORMAT_SWIZZLE_1)
+      if (src_desc->nr_channels != 4 || src_desc->swizzle[3] == PIPE_SWIZZLE_1)
          return false;
 
-      if (dst_desc->nr_channels != 4 || dst_desc->swizzle[3] == UTIL_FORMAT_SWIZZLE_1)
+      if (dst_desc->nr_channels != 4 || dst_desc->swizzle[3] == PIPE_SWIZZLE_1)
          return false;
 
       for (i = 0; i < 4; i++)
@@ -1131,7 +1131,7 @@ create_pbo_upload_vs(struct st_context *st)
    struct ureg_dst out_pos;
    struct ureg_dst out_layer;
 
-   ureg = ureg_create(TGSI_PROCESSOR_VERTEX);
+   ureg = ureg_create(PIPE_SHADER_VERTEX);
    if (!ureg)
       return NULL;
 
@@ -1176,7 +1176,7 @@ create_pbo_upload_gs(struct st_context *st)
    struct ureg_src imm;
    unsigned i;
 
-   ureg = ureg_create(TGSI_PROCESSOR_GEOMETRY);
+   ureg = ureg_create(PIPE_SHADER_GEOMETRY);
    if (!ureg)
       return NULL;
 
@@ -1222,7 +1222,7 @@ create_pbo_upload_fs(struct st_context *st)
    struct ureg_src const0;
    struct ureg_dst temp0;
 
-   ureg = ureg_create(TGSI_PROCESSOR_FRAGMENT);
+   ureg = ureg_create(PIPE_SHADER_FRAGMENT);
    if (!ureg)
       return NULL;
 
@@ -1371,10 +1371,10 @@ try_pbo_upload_common(struct gl_context *ctx,
       templ.format = src_format;
       templ.u.buf.first_element = first_element;
       templ.u.buf.last_element = last_element;
-      templ.swizzle_r = PIPE_SWIZZLE_RED;
-      templ.swizzle_g = PIPE_SWIZZLE_GREEN;
-      templ.swizzle_b = PIPE_SWIZZLE_BLUE;
-      templ.swizzle_a = PIPE_SWIZZLE_ALPHA;
+      templ.swizzle_r = PIPE_SWIZZLE_X;
+      templ.swizzle_g = PIPE_SWIZZLE_Y;
+      templ.swizzle_b = PIPE_SWIZZLE_Z;
+      templ.swizzle_a = PIPE_SWIZZLE_W;
 
       sampler_view = pipe->create_sampler_view(pipe, buffer, &templ);
       if (sampler_view == NULL)
@@ -1698,15 +1698,50 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
    GLenum gl_target = texImage->TexObject->Target;
    unsigned bind;
    GLubyte *map;
+   unsigned dstz = texImage->Face + texImage->TexObject->MinLayer;
+   unsigned dst_level = 0;
+
+   if (stObj->pt == stImage->pt)
+      dst_level = texImage->TexObject->MinLevel + texImage->Level;
 
    assert(!_mesa_is_format_etc2(texImage->TexFormat) &&
           texImage->TexFormat != MESA_FORMAT_ETC1_RGB8);
 
-   if (!st->prefer_blit_based_texture_transfer) {
+   if (!dst)
       goto fallback;
+
+   /* Try transfer_inline_write, which should be the fastest memcpy path. */
+   if (pixels &&
+       !_mesa_is_bufferobj(unpack->BufferObj) &&
+       _mesa_texstore_can_use_memcpy(ctx, texImage->_BaseFormat,
+                                     texImage->TexFormat, format, type,
+                                     unpack)) {
+      struct pipe_box box;
+      unsigned stride, layer_stride;
+      void *data;
+
+      stride = _mesa_image_row_stride(unpack, width, format, type);
+      layer_stride = _mesa_image_image_stride(unpack, width, height, format,
+                                              type);
+      data = _mesa_image_address(dims, unpack, pixels, width, height, format,
+                                 type, 0, 0, 0);
+
+      /* Convert to Gallium coordinates. */
+      if (gl_target == GL_TEXTURE_1D_ARRAY) {
+         zoffset = yoffset;
+         yoffset = 0;
+         depth = height;
+         height = 1;
+         layer_stride = stride;
+      }
+
+      u_box_3d(xoffset, yoffset, zoffset + dstz, width, height, depth, &box);
+      pipe->transfer_inline_write(pipe, dst, dst_level, 0,
+                                  &box, data, stride, layer_stride);
+      return;
    }
 
-   if (!dst) {
+   if (!st->prefer_blit_based_texture_transfer) {
       goto fallback;
    }
 
@@ -1875,12 +1910,12 @@ st_TexSubImage(struct gl_context *ctx, GLuint dims,
    blit.src.level = 0;
    blit.src.format = src_format;
    blit.dst.resource = dst;
-   blit.dst.level = stObj->pt != stImage->pt ? 0 : texImage->TexObject->MinLevel + texImage->Level;
+   blit.dst.level = dst_level;
    blit.dst.format = dst_format;
    blit.src.box.x = blit.src.box.y = blit.src.box.z = 0;
    blit.dst.box.x = xoffset;
    blit.dst.box.y = yoffset;
-   blit.dst.box.z = zoffset + texImage->Face + texImage->TexObject->MinLayer;
+   blit.dst.box.z = zoffset + dstz;
    blit.src.box.width = blit.dst.box.width = width;
    blit.src.box.height = blit.dst.box.height = height;
    blit.src.box.depth = blit.dst.box.depth = depth;
@@ -2137,7 +2172,8 @@ st_GetTexSubImage(struct gl_context * ctx,
       goto fallback;
    }
 
-   if (!stImage->pt || !src) {
+   /* Handle non-finalized textures. */
+   if (!stImage->pt || stImage->pt != stObj->pt || !src) {
       goto fallback;
    }
 

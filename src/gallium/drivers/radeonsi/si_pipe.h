@@ -137,8 +137,8 @@ struct si_cs_shader_state {
 
 struct si_textures_info {
 	struct si_sampler_views		views;
-	uint64_t			depth_texture_mask; /* which textures are depth */
-	uint64_t			compressed_colortex_mask;
+	uint32_t			depth_texture_mask; /* which textures are depth */
+	uint32_t			compressed_colortex_mask;
 };
 
 struct si_images_info {
@@ -190,7 +190,6 @@ struct si_context {
 	void				*custom_blend_decompress;
 	void				*custom_blend_fastclear;
 	void				*custom_blend_dcc_decompress;
-	void				*pstipple_sampler_state;
 	struct si_screen		*screen;
 
 	struct radeon_winsys_cs		*ce_ib;
@@ -246,8 +245,8 @@ struct si_context {
 
 	/* shader descriptors */
 	struct si_descriptors		vertex_buffers;
+	struct si_buffer_resources	rw_buffers;
 	struct si_buffer_resources	const_buffers[SI_NUM_SHADERS];
-	struct si_buffer_resources	rw_buffers[SI_NUM_SHADERS];
 	struct si_buffer_resources	shader_buffers[SI_NUM_SHADERS];
 	struct si_textures_info		samplers[SI_NUM_SHADERS];
 	struct si_images_info		images[SI_NUM_SHADERS];
@@ -257,6 +256,7 @@ struct si_context {
 	struct pipe_resource		*esgs_ring;
 	struct pipe_resource		*gsvs_ring;
 	struct pipe_resource		*tf_ring;
+	struct pipe_resource		*tess_offchip_ring;
 	union pipe_color_union		*border_color_table; /* in CPU memory, any endian */
 	struct r600_resource		*border_color_buffer;
 	union pipe_color_union		*border_color_map; /* in VRAM (slow access), little endian */
@@ -326,13 +326,7 @@ struct si_context {
 };
 
 /* cik_sdma.c */
-void cik_sdma_copy(struct pipe_context *ctx,
-		   struct pipe_resource *dst,
-		   unsigned dst_level,
-		   unsigned dstx, unsigned dsty, unsigned dstz,
-		   struct pipe_resource *src,
-		   unsigned src_level,
-		   const struct pipe_box *src_box);
+void cik_init_sdma_functions(struct si_context *sctx);
 
 /* si_blit.c */
 void si_init_blit_functions(struct si_context *sctx);
@@ -349,8 +343,7 @@ void si_resource_copy_region(struct pipe_context *ctx,
 /* si_cp_dma.c */
 void si_copy_buffer(struct si_context *sctx,
 		    struct pipe_resource *dst, struct pipe_resource *src,
-		    uint64_t dst_offset, uint64_t src_offset, unsigned size,
-		    bool is_framebuffer);
+		    uint64_t dst_offset, uint64_t src_offset, unsigned size);
 void si_init_cp_dma_functions(struct si_context *sctx);
 
 /* si_debug.c */
@@ -359,13 +352,7 @@ void si_check_vm_faults(struct si_context *sctx);
 bool si_replace_shader(unsigned num, struct radeon_shader_binary *binary);
 
 /* si_dma.c */
-void si_dma_copy(struct pipe_context *ctx,
-		 struct pipe_resource *dst,
-		 unsigned dst_level,
-		 unsigned dstx, unsigned dsty, unsigned dstz,
-		 struct pipe_resource *src,
-		 unsigned src_level,
-		 const struct pipe_box *src_box);
+void si_init_dma_functions(struct si_context *sctx);
 
 /* si_hw_context.c */
 void si_context_gfx_flush(void *context, unsigned flags,

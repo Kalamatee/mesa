@@ -674,11 +674,9 @@ vc4_nir_lower_blend_instr(struct vc4_compile *c, nir_builder *b,
 }
 
 static bool
-vc4_nir_lower_blend_block(nir_block *block, void *state)
+vc4_nir_lower_blend_block(nir_block *block, struct vc4_compile *c)
 {
-        struct vc4_compile *c = state;
-
-        nir_foreach_instr_safe(block, instr) {
+        nir_foreach_instr_safe(instr, block) {
                 if (instr->type != nir_instr_type_intrinsic)
                         continue;
                 nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
@@ -712,10 +710,11 @@ vc4_nir_lower_blend_block(nir_block *block, void *state)
 void
 vc4_nir_lower_blend(nir_shader *s, struct vc4_compile *c)
 {
-        nir_foreach_function(s, function) {
+        nir_foreach_function(function, s) {
                 if (function->impl) {
-                        nir_foreach_block(function->impl,
-                                          vc4_nir_lower_blend_block, c);
+                        nir_foreach_block(block, function->impl) {
+                                vc4_nir_lower_blend_block(block, c);
+                        }
 
                         nir_metadata_preserve(function->impl,
                                               nir_metadata_block_index |

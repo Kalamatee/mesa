@@ -74,6 +74,7 @@ ast_type_qualifier::has_layout() const
           || this->flags.q.row_major
           || this->flags.q.packed
           || this->flags.q.explicit_align
+          || this->flags.q.explicit_component
           || this->flags.q.explicit_location
           || this->flags.q.explicit_image_format
           || this->flags.q.explicit_index
@@ -146,6 +147,7 @@ ast_type_qualifier::merge_qualifier(YYLTYPE *loc,
    input_layout_mask.flags.q.centroid = 1;
    /* Function params can have constant */
    input_layout_mask.flags.q.constant = 1;
+   input_layout_mask.flags.q.explicit_component = 1;
    input_layout_mask.flags.q.explicit_location = 1;
    input_layout_mask.flags.q.flat = 1;
    input_layout_mask.flags.q.in = 1;
@@ -173,9 +175,12 @@ ast_type_qualifier::merge_qualifier(YYLTYPE *loc,
    /* Geometry shaders can have several layout qualifiers
     * assigning different stream values.
     */
-   if (state->stage == MESA_SHADER_GEOMETRY)
+   if (state->stage == MESA_SHADER_GEOMETRY) {
       allowed_duplicates_mask.flags.i |=
          stream_layout_mask.flags.i;
+      input_layout_mask.flags.i |=
+         stream_layout_mask.flags.i;
+   }
 
    if (is_single_layout_merge && !state->has_enhanced_layouts() &&
        (this->flags.i & q.flags.i & ~allowed_duplicates_mask.flags.i) != 0) {
@@ -336,6 +341,9 @@ ast_type_qualifier::merge_qualifier(YYLTYPE *loc,
 
    if (q.flags.q.explicit_index)
       this->index = q.index;
+
+  if (q.flags.q.explicit_component)
+      this->component = q.component;
 
    if (q.flags.q.explicit_binding)
       this->binding = q.binding;
@@ -703,7 +711,12 @@ ast_layout_expression::process_qualifier_constant(struct _mesa_glsl_parse_state 
          return false;
       }
 
-      if (!first_pass && *value != const_int->value.u[0]) {
+      /* From section 4.4 "Layout Qualifiers" of the GLSL 4.50 spec:
+       * "When the same layout-qualifier-name occurs multiple times,
+       *  in a single declaration, the last occurrence overrides the
+       *  former occurrence(s)."
+       */
+      if (!state->has_420pack() && !first_pass && *value != const_int->value.u[0]) {
          YYLTYPE loc = const_expression->get_location();
          _mesa_glsl_error(&loc, state, "%s layout qualifier does not "
 		          "match previous declaration (%d vs %d)",

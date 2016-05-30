@@ -242,6 +242,7 @@ struct radeon_info {
     uint32_t                    pci_id;
     enum radeon_family          family;
     enum chip_class             chip_class;
+    uint32_t                    gart_page_size;
     uint64_t                    gart_size;
     uint64_t                    vram_size;
     bool                        has_dedicated_vram;
@@ -278,9 +279,7 @@ struct radeon_info {
     uint32_t                    enabled_rb_mask; /* GCN harvest config */
 
     /* Tile modes. */
-    boolean                     si_tile_mode_array_valid;
     uint32_t                    si_tile_mode_array[32];
-    boolean                     cik_macrotile_mode_array_valid;
     uint32_t                    cik_macrotile_mode_array[16];
 };
 
@@ -295,7 +294,6 @@ struct radeon_bo_metadata {
     unsigned                bankw;
     unsigned                bankh;
     unsigned                tile_split;
-    unsigned                stencil_tile_split;
     unsigned                mtilea;
     unsigned                num_banks;
     unsigned                stride;
@@ -326,7 +324,6 @@ enum radeon_feature_id {
 #define     RADEON_SURF_TYPE_2D_ARRAY               5
 #define RADEON_SURF_MODE_MASK                   0xFF
 #define RADEON_SURF_MODE_SHIFT                  8
-#define     RADEON_SURF_MODE_LINEAR                 0
 #define     RADEON_SURF_MODE_LINEAR_ALIGNED         1
 #define     RADEON_SURF_MODE_1D                     2
 #define     RADEON_SURF_MODE_2D                     3
@@ -389,6 +386,7 @@ struct radeon_surf {
     uint32_t                    stencil_tiling_index[RADEON_SURF_MAX_LEVEL];
     uint32_t                    pipe_config;
     uint32_t                    num_banks;
+    uint32_t                    macro_tile_index;
 
     uint64_t                    dcc_size;
     uint64_t                    dcc_alignment;
@@ -451,7 +449,6 @@ struct radeon_winsys {
     struct pb_buffer *(*buffer_create)(struct radeon_winsys *ws,
                                        uint64_t size,
                                        unsigned alignment,
-                                       boolean use_reusable_pool,
                                        enum radeon_bo_domain domain,
                                        enum radeon_bo_flag flags);
 
@@ -686,6 +683,8 @@ struct radeon_winsys {
      */
     boolean (*cs_memory_below_limit)(struct radeon_winsys_cs *cs, uint64_t vram, uint64_t gtt);
 
+    uint64_t (*cs_query_memory_usage)(struct radeon_winsys_cs *cs);
+
     /**
      * Return the buffer list.
      *
@@ -776,6 +775,10 @@ struct radeon_winsys {
                            unsigned num_registers, uint32_t *out);
 };
 
+static inline bool radeon_emitted(struct radeon_winsys_cs *cs, unsigned num_dw)
+{
+    return cs && cs->cdw > num_dw;
+}
 
 static inline void radeon_emit(struct radeon_winsys_cs *cs, uint32_t value)
 {

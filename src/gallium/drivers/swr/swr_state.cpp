@@ -239,7 +239,7 @@ swr_bind_sampler_states(struct pipe_context *pipe,
    unsigned i;
 
    assert(shader < PIPE_SHADER_TYPES);
-   assert(start + num <= Elements(ctx->samplers[shader]));
+   assert(start + num <= ARRAY_SIZE(ctx->samplers[shader]));
 
    /* set the new samplers */
    ctx->num_samplers[shader] = num;
@@ -288,7 +288,7 @@ swr_set_sampler_views(struct pipe_context *pipe,
    assert(num <= PIPE_MAX_SHADER_SAMPLER_VIEWS);
 
    assert(shader < PIPE_SHADER_TYPES);
-   assert(start + num <= Elements(ctx->sampler_views[shader]));
+   assert(start + num <= ARRAY_SIZE(ctx->sampler_views[shader]));
 
    /* set the new sampler views */
    ctx->num_sampler_views[shader] = num;
@@ -415,7 +415,7 @@ swr_set_constant_buffer(struct pipe_context *pipe,
    struct pipe_resource *constants = cb ? cb->buffer : NULL;
 
    assert(shader < PIPE_SHADER_TYPES);
-   assert(index < Elements(ctx->constants[shader]));
+   assert(index < ARRAY_SIZE(ctx->constants[shader]));
 
    /* note: reference counting */
    util_copy_constant_buffer(&ctx->constants[shader][index], cb);
@@ -724,6 +724,51 @@ swr_update_sampler_state(struct swr_context *ctx,
    }
 }
 
+static void
+swr_update_constants(struct swr_context *ctx, enum pipe_shader_type shaderType)
+{
+   swr_draw_context *pDC = &ctx->swrDC;
+
+   const float **constant;
+   uint32_t *num_constants;
+   struct swr_scratch_space *scratch;
+
+   switch (shaderType) {
+   case PIPE_SHADER_VERTEX:
+      constant = pDC->constantVS;
+      num_constants = pDC->num_constantsVS;
+      scratch = &ctx->scratch->vs_constants;
+      break;
+   case PIPE_SHADER_FRAGMENT:
+      constant = pDC->constantFS;
+      num_constants = pDC->num_constantsFS;
+      scratch = &ctx->scratch->fs_constants;
+      break;
+   default:
+      debug_printf("Unsupported shader type constants\n");
+      return;
+   }
+
+   for (UINT i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++) {
+      const pipe_constant_buffer *cb = &ctx->constants[shaderType][i];
+      num_constants[i] = cb->buffer_size;
+      if (cb->buffer) {
+         constant[i] =
+            (const float *)(swr_resource_data(cb->buffer) +
+                            cb->buffer_offset);
+      } else {
+         /* Need to copy these constants to scratch space */
+         if (cb->user_buffer && cb->buffer_size) {
+            const void *ptr =
+               ((const uint8_t *)cb->user_buffer + cb->buffer_offset);
+            uint32_t size = AlignUp(cb->buffer_size, 4);
+            ptr = swr_copy_to_scratch_space(ctx, scratch, ptr, size);
+            constant[i] = (const float *)ptr;
+         }
+      }
+   }
+}
+
 void
 swr_update_derived(struct pipe_context *pipe,
                    const struct pipe_draw_info *p_draw_info)
@@ -831,7 +876,7 @@ swr_update_derived(struct pipe_context *pipe,
       rastState->msaaRastEnable = false;
       rastState->rastMode = SWR_MSAA_RASTMODE_OFF_PIXEL;
       rastState->sampleCount = SWR_MULTISAMPLE_1X;
-      rastState->bForcedSampleCount = false;
+      rastState->forcedSampleCount = false;
 
       bool do_offset = false;
       switch (rasterizer->fill_front) {
@@ -936,8 +981,7 @@ swr_update_derived(struct pipe_context *pipe,
             max_vertex = size / pitch;
             partial_inbounds = size % pitch;
 
-            p_data = (const uint8_t *)swr_resource_data(vb->buffer)
-               + vb->buffer_offset;
+            p_data = swr_resource_data(vb->buffer) + vb->buffer_offset;
          } else {
             /* Client buffer
              * client memory is one-time use, re-trigger SWR_NEW_VERTEX to
@@ -989,8 +1033,7 @@ swr_update_derived(struct pipe_context *pipe,
              * size is based on buffer->width0 rather than info.count
              * to prevent having to validate VBO on each draw */
             size = ib->buffer->width0;
-            p_data =
-               (const uint8_t *)swr_resource_data(ib->buffer) + ib->offset;
+            p_data = swr_resource_data(ib->buffer) + ib->offset;
          } else {
             /* Client buffer
              * client memory is one-time use, re-trigger SWR_NEW_VERTEX to
@@ -1032,10 +1075,9 @@ swr_update_derived(struct pipe_context *pipe,
       auto search = ctx->vs->map.find(key);
       PFN_VERTEX_FUNC func;
       if (search != ctx->vs->map.end()) {
-         func = search->second;
+         func = search->second->shader;
       } else {
          func = swr_compile_vs(ctx, key);
-         ctx->vs->map.insert(std::make_pair(key, func));
       }
       SwrSetVertexFunc(ctx->swrContext, func);
 
@@ -1064,10 +1106,9 @@ swr_update_derived(struct pipe_context *pipe,
       auto search = ctx->fs->map.find(key);
       PFN_PIXEL_KERNEL func;
       if (search != ctx->fs->map.end()) {
-         func = search->second;
+         func = search->second->shader;
       } else {
          func = swr_compile_fs(ctx, key);
-         ctx->fs->map.insert(std::make_pair(key, func));
       }
       SWR_PS_STATE psState = {0};
       psState.pfnPixelShader = func;
@@ -1130,52 +1171,12 @@ swr_update_derived(struct pipe_context *pipe,
 
    /* VertexShader Constants */
    if (ctx->dirty & SWR_NEW_VSCONSTANTS) {
-      swr_draw_context *pDC = &ctx->swrDC;
-
-      for (UINT i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++) {
-         const pipe_constant_buffer *cb =
-            &ctx->constants[PIPE_SHADER_VERTEX][i];
-         pDC->num_constantsVS[i] = cb->buffer_size;
-         if (cb->buffer)
-            pDC->constantVS[i] =
-               (const float *)((const uint8_t *)cb->buffer + cb->buffer_offset);
-         else {
-            /* Need to copy these constants to scratch space */
-            if (cb->user_buffer && cb->buffer_size) {
-               const void *ptr =
-                  ((const uint8_t *)cb->user_buffer + cb->buffer_offset);
-               uint32_t size = AlignUp(cb->buffer_size, 4);
-               ptr = swr_copy_to_scratch_space(
-                  ctx, &ctx->scratch->vs_constants, ptr, size);
-               pDC->constantVS[i] = (const float *)ptr;
-            }
-         }
-      }
+      swr_update_constants(ctx, PIPE_SHADER_VERTEX);
    }
 
    /* FragmentShader Constants */
    if (ctx->dirty & SWR_NEW_FSCONSTANTS) {
-      swr_draw_context *pDC = &ctx->swrDC;
-
-      for (UINT i = 0; i < PIPE_MAX_CONSTANT_BUFFERS; i++) {
-         const pipe_constant_buffer *cb =
-            &ctx->constants[PIPE_SHADER_FRAGMENT][i];
-         pDC->num_constantsFS[i] = cb->buffer_size;
-         if (cb->buffer)
-            pDC->constantFS[i] =
-               (const float *)((const uint8_t *)cb->buffer + cb->buffer_offset);
-         else {
-            /* Need to copy these constants to scratch space */
-            if (cb->user_buffer && cb->buffer_size) {
-               const void *ptr =
-                  ((const uint8_t *)cb->user_buffer + cb->buffer_offset);
-               uint32_t size = AlignUp(cb->buffer_size, 4);
-               ptr = swr_copy_to_scratch_space(
-                  ctx, &ctx->scratch->fs_constants, ptr, size);
-               pDC->constantFS[i] = (const float *)ptr;
-            }
-         }
-      }
+      swr_update_constants(ctx, PIPE_SHADER_FRAGMENT);
    }
 
    /* Depth/stencil state */
@@ -1345,10 +1346,6 @@ swr_update_derived(struct pipe_context *pipe,
       linkage |= (1 << ctx->vs->info.base.num_outputs);
 
    SwrSetLinkage(ctx->swrContext, linkage, NULL);
-
-   // set up frontend state
-   SWR_FRONTEND_STATE feState = {0};
-   SwrSetFrontendState(ctx->swrContext, &feState);
 
    // set up backend state
    SWR_BACKEND_STATE backendState = {0};

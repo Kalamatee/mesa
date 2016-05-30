@@ -24,33 +24,77 @@
 #include "nvc0/nvc0_query_hw_metric.h"
 #include "nvc0/nvc0_query_hw_sm.h"
 
-#define _Q(t,n) { NVC0_HW_METRIC_QUERY_##t, n }
-struct {
-   unsigned type;
+#define _Q(i,n,t,d) { NVC0_HW_METRIC_QUERY_##i, n, PIPE_DRIVER_QUERY_TYPE_##t, d }
+static const struct nvc0_hw_metric_cfg {
+   unsigned id;
    const char *name;
+   enum pipe_driver_query_type type;
+   const char *desc;
 } nvc0_hw_metric_queries[] = {
-   _Q(ACHIEVED_OCCUPANCY,           "metric-achieved_occupancy"               ),
-   _Q(BRANCH_EFFICIENCY,            "metric-branch_efficiency"                ),
-   _Q(INST_ISSUED,                  "metric-inst_issued"                      ),
-   _Q(INST_PER_WRAP,                "metric-inst_per_wrap"                    ),
-   _Q(INST_REPLAY_OVERHEAD,         "metric-inst_replay_overhead"             ),
-   _Q(ISSUED_IPC,                   "metric-issued_ipc"                       ),
-   _Q(ISSUE_SLOTS,                  "metric-issue_slots"                      ),
-   _Q(ISSUE_SLOT_UTILIZATION,       "metric-issue_slot_utilization"           ),
-   _Q(IPC,                          "metric-ipc"                              ),
-   _Q(SHARED_REPLAY_OVERHEAD,       "metric-shared_replay_overhead"           ),
+   _Q(ACHIEVED_OCCUPANCY,
+      "metric-achieved_occupancy",
+      PERCENTAGE,
+      "Ratio of the average active warps per active cycle to the maximum number "
+      "of warps supported on a multiprocessor"),
+
+   _Q(BRANCH_EFFICIENCY,
+      "metric-branch_efficiency",
+      PERCENTAGE,
+      "Ratio of non-divergent branches to total branches"),
+
+   _Q(INST_ISSUED,
+      "metric-inst_issued",
+      UINT64,
+      "The number of instructions issued"),
+
+   _Q(INST_PER_WRAP,
+      "metric-inst_per_wrap",
+      UINT64,
+      "Average number of instructions executed by each warp"),
+
+   _Q(INST_REPLAY_OVERHEAD,
+      "metric-inst_replay_overhead",
+      UINT64,
+      "Average number of replays for each instruction executed"),
+
+   _Q(ISSUED_IPC,
+      "metric-issued_ipc",
+      UINT64,
+      "Instructions issued per cycle"),
+
+   _Q(ISSUE_SLOTS,
+      "metric-issue_slots",
+      UINT64,
+      "The number of issue slots used"),
+
+   _Q(ISSUE_SLOT_UTILIZATION,
+      "metric-issue_slot_utilization",
+      PERCENTAGE,
+      "Percentage of issue slots that issued at least one instruction, averaged "
+      "across all cycles"),
+
+   _Q(IPC,
+      "metric-ipc",
+      UINT64,
+      "Instructions executed per cycle"),
+
+   _Q(SHARED_REPLAY_OVERHEAD,
+      "metric-shared_replay_overhead",
+      UINT64,
+      "Average number of replays due to shared memory conflicts for each "
+      "instruction executed"),
 };
 
 #undef _Q
 
-static inline const char *
-nvc0_hw_metric_query_get_name(unsigned query_type)
+static inline const struct nvc0_hw_metric_cfg *
+nvc0_hw_metric_get_cfg(unsigned metric_id)
 {
    unsigned i;
 
    for (i = 0; i < ARRAY_SIZE(nvc0_hw_metric_queries); i++) {
-      if (nvc0_hw_metric_queries[i].type == query_type)
-         return nvc0_hw_metric_queries[i].name;
+      if (nvc0_hw_metric_queries[i].id == metric_id)
+         return &nvc0_hw_metric_queries[i];
    }
    assert(0);
    return NULL;
@@ -176,6 +220,17 @@ sm21_issued_ipc =
 };
 
 static const struct nvc0_hw_metric_query_cfg
+sm21_issue_slots =
+{
+   .type        = NVC0_HW_METRIC_QUERY_ISSUE_SLOTS,
+   .queries[0]  = _SM(INST_ISSUED1_0),
+   .queries[1]  = _SM(INST_ISSUED1_1),
+   .queries[2]  = _SM(INST_ISSUED2_0),
+   .queries[3]  = _SM(INST_ISSUED2_1),
+   .num_queries = 4,
+};
+
+static const struct nvc0_hw_metric_query_cfg
 sm21_issue_slot_utilization =
 {
    .type        = NVC0_HW_METRIC_QUERY_ISSUE_SLOT_UTILIZATION,
@@ -195,7 +250,7 @@ static const struct nvc0_hw_metric_query_cfg *sm21_hw_metric_queries[] =
    &sm20_inst_per_wrap,
    &sm21_inst_replay_overhead,
    &sm21_issued_ipc,
-   &sm21_inst_issued,
+   &sm21_issue_slots,
    &sm21_issue_slot_utilization,
    &sm20_ipc,
 };
@@ -258,6 +313,15 @@ sm30_issued_ipc =
 };
 
 static const struct nvc0_hw_metric_query_cfg
+sm30_issue_slots =
+{
+   .type        = NVC0_HW_METRIC_QUERY_ISSUE_SLOTS,
+   .queries[0]  = _SM(INST_ISSUED1),
+   .queries[1]  = _SM(INST_ISSUED2),
+   .num_queries = 2,
+};
+
+static const struct nvc0_hw_metric_query_cfg
 sm30_issue_slot_utilization =
 {
    .type        = NVC0_HW_METRIC_QUERY_ISSUE_SLOT_UTILIZATION,
@@ -294,7 +358,7 @@ static const struct nvc0_hw_metric_query_cfg *sm30_hw_metric_queries[] =
    &sm30_inst_per_wrap,
    &sm30_inst_replay_overhead,
    &sm30_issued_ipc,
-   &sm30_inst_issued,
+   &sm30_issue_slots,
    &sm30_issue_slot_utilization,
    &sm30_ipc,
    &sm30_shared_replay_overhead,
@@ -416,9 +480,9 @@ sm20_hw_metric_calc_result(struct nvc0_hw_query *hq, uint64_t res64[8])
 {
    switch (hq->base.type - NVC0_HW_METRIC_QUERY(0)) {
    case NVC0_HW_METRIC_QUERY_ACHIEVED_OCCUPANCY:
-      /* (active_warps / active_cycles) / max. number of warps on a MP */
+      /* ((active_warps / active_cycles) / max. number of warps on a MP) * 100 */
       if (res64[1])
-         return (res64[0] / (double)res64[1]) / 48;
+         return ((res64[0] / (double)res64[1]) / 48) * 100;
       break;
    case NVC0_HW_METRIC_QUERY_BRANCH_EFFICIENCY:
       /* (branch / (branch + divergent_branch)) * 100 */
@@ -509,9 +573,9 @@ sm30_hw_metric_calc_result(struct nvc0_hw_query *hq, uint64_t res64[8])
 {
    switch (hq->base.type - NVC0_HW_METRIC_QUERY(0)) {
    case NVC0_HW_METRIC_QUERY_ACHIEVED_OCCUPANCY:
-      /* (active_warps / active_cycles) / max. number of warps on a MP */
+      /* ((active_warps / active_cycles) / max. number of warps on a MP) * 100 */
       if (res64[1])
-         return (res64[0] / (double)res64[1]) / 64;
+         return ((res64[0] / (double)res64[1]) / 64) * 100;
       break;
    case NVC0_HW_METRIC_QUERY_BRANCH_EFFICIENCY:
       return sm20_hw_metric_calc_result(hq, res64);
@@ -651,9 +715,12 @@ nvc0_hw_metric_get_driver_query_info(struct nvc0_screen *screen, unsigned id,
          if (screen->base.class_3d <= NVF0_3D_CLASS) {
             const struct nvc0_hw_metric_query_cfg **queries =
                nvc0_hw_metric_get_queries(screen);
+            const struct nvc0_hw_metric_cfg *cfg =
+               nvc0_hw_metric_get_cfg(queries[id]->type);
 
-            info->name = nvc0_hw_metric_query_get_name(queries[id]->type);
+            info->name = cfg->name;
             info->query_type = NVC0_HW_METRIC_QUERY(queries[id]->type);
+            info->type = cfg->type;
             info->group_id = NVC0_HW_METRIC_QUERY_GROUP;
             return 1;
          }

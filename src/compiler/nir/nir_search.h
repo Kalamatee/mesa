@@ -40,6 +40,8 @@ typedef enum {
 
 typedef struct {
    nir_search_value_type type;
+
+   unsigned bit_size;
 } nir_search_value;
 
 typedef struct {
@@ -50,7 +52,7 @@ typedef struct {
 
    /** Indicates that the given variable must be a constant
     *
-    * This is only alloed in search expressions and indicates that the
+    * This is only allowed in search expressions and indicates that the
     * given variable is only allowed to match constant values.
     */
    bool is_constant;

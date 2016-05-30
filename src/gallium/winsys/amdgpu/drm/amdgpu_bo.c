@@ -43,7 +43,20 @@ static bool amdgpu_bo_wait(struct pb_buffer *_buf, uint64_t timeout,
 {
    struct amdgpu_winsys_bo *bo = amdgpu_winsys_bo(_buf);
    struct amdgpu_winsys *ws = bo->ws;
+   int64_t abs_timeout;
    int i;
+
+   if (timeout == 0) {
+      if (p_atomic_read(&bo->num_active_ioctls))
+         return false;
+
+   } else {
+      abs_timeout = os_time_get_absolute_timeout(timeout);
+
+      /* Wait if any ioctl is being submitted with this buffer. */
+      if (!os_wait_until_zero_abs_timeout(&bo->num_active_ioctls, abs_timeout))
+         return false;
+   }
 
    if (bo->is_shared) {
       /* We can't use user fences for shared buffers, because user fences
@@ -61,7 +74,6 @@ static bool amdgpu_bo_wait(struct pb_buffer *_buf, uint64_t timeout,
    }
 
    if (timeout == 0) {
-      /* Timeout == 0 is quite simple. */
       pipe_mutex_lock(ws->bo_fence_lock);
       for (i = 0; i < RING_LAST; i++)
          if (bo->fence[i]) {
@@ -80,7 +92,6 @@ static bool amdgpu_bo_wait(struct pb_buffer *_buf, uint64_t timeout,
       struct pipe_fence_handle *fence[RING_LAST] = {};
       bool fence_idle[RING_LAST] = {};
       bool buffer_idle = true;
-      int64_t abs_timeout = os_time_get_absolute_timeout(timeout);
 
       /* Take references to all fences, so that we can wait for them
        * without the lock. */
@@ -137,9 +148,9 @@ void amdgpu_bo_destroy(struct pb_buffer *_buf)
       amdgpu_fence_reference(&bo->fence[i], NULL);
 
    if (bo->initial_domain & RADEON_DOMAIN_VRAM)
-      bo->ws->allocated_vram -= align64(bo->base.size, bo->ws->gart_page_size);
+      bo->ws->allocated_vram -= align64(bo->base.size, bo->ws->info.gart_page_size);
    else if (bo->initial_domain & RADEON_DOMAIN_GTT)
-      bo->ws->allocated_gtt -= align64(bo->base.size, bo->ws->gart_page_size);
+      bo->ws->allocated_gtt -= align64(bo->base.size, bo->ws->info.gart_page_size);
    FREE(bo);
 }
 
@@ -209,13 +220,24 @@ static void *amdgpu_bo_map(struct pb_buffer *buf,
             if (cs && amdgpu_bo_is_referenced_by_cs_with_usage(cs, bo,
                                                                RADEON_USAGE_WRITE)) {
                cs->flush_cs(cs->flush_data, 0, NULL);
+            } else {
+               /* Try to avoid busy-waiting in amdgpu_bo_wait. */
+               if (p_atomic_read(&bo->num_active_ioctls))
+                  amdgpu_cs_sync_flush(rcs);
             }
             amdgpu_bo_wait((struct pb_buffer*)bo, PIPE_TIMEOUT_INFINITE,
                            RADEON_USAGE_WRITE);
          } else {
             /* Mapping for write. */
-            if (cs && amdgpu_bo_is_referenced_by_cs(cs, bo))
-               cs->flush_cs(cs->flush_data, 0, NULL);
+            if (cs) {
+               if (amdgpu_bo_is_referenced_by_cs(cs, bo)) {
+                  cs->flush_cs(cs->flush_data, 0, NULL);
+               } else {
+                  /* Try to avoid busy-waiting in amdgpu_bo_wait. */
+                  if (p_atomic_read(&bo->num_active_ioctls))
+                     amdgpu_cs_sync_flush(rcs);
+               }
+            }
 
             amdgpu_bo_wait((struct pb_buffer*)bo, PIPE_TIMEOUT_INFINITE,
                            RADEON_USAGE_READWRITE);
@@ -327,9 +349,9 @@ static struct amdgpu_winsys_bo *amdgpu_create_bo(struct amdgpu_winsys *ws,
    bo->unique_id = __sync_fetch_and_add(&ws->next_bo_unique_id, 1);
 
    if (initial_domain & RADEON_DOMAIN_VRAM)
-      ws->allocated_vram += align64(size, ws->gart_page_size);
+      ws->allocated_vram += align64(size, ws->info.gart_page_size);
    else if (initial_domain & RADEON_DOMAIN_GTT)
-      ws->allocated_gtt += align64(size, ws->gart_page_size);
+      ws->allocated_gtt += align64(size, ws->info.gart_page_size);
 
    amdgpu_add_buffer_to_global_list(bo);
 
@@ -408,10 +430,12 @@ static void amdgpu_buffer_get_metadata(struct pb_buffer *_buf,
    else if (AMDGPU_TILING_GET(tiling_flags, ARRAY_MODE) == 2) /* 1D_TILED_THIN1 */
       md->microtile = RADEON_LAYOUT_TILED;
 
+   md->pipe_config = AMDGPU_TILING_GET(tiling_flags, PIPE_CONFIG);
    md->bankw = 1 << AMDGPU_TILING_GET(tiling_flags, BANK_WIDTH);
    md->bankh = 1 << AMDGPU_TILING_GET(tiling_flags, BANK_HEIGHT);
    md->tile_split = eg_tile_split(AMDGPU_TILING_GET(tiling_flags, TILE_SPLIT));
    md->mtilea = 1 << AMDGPU_TILING_GET(tiling_flags, MACRO_TILE_ASPECT);
+   md->num_banks = 2 << AMDGPU_TILING_GET(tiling_flags, NUM_BANKS);
    md->scanout = AMDGPU_TILING_GET(tiling_flags, MICRO_TILE_MODE) == 0; /* DISPLAY */
 
    md->size_metadata = info.metadata.size_metadata;
@@ -456,7 +480,6 @@ static struct pb_buffer *
 amdgpu_bo_create(struct radeon_winsys *rws,
                  uint64_t size,
                  unsigned alignment,
-                 boolean use_reusable_pool,
                  enum radeon_bo_domain domain,
                  enum radeon_bo_flag flags)
 {
@@ -468,7 +491,8 @@ amdgpu_bo_create(struct radeon_winsys *rws,
     * BOs. Aligning this here helps the cached bufmgr. Especially small BOs,
     * like constant/uniform buffers, can benefit from better and more reuse.
     */
-   size = align64(size, ws->gart_page_size);
+   size = align64(size, ws->info.gart_page_size);
+   alignment = align(alignment, ws->info.gart_page_size);
 
    /* Only set one usage bit each for domains and flags, or the cache manager
     * might consider different sets of domains / flags compatible
@@ -481,13 +505,10 @@ amdgpu_bo_create(struct radeon_winsys *rws,
    usage |= 1 << (flags + 3);
 
    /* Get a buffer from the cache. */
-   if (use_reusable_pool) {
-       bo = (struct amdgpu_winsys_bo*)
-            pb_cache_reclaim_buffer(&ws->bo_cache, size, alignment,
-                                    usage);
-       if (bo)
-          return &bo->base;
-   }
+   bo = (struct amdgpu_winsys_bo*)
+        pb_cache_reclaim_buffer(&ws->bo_cache, size, alignment, usage);
+   if (bo)
+      return &bo->base;
 
    /* Create a new one. */
    bo = amdgpu_create_bo(ws, size, alignment, usage, domain, flags);
@@ -499,7 +520,7 @@ amdgpu_bo_create(struct radeon_winsys *rws,
          return NULL;
    }
 
-   bo->use_reusable_pool = use_reusable_pool;
+   bo->use_reusable_pool = true;
    return &bo->base;
 }
 
@@ -561,7 +582,6 @@ static struct pb_buffer *amdgpu_bo_from_handle(struct radeon_winsys *rws,
 
    pipe_reference_init(&bo->base.reference, 1);
    bo->base.alignment = info.phys_alignment;
-   bo->base.usage = PB_USAGE_GPU_WRITE | PB_USAGE_GPU_READ;
    bo->bo = result.buf_handle;
    bo->base.size = result.alloc_size;
    bo->base.vtbl = &amdgpu_winsys_bo_vtbl;
@@ -578,9 +598,9 @@ static struct pb_buffer *amdgpu_bo_from_handle(struct radeon_winsys *rws,
       *offset = whandle->offset;
 
    if (bo->initial_domain & RADEON_DOMAIN_VRAM)
-      ws->allocated_vram += align64(bo->base.size, ws->gart_page_size);
+      ws->allocated_vram += align64(bo->base.size, ws->info.gart_page_size);
    else if (bo->initial_domain & RADEON_DOMAIN_GTT)
-      ws->allocated_gtt += align64(bo->base.size, ws->gart_page_size);
+      ws->allocated_gtt += align64(bo->base.size, ws->info.gart_page_size);
 
    amdgpu_add_buffer_to_global_list(bo);
 
@@ -660,7 +680,6 @@ static struct pb_buffer *amdgpu_bo_from_ptr(struct radeon_winsys *rws,
     pipe_reference_init(&bo->base.reference, 1);
     bo->bo = buf_handle;
     bo->base.alignment = 0;
-    bo->base.usage = PB_USAGE_GPU_WRITE | PB_USAGE_GPU_READ;
     bo->base.size = size;
     bo->base.vtbl = &amdgpu_winsys_bo_vtbl;
     bo->ws = ws;
@@ -670,7 +689,7 @@ static struct pb_buffer *amdgpu_bo_from_ptr(struct radeon_winsys *rws,
     bo->initial_domain = RADEON_DOMAIN_GTT;
     bo->unique_id = __sync_fetch_and_add(&ws->next_bo_unique_id, 1);
 
-    ws->allocated_gtt += align64(bo->base.size, ws->gart_page_size);
+    ws->allocated_gtt += align64(bo->base.size, ws->info.gart_page_size);
 
     amdgpu_add_buffer_to_global_list(bo);
 

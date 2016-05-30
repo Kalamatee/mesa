@@ -191,6 +191,7 @@ const char *operationStr[OP_LAST + 1] =
    "cctl",
    "shfl",
    "vote",
+   "bufq",
    "(invalid)"
 };
 
@@ -460,6 +461,7 @@ int Symbol::print(char *buf, size_t size,
    case FILE_MEMORY_CONST:  c = 'c'; break;
    case FILE_SHADER_INPUT:  c = 'a'; break;
    case FILE_SHADER_OUTPUT: c = 'o'; break;
+   case FILE_MEMORY_BUFFER: c = 'b'; break; // Only used before lowering
    case FILE_MEMORY_GLOBAL: c = 'g'; break;
    case FILE_MEMORY_SHARED: c = 's'; break;
    case FILE_MEMORY_LOCAL:  c = 'l'; break;
@@ -545,16 +547,16 @@ void Instruction::print() const
       switch (op) {
       case OP_SUREDP:
       case OP_ATOM:
-         if (subOp < Elements(atomSubOpStr))
+         if (subOp < ARRAY_SIZE(atomSubOpStr))
             PRINT("%s ", atomSubOpStr[subOp]);
          break;
       case OP_LOAD:
       case OP_STORE:
-         if (subOp < Elements(ldstSubOpStr))
+         if (subOp < ARRAY_SIZE(ldstSubOpStr))
             PRINT("%s ", ldstSubOpStr[subOp]);
          break;
       case OP_SUBFM:
-         if (subOp < Elements(subfmOpStr))
+         if (subOp < ARRAY_SIZE(subfmOpStr))
             PRINT("%s ", subfmOpStr[subOp]);
          break;
       default:

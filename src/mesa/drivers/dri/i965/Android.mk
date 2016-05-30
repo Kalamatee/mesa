@@ -62,5 +62,7 @@ LOCAL_GENERATED_SOURCES := \
 	$(MESA_DRI_OPTIONS_H) \
 	$(MESA_GEN_NIR_H)
 
+include $(LOCAL_PATH)/Android.gen.mk
+
 include $(MESA_COMMON_MK)
 include $(BUILD_SHARED_LIBRARY)

@@ -88,7 +88,7 @@ insert_phi_nodes(nir_function_impl *impl)
       w_start = w_end = 0;
       iter_count++;
 
-      nir_foreach_def(reg, dest) {
+      nir_foreach_def(dest, reg) {
          nir_instr *def = dest->reg.parent_instr;
          if (work[def->block->index] < iter_count)
             W[w_end++] = def->block;
@@ -381,7 +381,7 @@ rewrite_instr_forward(nir_instr *instr, rewrite_state *state)
 static void
 rewrite_phi_sources(nir_block *block, nir_block *pred, rewrite_state *state)
 {
-   nir_foreach_instr(block, instr) {
+   nir_foreach_instr(instr, block) {
       if (instr->type != nir_instr_type_phi)
          break;
 
@@ -389,7 +389,7 @@ rewrite_phi_sources(nir_block *block, nir_block *pred, rewrite_state *state)
 
       state->parent_instr = instr;
 
-      nir_foreach_phi_src(phi_instr, src) {
+      nir_foreach_phi_src(src, phi_instr) {
          if (src->pred == pred) {
             rewrite_use(&src->src, state);
             break;
@@ -434,7 +434,7 @@ rewrite_block(nir_block *block, rewrite_state *state)
     * what we want because those instructions (vector gather, conditional
     * select) will already be in SSA form.
     */
-   nir_foreach_instr_safe(block, instr) {
+   nir_foreach_instr_safe(instr, block) {
       rewrite_instr_forward(instr, state);
    }
 
@@ -455,7 +455,7 @@ rewrite_block(nir_block *block, rewrite_state *state)
    for (unsigned i = 0; i < block->num_dom_children; i++)
       rewrite_block(block->dom_children[i], state);
 
-   nir_foreach_instr_reverse(block, instr) {
+   nir_foreach_instr_reverse(instr, block) {
       rewrite_instr_backwards(instr, state);
    }
 }
@@ -533,7 +533,7 @@ nir_convert_to_ssa_impl(nir_function_impl *impl)
 void
 nir_convert_to_ssa(nir_shader *shader)
 {
-   nir_foreach_function(shader, function) {
+   nir_foreach_function(function, shader) {
       if (function->impl)
          nir_convert_to_ssa_impl(function->impl);
    }

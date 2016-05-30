@@ -1,9 +1,11 @@
 C_SOURCES := \
 	sp_buffer.c \
+	sp_buffer.h \
 	sp_clear.c \
 	sp_clear.h \
 	sp_context.c \
 	sp_context.h \
+	sp_compute.c \
 	sp_draw_arrays.c \
 	sp_fence.c \
 	sp_fence.h \

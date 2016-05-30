@@ -41,6 +41,7 @@
 #include "core/threads.h"
 #include "core/tilemgr.h"
 #include "core/clip.h"
+#include "core/utils.h"
 
 #include "common/simdintrin.h"
 #include "common/os.h"
@@ -56,7 +57,7 @@ HANDLE SwrCreateContext(
     RDTSC_RESET();
     RDTSC_INIT(0);
 
-    void* pContextMem = _aligned_malloc(sizeof(SWR_CONTEXT), KNOB_SIMD_WIDTH * 4);
+    void* pContextMem = AlignedMalloc(sizeof(SWR_CONTEXT), KNOB_SIMD_WIDTH * 4);
     memset(pContextMem, 0, sizeof(SWR_CONTEXT));
     SWR_CONTEXT *pContext = new (pContextMem) SWR_CONTEXT();
 
@@ -66,8 +67,8 @@ HANDLE SwrCreateContext(
     pContext->dcRing.Init(KNOB_MAX_DRAWS_IN_FLIGHT);
     pContext->dsRing.Init(KNOB_MAX_DRAWS_IN_FLIGHT);
 
-    pContext->pMacroTileManagerArray = (MacroTileMgr*)_aligned_malloc(sizeof(MacroTileMgr) * KNOB_MAX_DRAWS_IN_FLIGHT, 64);
-    pContext->pDispatchQueueArray = (DispatchQueue*)_aligned_malloc(sizeof(DispatchQueue) * KNOB_MAX_DRAWS_IN_FLIGHT, 64);
+    pContext->pMacroTileManagerArray = (MacroTileMgr*)AlignedMalloc(sizeof(MacroTileMgr) * KNOB_MAX_DRAWS_IN_FLIGHT, 64);
+    pContext->pDispatchQueueArray = (DispatchQueue*)AlignedMalloc(sizeof(DispatchQueue) * KNOB_MAX_DRAWS_IN_FLIGHT, 64);
 
     for (uint32_t dc = 0; dc < KNOB_MAX_DRAWS_IN_FLIGHT; ++dc)
     {
@@ -109,7 +110,7 @@ HANDLE SwrCreateContext(
             MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE,
             numaNode);
 #else
-        pContext->pScratch[i] = (uint8_t*)_aligned_malloc(32 * sizeof(KILOBYTE), KNOB_SIMD_WIDTH * 4);
+        pContext->pScratch[i] = (uint8_t*)AlignedMalloc(32 * sizeof(KILOBYTE), KNOB_SIMD_WIDTH * 4);
 #endif
     }
 
@@ -151,8 +152,8 @@ void SwrDestroyContext(HANDLE hContext)
         pContext->pDispatchQueueArray[i].~DispatchQueue();
     }
 
-    _aligned_free(pContext->pDispatchQueueArray);
-    _aligned_free(pContext->pMacroTileManagerArray);
+    AlignedFree(pContext->pDispatchQueueArray);
+    AlignedFree(pContext->pMacroTileManagerArray);
 
     // Free scratch space.
     for (uint32_t i = 0; i < pContext->NumWorkerThreads; ++i)
@@ -160,14 +161,14 @@ void SwrDestroyContext(HANDLE hContext)
 #if defined(_WIN32)
         VirtualFree(pContext->pScratch[i], 0, MEM_RELEASE);
 #else
-        _aligned_free(pContext->pScratch[i]);
+        AlignedFree(pContext->pScratch[i]);
 #endif
     }
 
     delete(pContext->pHotTileMgr);
 
     pContext->~SWR_CONTEXT();
-    _aligned_free((SWR_CONTEXT*)hContext);
+    AlignedFree((SWR_CONTEXT*)hContext);
 }
 
 void CopyState(DRAW_STATE& dst, const DRAW_STATE& src)
@@ -527,11 +528,13 @@ void SwrSetGsFunc(
 void SwrSetCsFunc(
     HANDLE hContext,
     PFN_CS_FUNC pfnCsFunc,
-    uint32_t totalThreadsInGroup)
+    uint32_t totalThreadsInGroup,
+    uint32_t totalSpillFillSize)
 {
     API_STATE* pState = GetDrawState(GetContext(hContext));
     pState->pfnCsFunc = pfnCsFunc;
     pState->totalThreadsInGroup = totalThreadsInGroup;
+    pState->totalSpillFillSize = totalSpillFillSize;
 }
 
 void SwrSetTsState(
@@ -752,34 +755,30 @@ void SetupMacroTileScissors(DRAW_CONTEXT *pDC)
         pState->scissorInFixedPoint.bottom = bottom * FIXED_POINT_SCALE - 1;
     }
 }
+
 // templated backend function tables
 extern PFN_BACKEND_FUNC gBackendNullPs[SWR_MULTISAMPLE_TYPE_MAX];
-extern PFN_BACKEND_FUNC gBackendSingleSample[2][2];
-extern PFN_BACKEND_FUNC gBackendPixelRateTable[SWR_MULTISAMPLE_TYPE_MAX][SWR_MSAA_SAMPLE_PATTERN_MAX][SWR_INPUT_COVERAGE_MAX][2][2];
-extern PFN_BACKEND_FUNC gBackendSampleRateTable[SWR_MULTISAMPLE_TYPE_MAX][SWR_INPUT_COVERAGE_MAX][2];
-extern PFN_OUTPUT_MERGER gBackendOutputMergerTable[SWR_NUM_RENDERTARGETS + 1][SWR_MULTISAMPLE_TYPE_MAX];
-extern PFN_CALC_PIXEL_BARYCENTRICS gPixelBarycentricTable[2];
-extern PFN_CALC_SAMPLE_BARYCENTRICS gSampleBarycentricTable[2];
-extern PFN_CALC_CENTROID_BARYCENTRICS gCentroidBarycentricTable[SWR_MULTISAMPLE_TYPE_MAX][2][2][2];
+extern PFN_BACKEND_FUNC gBackendSingleSample[2][2][2];
+extern PFN_BACKEND_FUNC gBackendPixelRateTable[SWR_MULTISAMPLE_TYPE_MAX][SWR_MSAA_SAMPLE_PATTERN_MAX][SWR_INPUT_COVERAGE_MAX][2][2][2];
+extern PFN_BACKEND_FUNC gBackendSampleRateTable[SWR_MULTISAMPLE_TYPE_MAX][SWR_INPUT_COVERAGE_MAX][2][2];
 void SetupPipeline(DRAW_CONTEXT *pDC)
 {
     DRAW_STATE* pState = pDC->pState;
     const SWR_RASTSTATE &rastState = pState->state.rastState;
     const SWR_PS_STATE &psState = pState->state.psState;
     BACKEND_FUNCS& backendFuncs = pState->backendFuncs;
-    const uint32_t forcedSampleCount = (rastState.bForcedSampleCount) ? 1 : 0;
+    const uint32_t forcedSampleCount = (rastState.forcedSampleCount) ? 1 : 0;
 
     // setup backend
     if (psState.pfnPixelShader == nullptr)
     {
         backendFuncs.pfnBackend = gBackendNullPs[pState->state.rastState.sampleCount];
-        // always need to generate I & J per sample for Z interpolation
-        backendFuncs.pfnCalcSampleBarycentrics = gSampleBarycentricTable[1];
     }
     else
     {
-        const bool bMultisampleEnable = ((rastState.sampleCount > SWR_MULTISAMPLE_1X) || rastState.bForcedSampleCount) ? 1 : 0;
+        const bool bMultisampleEnable = ((rastState.sampleCount > SWR_MULTISAMPLE_1X) || rastState.forcedSampleCount) ? 1 : 0;
         const uint32_t centroid = ((psState.barycentricsMask & SWR_BARYCENTRIC_CENTROID_MASK) > 0) ? 1 : 0;
+        const uint32_t canEarlyZ = (psState.forceEarlyZ || (!psState.writesODepth && !psState.usesSourceDepth && !psState.usesUAV)) ? 1 : 0;
 
         // currently only support 'normal' input coverage
         SWR_ASSERT(psState.inputCoverage == SWR_INPUT_COVERAGE_NORMAL ||
@@ -795,38 +794,25 @@ void SetupPipeline(DRAW_CONTEXT *pDC)
             {
                 // always need to generate I & J per sample for Z interpolation
                 barycentricsMask = (SWR_BARYCENTRICS_MASK)(barycentricsMask | SWR_BARYCENTRIC_PER_SAMPLE_MASK);
-                backendFuncs.pfnBackend = gBackendPixelRateTable[rastState.sampleCount][rastState.samplePattern][psState.inputCoverage][centroid][forcedSampleCount];
-                backendFuncs.pfnOutputMerger = gBackendOutputMergerTable[psState.numRenderTargets][pState->state.blendState.sampleCount];
+                backendFuncs.pfnBackend = gBackendPixelRateTable[rastState.sampleCount][rastState.samplePattern][psState.inputCoverage][centroid][forcedSampleCount][canEarlyZ];
             }
             else
             {
                 // always need to generate I & J per pixel for Z interpolation
                 barycentricsMask = (SWR_BARYCENTRICS_MASK)(barycentricsMask | SWR_BARYCENTRIC_PER_PIXEL_MASK);
-                backendFuncs.pfnBackend = gBackendSingleSample[psState.inputCoverage][centroid];
-                backendFuncs.pfnOutputMerger = gBackendOutputMergerTable[psState.numRenderTargets][SWR_MULTISAMPLE_1X];
+                backendFuncs.pfnBackend = gBackendSingleSample[psState.inputCoverage][centroid][canEarlyZ];
             }
             break;
         case SWR_SHADING_RATE_SAMPLE:
             SWR_ASSERT(rastState.samplePattern == SWR_MSAA_STANDARD_PATTERN);
             // always need to generate I & J per sample for Z interpolation
             barycentricsMask = (SWR_BARYCENTRICS_MASK)(barycentricsMask | SWR_BARYCENTRIC_PER_SAMPLE_MASK);
-            backendFuncs.pfnBackend = gBackendSampleRateTable[rastState.sampleCount][psState.inputCoverage][centroid];
-            backendFuncs.pfnOutputMerger = gBackendOutputMergerTable[psState.numRenderTargets][pState->state.blendState.sampleCount];
+            backendFuncs.pfnBackend = gBackendSampleRateTable[rastState.sampleCount][psState.inputCoverage][centroid][canEarlyZ];
             break;
         default:
             SWR_ASSERT(0 && "Invalid shading rate");
             break;
         }
-
-        // setup pointer to function that generates necessary barycentrics required by the PS
-        bool bBarycentrics = (barycentricsMask & SWR_BARYCENTRIC_PER_PIXEL_MASK) > 0 ? 1 : 0;
-        backendFuncs.pfnCalcPixelBarycentrics = gPixelBarycentricTable[bBarycentrics];
-
-        bBarycentrics = (barycentricsMask & SWR_BARYCENTRIC_PER_SAMPLE_MASK) > 0 ? 1 : 0;
-        backendFuncs.pfnCalcSampleBarycentrics = gSampleBarycentricTable[bBarycentrics];
-
-        bBarycentrics = (barycentricsMask & SWR_BARYCENTRIC_CENTROID_MASK) > 0 ? 1 : 0;
-        backendFuncs.pfnCalcCentroidBarycentrics = gCentroidBarycentricTable[rastState.sampleCount][bBarycentrics][rastState.samplePattern][forcedSampleCount];
     }
     
     PFN_PROCESS_PRIMS pfnBinner;
@@ -1027,42 +1013,6 @@ uint32_t MaxVertsPerDraw(
     return vertsPerDraw;
 }
 
-// Recursive template used to auto-nest conditionals.  Converts dynamic boolean function
-// arguments to static template arguments.
-template <bool... ArgsB>
-struct FEDrawChooser
-{
-    // Last Arg Terminator
-    static PFN_FE_WORK_FUNC GetFunc(bool bArg)
-    {
-        if (bArg)
-        {
-            return ProcessDraw<ArgsB..., true>;
-        }
-
-        return ProcessDraw<ArgsB..., false>;
-    }
-
-    // Recursively parse args
-    template <typename... TArgsT>
-    static PFN_FE_WORK_FUNC GetFunc(bool bArg, TArgsT... remainingArgs)
-    {
-        if (bArg)
-        {
-            return FEDrawChooser<ArgsB..., true>::GetFunc(remainingArgs...);
-        }
-
-        return FEDrawChooser<ArgsB..., false>::GetFunc(remainingArgs...);
-    }
-};
-
-// Selector for correct templated Draw front-end function
-INLINE
-static PFN_FE_WORK_FUNC GetFEDrawFunc(bool IsIndexed, bool HasTessellation, bool HasGeometryShader, bool HasStreamOut, bool RasterizerEnabled)
-{
-    return FEDrawChooser<>::GetFunc(IsIndexed, HasTessellation, HasGeometryShader, HasStreamOut, RasterizerEnabled);
-}
-
 
 //////////////////////////////////////////////////////////////////////////
 /// @brief DrawInstanced
@@ -1117,8 +1067,9 @@ void DrawInstanced(
         InitDraw(pDC, isSplitDraw);
 
         pDC->FeWork.type = DRAW;
-        pDC->FeWork.pfnWork = GetFEDrawFunc(
+        pDC->FeWork.pfnWork = GetProcessDrawFunc(
             false,  // IsIndexed
+            false, // bEnableCutIndex
             pState->tsState.tsEnable,
             pState->gsState.gsEnable,
             pState->soState.soEnable,
@@ -1250,8 +1201,9 @@ void DrawIndexedInstance(
         InitDraw(pDC, isSplitDraw);
 
         pDC->FeWork.type = DRAW;
-        pDC->FeWork.pfnWork = GetFEDrawFunc(
+        pDC->FeWork.pfnWork = GetProcessDrawFunc(
             true,   // IsIndexed
+            pState->frontendState.bEnableCutIndex,
             pState->tsState.tsEnable,
             pState->gsState.gsEnable,
             pState->soState.soEnable,
@@ -1331,6 +1283,11 @@ void SwrInvalidateTiles(
     HANDLE hContext,
     uint32_t attachmentMask)
 {
+    if (KNOB_TOSS_DRAW)
+    {
+        return;
+    }
+
     SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
     DRAW_CONTEXT* pDC = GetDrawContext(pContext);
 
@@ -1356,6 +1313,11 @@ void SwrDiscardRect(
     uint32_t attachmentMask,
     SWR_RECT rect)
 {
+    if (KNOB_TOSS_DRAW)
+    {
+        return;
+    }
+
     SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
     DRAW_CONTEXT* pDC = GetDrawContext(pContext);
 
@@ -1417,6 +1379,11 @@ void SwrStoreTiles(
     SWR_RENDERTARGET_ATTACHMENT attachment,
     SWR_TILE_STATE postStoreTileState)
 {
+    if (KNOB_TOSS_DRAW)
+    {
+        return;
+    }
+
     RDTSC_START(APIStoreTiles);
 
     SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
@@ -1442,6 +1409,11 @@ void SwrClearRenderTarget(
     float z,
     uint8_t stencil)
 {
+    if (KNOB_TOSS_DRAW)
+    {
+        return;
+    }
+
     RDTSC_START(APIClearRenderTarget);
 
     SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;

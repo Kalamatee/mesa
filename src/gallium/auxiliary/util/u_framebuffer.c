@@ -96,7 +96,7 @@ util_copy_framebuffer_state(struct pipe_framebuffer_state *dst,
       pipe_surface_reference(&dst->cbufs[i], src->cbufs[i]);
 
    /* Set remaining dest cbuf pointers to NULL */
-   for ( ; i < Elements(dst->cbufs); i++)
+   for ( ; i < ARRAY_SIZE(dst->cbufs); i++)
       pipe_surface_reference(&dst->cbufs[i], NULL);
 
    dst->nr_cbufs = src->nr_cbufs;
@@ -147,7 +147,7 @@ util_framebuffer_min_size(const struct pipe_framebuffer_state *fb,
       h = MIN2(h, fb->zsbuf->height);
    }
 
-   if (w == ~0) {
+   if (w == ~0u) {
       *width = 0;
       *height = 0;
       return FALSE;

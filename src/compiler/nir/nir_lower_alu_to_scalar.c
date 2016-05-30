@@ -240,30 +240,24 @@ lower_alu_instr_scalar(nir_alu_instr *instr, nir_builder *b)
    nir_instr_remove(&instr->instr);
 }
 
-static bool
-lower_alu_to_scalar_block(nir_block *block, void *builder)
-{
-   nir_foreach_instr_safe(block, instr) {
-      if (instr->type == nir_instr_type_alu)
-         lower_alu_instr_scalar(nir_instr_as_alu(instr), builder);
-   }
-
-   return true;
-}
-
 static void
 nir_lower_alu_to_scalar_impl(nir_function_impl *impl)
 {
    nir_builder builder;
    nir_builder_init(&builder, impl);
 
-   nir_foreach_block(impl, lower_alu_to_scalar_block, &builder);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         if (instr->type == nir_instr_type_alu)
+            lower_alu_instr_scalar(nir_instr_as_alu(instr), &builder);
+      }
+   }
 }
 
 void
 nir_lower_alu_to_scalar(nir_shader *shader)
 {
-   nir_foreach_function(shader, function) {
+   nir_foreach_function(function, shader) {
       if (function->impl)
          nir_lower_alu_to_scalar_impl(function->impl);
    }

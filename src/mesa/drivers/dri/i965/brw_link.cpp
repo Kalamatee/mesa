@@ -26,10 +26,12 @@
 #include "brw_fs.h"
 #include "brw_nir.h"
 #include "brw_program.h"
+#include "compiler/glsl/ir.h"
 #include "compiler/glsl/ir_optimization.h"
 #include "compiler/glsl/program.h"
 #include "program/program.h"
 #include "main/shaderapi.h"
+#include "main/shaderobj.h"
 #include "main/uniforms.h"
 
 /**
@@ -105,11 +107,11 @@ process_glsl_ir(gl_shader_stage stage,
    brw_lower_packing_builtins(brw, shader->Stage, shader->ir);
    do_mat_op_to_vec(shader->ir);
    lower_instructions(shader->ir,
-                      MOD_TO_FLOOR |
                       DIV_TO_MUL_RCP |
                       SUB_TO_ADD_NEG |
                       EXP_TO_EXP2 |
                       LOG_TO_LOG2 |
+                      DFREXP_DLDEXP_TO_ARITH |
                       CARRY_TO_ARITH |
                       BORROW_TO_ARITH);
 
@@ -147,7 +149,9 @@ process_glsl_ir(gl_shader_stage stage,
       progress = false;
 
       if (compiler->scalar_stage[shader->Stage]) {
-         brw_do_channel_expressions(shader->ir);
+         if (shader->Stage == MESA_SHADER_VERTEX ||
+             shader->Stage == MESA_SHADER_FRAGMENT)
+            brw_do_channel_expressions(shader->ir);
          brw_do_vector_splitting(shader->ir);
       }
 
@@ -178,6 +182,22 @@ process_glsl_ir(gl_shader_stage stage,
       _mesa_print_ir(stderr, shader->ir, NULL);
       fprintf(stderr, "\n");
    }
+}
+
+extern "C" struct gl_shader *
+brw_new_shader(struct gl_context *ctx, GLuint name, GLuint type)
+{
+   struct brw_shader *shader;
+
+   shader = rzalloc(NULL, struct brw_shader);
+   if (shader) {
+      shader->base.Type = type;
+      shader->base.Stage = _mesa_shader_enum_to_shader_stage(type);
+      shader->base.Name = name;
+      _mesa_init_shader(ctx, &shader->base);
+   }
+
+   return &shader->base;
 }
 
 extern "C" GLboolean

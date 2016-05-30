@@ -48,6 +48,7 @@ static void si_destroy_context(struct pipe_context *context)
 	pipe_resource_reference(&sctx->esgs_ring, NULL);
 	pipe_resource_reference(&sctx->gsvs_ring, NULL);
 	pipe_resource_reference(&sctx->tf_ring, NULL);
+	pipe_resource_reference(&sctx->tess_offchip_ring, NULL);
 	pipe_resource_reference(&sctx->null_const_buf.buffer, NULL);
 	r600_resource_reference(&sctx->border_color_buffer, NULL);
 	free(sctx->border_color_table);
@@ -58,11 +59,9 @@ static void si_destroy_context(struct pipe_context *context)
 	si_pm4_free_state(sctx, sctx->init_config, ~0);
 	if (sctx->init_config_gs_rings)
 		si_pm4_free_state(sctx, sctx->init_config_gs_rings, ~0);
-	for (i = 0; i < Elements(sctx->vgt_shader_config); i++)
+	for (i = 0; i < ARRAY_SIZE(sctx->vgt_shader_config); i++)
 		si_pm4_delete_state(sctx, vgt_shader_config, sctx->vgt_shader_config[i]);
 
-	if (sctx->pstipple_sampler_state)
-		sctx->b.b.delete_sampler_state(&sctx->b.b, sctx->pstipple_sampler_state);
 	if (sctx->fixed_func_tcs_shader.cso)
 		sctx->b.b.delete_tcs_state(&sctx->b.b, sctx->fixed_func_tcs_shader.cso);
 	if (sctx->custom_dsa_flush)
@@ -194,6 +193,11 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	si_init_state_functions(sctx);
 	si_init_shader_functions(sctx);
 
+	if (sctx->b.chip_class >= CIK)
+		cik_init_sdma_functions(sctx);
+	else
+		si_init_dma_functions(sctx);
+
 	if (sscreen->b.debug_flags & DBG_FORCE_DMA)
 		sctx->b.b.resource_copy_region = sctx->b.dma_copy;
 
@@ -226,7 +230,8 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 
 		/* Clear the NULL constant buffer, because loads should return zeros. */
 		sctx->b.clear_buffer(&sctx->b.b, sctx->null_const_buf.buffer, 0,
-				     sctx->null_const_buf.buffer->width0, 0, false);
+				     sctx->null_const_buf.buffer->width0, 0,
+				     R600_COHERENCY_SHADER);
 	}
 
 	/* XXX: This is the maximum value allowed.  I'm not sure how to compute
@@ -364,6 +369,10 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 		return HAVE_LLVM >= 0x0309 ? 4 : 0;
 
 	case PIPE_CAP_GLSL_FEATURE_LEVEL:
+		if (pscreen->get_shader_param(pscreen, PIPE_SHADER_COMPUTE,
+		                              PIPE_SHADER_CAP_SUPPORTED_IRS) &
+		    (1 << PIPE_SHADER_IR_TGSI))
+			return 430;
 		return HAVE_LLVM >= 0x0309 ? 420 :
 		       HAVE_LLVM >= 0x0307 ? 410 : 330;
 
@@ -387,6 +396,8 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_GENERATE_MIPMAP:
 	case PIPE_CAP_STRING_MARKER:
 	case PIPE_CAP_QUERY_BUFFER_OBJECT:
+	case PIPE_CAP_CULL_DISTANCE:
+	case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
 		return 0;
 
 	case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
@@ -543,7 +554,7 @@ static int si_get_shader_param(struct pipe_screen* pscreen, unsigned shader, enu
 	case PIPE_SHADER_CAP_MAX_CONST_BUFFER_SIZE:
 		return 4096 * sizeof(float[4]); /* actually only memory limits this */
 	case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
-		return SI_NUM_USER_CONST_BUFFERS;
+		return SI_NUM_CONST_BUFFERS;
 	case PIPE_SHADER_CAP_MAX_PREDS:
 		return 0; /* FIXME */
 	case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
@@ -565,7 +576,7 @@ static int si_get_shader_param(struct pipe_screen* pscreen, unsigned shader, enu
 		return 0;
 	case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
 	case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
-		return SI_NUM_USER_SAMPLERS;
+		return SI_NUM_SAMPLERS;
 	case PIPE_SHADER_CAP_PREFERRED_IR:
 		return PIPE_SHADER_IR_TGSI;
 	case PIPE_SHADER_CAP_SUPPORTED_IRS:
@@ -690,6 +701,9 @@ struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws)
 
 	/* Create the auxiliary context. This must be done last. */
 	sscreen->b.aux_context = sscreen->b.b.context_create(&sscreen->b.b, NULL, 0);
+
+	if (sscreen->b.debug_flags & DBG_TEST_DMA)
+		r600_test_dma(&sscreen->b);
 
 	return &sscreen->b.b;
 }

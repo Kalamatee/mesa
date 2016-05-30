@@ -147,30 +147,35 @@ assemble_variant(struct ir3_shader_variant *v)
 		ir3_shader_disasm(v, bin);
 	}
 
-	if (fd_mesa_debug & FD_DBG_SHADERDB) {
-		/* print generic shader info: */
-		fprintf(stderr, "SHADER-DB: %s prog %d/%d: %u instructions, %u dwords\n",
-				ir3_shader_stage(v->shader),
-				v->shader->id, v->id,
-				v->info.instrs_count,
-				v->info.sizedwords);
-		fprintf(stderr, "SHADER-DB: %s prog %d/%d: %u half, %u full\n",
-				ir3_shader_stage(v->shader),
-				v->shader->id, v->id,
-				v->info.max_half_reg + 1,
-				v->info.max_reg + 1);
-		fprintf(stderr, "SHADER-DB: %s prog %d/%d: %u const, %u constlen\n",
-				ir3_shader_stage(v->shader),
-				v->shader->id, v->id,
-				v->info.max_const + 1,
-				v->constlen);
-	}
-
 	free(bin);
 
 	/* no need to keep the ir around beyond this point: */
 	ir3_destroy(v->ir);
 	v->ir = NULL;
+}
+
+static void
+dump_shader_info(struct ir3_shader_variant *v, struct pipe_debug_callback *debug)
+{
+	if (!unlikely(fd_mesa_debug & FD_DBG_SHADERDB))
+		return;
+
+	pipe_debug_message(debug, SHADER_INFO, "\n"
+			"SHADER-DB: %s prog %d/%d: %u instructions, %u dwords\n"
+			"SHADER-DB: %s prog %d/%d: %u half, %u full\n"
+			"SHADER-DB: %s prog %d/%d: %u const, %u constlen\n",
+			ir3_shader_stage(v->shader),
+			v->shader->id, v->id,
+			v->info.instrs_count,
+			v->info.sizedwords,
+			ir3_shader_stage(v->shader),
+			v->shader->id, v->id,
+			v->info.max_half_reg + 1,
+			v->info.max_reg + 1,
+			ir3_shader_stage(v->shader),
+			v->shader->id, v->id,
+			v->info.max_const + 1,
+			v->constlen);
 }
 
 static struct ir3_shader_variant *
@@ -207,7 +212,8 @@ fail:
 }
 
 struct ir3_shader_variant *
-ir3_shader_variant(struct ir3_shader *shader, struct ir3_shader_key key)
+ir3_shader_variant(struct ir3_shader *shader, struct ir3_shader_key key,
+		struct pipe_debug_callback *debug)
 {
 	struct ir3_shader_variant *v;
 
@@ -223,7 +229,7 @@ ir3_shader_variant(struct ir3_shader *shader, struct ir3_shader_key key)
 			key.vsaturate_s = 0;
 			key.vsaturate_t = 0;
 			key.vsaturate_r = 0;
-			key.vlower_srgb = 0;
+			key.vastc_srgb = 0;
 		}
 		break;
 	case SHADER_VERTEX:
@@ -234,7 +240,7 @@ ir3_shader_variant(struct ir3_shader *shader, struct ir3_shader_key key)
 			key.fsaturate_s = 0;
 			key.fsaturate_t = 0;
 			key.fsaturate_r = 0;
-			key.flower_srgb = 0;
+			key.fastc_srgb = 0;
 		}
 		break;
 	}
@@ -248,6 +254,7 @@ ir3_shader_variant(struct ir3_shader *shader, struct ir3_shader_key key)
 	if (v) {
 		v->next = shader->variants;
 		shader->variants = v;
+		dump_shader_info(v, debug);
 	}
 
 	return v;
@@ -269,24 +276,33 @@ ir3_shader_destroy(struct ir3_shader *shader)
 
 struct ir3_shader *
 ir3_shader_create(struct ir3_compiler *compiler,
-		const struct pipe_shader_state *cso,
-		enum shader_t type)
+		const struct pipe_shader_state *cso, enum shader_t type,
+		struct pipe_debug_callback *debug)
 {
 	struct ir3_shader *shader = CALLOC_STRUCT(ir3_shader);
 	shader->compiler = compiler;
 	shader->id = ++shader->compiler->shader_count;
 	shader->type = type;
-	if (fd_mesa_debug & FD_DBG_DISASM) {
-		DBG("dump tgsi: type=%d", shader->type);
-		tgsi_dump(cso->tokens, 0);
+
+	nir_shader *nir;
+	if (cso->type == PIPE_SHADER_IR_NIR) {
+		/* we take ownership of the reference: */
+		nir = cso->ir.nir;
+	} else {
+		if (fd_mesa_debug & FD_DBG_DISASM) {
+			DBG("dump tgsi: type=%d", shader->type);
+			tgsi_dump(cso->tokens, 0);
+		}
+		nir = ir3_tgsi_to_nir(cso->tokens);
+		shader->from_tgsi = true;
 	}
-	nir_shader *nir = ir3_tgsi_to_nir(cso->tokens);
 	/* do first pass optimization, ignoring the key: */
 	shader->nir = ir3_optimize_nir(shader, nir, NULL);
 	if (fd_mesa_debug & FD_DBG_DISASM) {
 		DBG("dump nir%d: type=%d", shader->id, shader->type);
 		nir_print_shader(shader->nir, stdout);
 	}
+
 	shader->stream_output = cso->stream_output;
 	if (fd_mesa_debug & FD_DBG_SHADERDB) {
 		/* if shader-db run, create a standard variant immediately
@@ -294,7 +310,7 @@ ir3_shader_create(struct ir3_compiler *compiler,
 		 * actually compiled)
 		 */
 		static struct ir3_shader_key key = {0};
-		ir3_shader_variant(shader, key);
+		ir3_shader_variant(shader, key, debug);
 	}
 	return shader;
 }
@@ -640,10 +656,10 @@ ir3_emit_consts(const struct ir3_shader_variant *v, struct fd_ringbuffer *ring,
 
 		if (v->type == SHADER_VERTEX) {
 			constbuf = &ctx->constbuf[PIPE_SHADER_VERTEX];
-			shader_dirty = !!(ctx->prog.dirty & FD_SHADER_DIRTY_VP);
+			shader_dirty = !!(dirty & FD_SHADER_DIRTY_VP);
 		} else if (v->type == SHADER_FRAGMENT) {
 			constbuf = &ctx->constbuf[PIPE_SHADER_FRAGMENT];
-			shader_dirty = !!(ctx->prog.dirty & FD_SHADER_DIRTY_FP);
+			shader_dirty = !!(dirty & FD_SHADER_DIRTY_FP);
 		} else {
 			unreachable("bad shader type");
 			return;

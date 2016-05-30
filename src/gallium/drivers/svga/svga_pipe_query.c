@@ -705,9 +705,13 @@ svga_create_query(struct pipe_context *pipe,
       }
       break;
    case PIPE_QUERY_OCCLUSION_PREDICATE:
-      assert(svga_have_vgpu10(svga));
-      sq->svga_type = SVGA3D_QUERYTYPE_OCCLUSIONPREDICATE;
-      define_query_vgpu10(svga, sq, sizeof(SVGADXOcclusionPredicateQueryResult));
+      if (svga_have_vgpu10(svga)) {
+         sq->svga_type = SVGA3D_QUERYTYPE_OCCLUSIONPREDICATE;
+         define_query_vgpu10(svga, sq, sizeof(SVGADXOcclusionPredicateQueryResult));
+      } else {
+         sq->svga_type = SVGA3D_QUERYTYPE_OCCLUSION;
+         define_query_vgpu9(svga, sq);
+      }
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
    case PIPE_QUERY_PRIMITIVES_EMITTED:
@@ -777,6 +781,7 @@ svga_destroy_query(struct pipe_context *pipe, struct pipe_query *q)
 
    switch (sq->type) {
    case PIPE_QUERY_OCCLUSION_COUNTER:
+   case PIPE_QUERY_OCCLUSION_PREDICATE:
       if (svga_have_vgpu10(svga)) {
          /* make sure to also destroy any associated predicate query */
          if (sq->predicate)
@@ -785,11 +790,6 @@ svga_destroy_query(struct pipe_context *pipe, struct pipe_query *q)
       } else {
          sws->buffer_destroy(sws, sq->hwbuf);
       }
-      sws->fence_reference(sws, &sq->fence, NULL);
-      break;
-   case PIPE_QUERY_OCCLUSION_PREDICATE:
-      assert(svga_have_vgpu10(svga));
-      destroy_query_vgpu10(svga, sq);
       sws->fence_reference(sws, &sq->fence, NULL);
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
@@ -854,6 +854,7 @@ svga_begin_query(struct pipe_context *pipe, struct pipe_query *q)
 
    switch (sq->type) {
    case PIPE_QUERY_OCCLUSION_COUNTER:
+   case PIPE_QUERY_OCCLUSION_PREDICATE:
       if (svga_have_vgpu10(svga)) {
          ret = begin_query_vgpu10(svga, sq);
          /* also need to start the associated occlusion predicate query */
@@ -868,11 +869,6 @@ svga_begin_query(struct pipe_context *pipe, struct pipe_query *q)
       }
       assert(ret == PIPE_OK);
       (void) ret;
-      break;
-   case PIPE_QUERY_OCCLUSION_PREDICATE:
-      assert(svga_have_vgpu10(svga));
-      ret = begin_query_vgpu10(svga, sq);
-      assert(ret == PIPE_OK);
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
    case PIPE_QUERY_PRIMITIVES_EMITTED:
@@ -945,7 +941,7 @@ svga_begin_query(struct pipe_context *pipe, struct pipe_query *q)
 }
 
 
-static void
+static bool
 svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
 {
    struct svga_context *svga = svga_context(pipe);
@@ -967,6 +963,7 @@ svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
 
    switch (sq->type) {
    case PIPE_QUERY_OCCLUSION_COUNTER:
+   case PIPE_QUERY_OCCLUSION_PREDICATE:
       if (svga_have_vgpu10(svga)) {
          ret = end_query_vgpu10(svga, sq);
          /* also need to end the associated occlusion predicate query */
@@ -986,11 +983,6 @@ svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
        * the result.
        */
       svga_context_flush(svga, NULL);
-      break;
-   case PIPE_QUERY_OCCLUSION_PREDICATE:
-      assert(svga_have_vgpu10(svga));
-      ret = end_query_vgpu10(svga, sq);
-      assert(ret == PIPE_OK);
       break;
    case PIPE_QUERY_PRIMITIVES_GENERATED:
    case PIPE_QUERY_PRIMITIVES_EMITTED:
@@ -1057,6 +1049,7 @@ svga_end_query(struct pipe_context *pipe, struct pipe_query *q)
       assert(!"unexpected query type in svga_end_query()");
    }
    svga->sq[sq->type] = NULL;
+   return true;
 }
 
 
@@ -1085,15 +1078,20 @@ svga_get_query_result(struct pipe_context *pipe,
                                        (void *)&occResult, sizeof(occResult));
          *result = (uint64_t)occResult.samplesRendered;
       } else {
-         ret = get_query_result_vgpu9(svga, sq, wait, (uint64_t *)result);
+         ret = get_query_result_vgpu9(svga, sq, wait, result);
       }
       break;
    case PIPE_QUERY_OCCLUSION_PREDICATE: {
-      SVGADXOcclusionPredicateQueryResult occResult;
-      assert(svga_have_vgpu10(svga));
-      ret = get_query_result_vgpu10(svga, sq, wait,
-                                    (void *)&occResult, sizeof(occResult));
-      vresult->b = occResult.anySamplesRendered != 0;
+      if (svga_have_vgpu10(svga)) {
+         SVGADXOcclusionPredicateQueryResult occResult;
+         ret = get_query_result_vgpu10(svga, sq, wait,
+                                       (void *)&occResult, sizeof(occResult));
+         vresult->b = occResult.anySamplesRendered != 0;
+      } else {
+         uint64_t count;
+         ret = get_query_result_vgpu9(svga, sq, wait, &count);
+         vresult->b = count != 0;
+      }
       break;
    }
    case PIPE_QUERY_SO_STATISTICS: {
@@ -1164,7 +1162,12 @@ svga_get_query_result(struct pipe_context *pipe,
       vresult->u64 = svgascreen->hud.num_resources;
       break;
    case SVGA_QUERY_NUM_STATE_OBJECTS:
-      vresult->u64 = svga->hud.num_state_objects;
+      vresult->u64 = (svga->hud.num_blend_objects +
+                      svga->hud.num_depthstencil_objects +
+                      svga->hud.num_rasterizer_objects +
+                      svga->hud.num_sampler_objects +
+                      svga->hud.num_samplerview_objects +
+                      svga->hud.num_vertexelement_objects);
       break;
    case SVGA_QUERY_NUM_SURFACE_VIEWS:
       vresult->u64 = svga->hud.num_surface_views;

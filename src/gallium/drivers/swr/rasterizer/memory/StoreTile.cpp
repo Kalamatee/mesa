@@ -753,7 +753,7 @@ struct OptStoreRasterTile< TilingTraits<SWR_TILE_NONE, 8>, SrcFormat, DstFormat 
                 ConvertPixelsSOAtoAOS<SrcFormat, DstFormat>::Convert(pSrc, ppRows);
 
                 ppRows[0] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;
-                ppRows[1] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;;
+                ppRows[1] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;
                 pSrc += SRC_BYTES_PER_PIXEL * KNOB_SIMD_WIDTH;
             }
 
@@ -806,7 +806,7 @@ struct OptStoreRasterTile< TilingTraits<SWR_TILE_NONE, 16>, SrcFormat, DstFormat
                 ConvertPixelsSOAtoAOS<SrcFormat, DstFormat>::Convert(pSrc, ppRows);
 
                 ppRows[0] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;
-                ppRows[1] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;;
+                ppRows[1] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;
                 pSrc += SRC_BYTES_PER_PIXEL * KNOB_SIMD_WIDTH;
             }
 
@@ -859,7 +859,7 @@ struct OptStoreRasterTile< TilingTraits<SWR_TILE_NONE, 32>, SrcFormat, DstFormat
                 ConvertPixelsSOAtoAOS<SrcFormat, DstFormat>::Convert(pSrc, ppRows);
 
                 ppRows[0] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;
-                ppRows[1] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;;
+                ppRows[1] += KNOB_SIMD_WIDTH * DST_BYTES_PER_PIXEL / 2;
                 pSrc += SRC_BYTES_PER_PIXEL * KNOB_SIMD_WIDTH;
             }
 
@@ -1523,7 +1523,7 @@ void StoreHotTile(
 
     PFN_STORE_TILES pfnStoreTiles = nullptr;
 
-    if ((renderTargetIndex <= SWR_ATTACHMENT_COLOR7) && (pDstSurface->tileMode != SWR_TILE_MODE_WMAJOR))
+    if (renderTargetIndex <= SWR_ATTACHMENT_COLOR7)
     {
         pfnStoreTiles = sStoreTilesTableColor[pDstSurface->tileMode][pDstSurface->format];
     }
@@ -1694,7 +1694,6 @@ template <SWR_TILE_MODE TileModeT, size_t NumTileModes, size_t ArraySizeT>
 void InitStoreTilesTableStencil(
     PFN_STORE_TILES(&table)[NumTileModes][ArraySizeT])
 {
-    table[TileModeT][R32_UINT]                  = StoreMacroTile<TilingTraits<TileModeT, 32>, R8_UINT, R32_UINT>::Store;
     table[TileModeT][R8_UINT]                   = StoreMacroTile<TilingTraits<TileModeT, 8>, R8_UINT, R8_UINT>::Store;
 }
 
@@ -1714,4 +1713,7 @@ void InitSimStoreTilesTable()
 
     InitStoreTilesTableDepth<SWR_TILE_MODE_YMAJOR>(sStoreTilesTableDepth);
     InitStoreTilesTableStencil<SWR_TILE_MODE_WMAJOR>(sStoreTilesTableStencil);
+
+    // special color hot tile -> 8-bit WMAJOR
+    sStoreTilesTableColor[SWR_TILE_MODE_WMAJOR][R8_UINT] = StoreMacroTile<TilingTraits<SWR_TILE_MODE_WMAJOR, 8>, R32G32B32A32_FLOAT, R8_UINT>::Store;
 }

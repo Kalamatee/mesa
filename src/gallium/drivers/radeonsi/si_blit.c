@@ -108,18 +108,13 @@ static void si_blit_decompress_depth(struct pipe_context *ctx,
 				     unsigned first_sample, unsigned last_sample)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
-	unsigned layer, level, sample, checked_last_layer, max_layer, max_sample;
+	unsigned layer, level, sample, checked_last_layer, max_layer;
 	float depth = 1.0f;
 	const struct util_format_description *desc;
-	struct r600_texture *flushed_depth_texture = staging ?
-			staging : texture->flushed_depth_texture;
 
-	if (!staging && !texture->dirty_level_mask)
-		return;
+	assert(staging != NULL && "use si_blit_decompress_zs_in_place instead");
 
-	max_sample = u_max_sample(&texture->resource.b.b);
-
-	desc = util_format_description(flushed_depth_texture->resource.b.b.format);
+	desc = util_format_description(staging->resource.b.b.format);
 
 	if (util_format_has_depth(desc))
 		sctx->dbcb_depth_copy_enabled = true;
@@ -129,13 +124,10 @@ static void si_blit_decompress_depth(struct pipe_context *ctx,
 	assert(sctx->dbcb_depth_copy_enabled || sctx->dbcb_stencil_copy_enabled);
 
 	for (level = first_level; level <= last_level; level++) {
-		if (!staging && !(texture->dirty_level_mask & (1 << level)))
-			continue;
-
 		/* The smaller the mipmap level, the less layers there are
 		 * as far as 3D textures are concerned. */
 		max_layer = util_max_layer(&texture->resource.b.b, level);
-		checked_last_layer = last_layer < max_layer ? last_layer : max_layer;
+		checked_last_layer = MIN2(last_layer, max_layer);
 
 		for (layer = first_layer; layer <= checked_last_layer; layer++) {
 			for (sample = first_sample; sample <= last_sample; sample++) {
@@ -151,9 +143,9 @@ static void si_blit_decompress_depth(struct pipe_context *ctx,
 
 				zsurf = ctx->create_surface(ctx, &texture->resource.b.b, &surf_tmpl);
 
-				surf_tmpl.format = flushed_depth_texture->resource.b.b.format;
+				surf_tmpl.format = staging->resource.b.b.format;
 				cbsurf = ctx->create_surface(ctx,
-						(struct pipe_resource*)flushed_depth_texture, &surf_tmpl);
+						(struct pipe_resource*)staging, &surf_tmpl);
 
 				si_blitter_begin(ctx, SI_DECOMPRESS);
 				util_blitter_custom_depth_stencil(sctx->blitter, zsurf, cbsurf, 1 << sample,
@@ -164,14 +156,6 @@ static void si_blit_decompress_depth(struct pipe_context *ctx,
 				pipe_surface_reference(&cbsurf, NULL);
 			}
 		}
-
-		/* The texture will always be dirty if some layers aren't flushed.
-		 * I don't think this case can occur though. */
-		if (!staging &&
-		    first_layer == 0 && last_layer == max_layer &&
-		    first_sample == 0 && last_sample == max_sample) {
-			texture->dirty_level_mask &= ~(1 << level);
-		}
 	}
 
 	sctx->dbcb_depth_copy_enabled = false;
@@ -179,37 +163,38 @@ static void si_blit_decompress_depth(struct pipe_context *ctx,
 	si_mark_atom_dirty(sctx, &sctx->db_render_state);
 }
 
-static void si_blit_decompress_depth_in_place(struct si_context *sctx,
-                                              struct r600_texture *texture,
-					      bool is_stencil_sampler,
-                                              unsigned first_level, unsigned last_level,
-                                              unsigned first_layer, unsigned last_layer)
+/* Helper function for si_blit_decompress_zs_in_place.
+ */
+static void
+si_blit_decompress_zs_planes_in_place(struct si_context *sctx,
+				      struct r600_texture *texture,
+				      unsigned planes, unsigned level_mask,
+				      unsigned first_layer, unsigned last_layer)
 {
 	struct pipe_surface *zsurf, surf_tmpl = {{0}};
-	unsigned layer, max_layer, checked_last_layer, level;
-	unsigned *dirty_level_mask;
+	unsigned layer, max_layer, checked_last_layer;
+	unsigned fully_decompressed_mask = 0;
 
-	if (is_stencil_sampler) {
+	if (!level_mask)
+		return;
+
+	if (planes & PIPE_MASK_S)
 		sctx->db_flush_stencil_inplace = true;
-		dirty_level_mask = &texture->stencil_dirty_level_mask;
-	} else {
+	if (planes & PIPE_MASK_Z)
 		sctx->db_flush_depth_inplace = true;
-		dirty_level_mask = &texture->dirty_level_mask;
-	}
 	si_mark_atom_dirty(sctx, &sctx->db_render_state);
 
 	surf_tmpl.format = texture->resource.b.b.format;
 
-	for (level = first_level; level <= last_level; level++) {
-		if (!(*dirty_level_mask & (1 << level)))
-			continue;
+	while (level_mask) {
+		unsigned level = u_bit_scan(&level_mask);
 
 		surf_tmpl.u.tex.level = level;
 
 		/* The smaller the mipmap level, the less layers there are
 		 * as far as 3D textures are concerned. */
 		max_layer = util_max_layer(&texture->resource.b.b, level);
-		checked_last_layer = last_layer < max_layer ? last_layer : max_layer;
+		checked_last_layer = MIN2(last_layer, max_layer);
 
 		for (layer = first_layer; layer <= checked_last_layer; layer++) {
 			surf_tmpl.u.tex.first_layer = layer;
@@ -229,13 +214,63 @@ static void si_blit_decompress_depth_in_place(struct si_context *sctx,
 		/* The texture will always be dirty if some layers aren't flushed.
 		 * I don't think this case occurs often though. */
 		if (first_layer == 0 && last_layer == max_layer) {
-			*dirty_level_mask &= ~(1 << level);
+			fully_decompressed_mask |= 1u << level;
 		}
 	}
+
+	if (planes & PIPE_MASK_Z)
+		texture->dirty_level_mask &= ~fully_decompressed_mask;
+	if (planes & PIPE_MASK_S)
+		texture->stencil_dirty_level_mask &= ~fully_decompressed_mask;
 
 	sctx->db_flush_depth_inplace = false;
 	sctx->db_flush_stencil_inplace = false;
 	si_mark_atom_dirty(sctx, &sctx->db_render_state);
+}
+
+/* Decompress Z and/or S planes in place, depending on mask.
+ */
+static void
+si_blit_decompress_zs_in_place(struct si_context *sctx,
+			       struct r600_texture *texture,
+			       unsigned planes,
+			       unsigned first_level, unsigned last_level,
+			       unsigned first_layer, unsigned last_layer)
+{
+	unsigned level_mask =
+		u_bit_consecutive(first_level, last_level - first_level + 1);
+	unsigned cur_level_mask;
+
+	/* First, do combined Z & S decompresses for levels that need it. */
+	if (planes == (PIPE_MASK_Z | PIPE_MASK_S)) {
+		cur_level_mask =
+			level_mask &
+			texture->dirty_level_mask &
+			texture->stencil_dirty_level_mask;
+		si_blit_decompress_zs_planes_in_place(
+				sctx, texture, PIPE_MASK_Z | PIPE_MASK_S,
+				cur_level_mask,
+				first_layer, last_layer);
+		level_mask &= ~cur_level_mask;
+	}
+
+	/* Now do separate Z and S decompresses. */
+	if (planes & PIPE_MASK_Z) {
+		cur_level_mask = level_mask & texture->dirty_level_mask;
+		si_blit_decompress_zs_planes_in_place(
+				sctx, texture, PIPE_MASK_Z,
+				cur_level_mask,
+				first_layer, last_layer);
+		level_mask &= ~cur_level_mask;
+	}
+
+	if (planes & PIPE_MASK_S) {
+		cur_level_mask = level_mask & texture->stencil_dirty_level_mask;
+		si_blit_decompress_zs_planes_in_place(
+				sctx, texture, PIPE_MASK_S,
+				cur_level_mask,
+				first_layer, last_layer);
+	}
 }
 
 static void
@@ -243,14 +278,14 @@ si_flush_depth_textures(struct si_context *sctx,
 			struct si_textures_info *textures)
 {
 	unsigned i;
-	uint64_t mask = textures->depth_texture_mask;
+	unsigned mask = textures->depth_texture_mask;
 
 	while (mask) {
 		struct pipe_sampler_view *view;
 		struct si_sampler_view *sview;
 		struct r600_texture *tex;
 
-		i = u_bit_scan64(&mask);
+		i = u_bit_scan(&mask);
 
 		view = textures->views.views[i];
 		assert(view);
@@ -259,10 +294,11 @@ si_flush_depth_textures(struct si_context *sctx,
 		tex = (struct r600_texture *)view->texture;
 		assert(tex->is_depth && !tex->is_flushing_texture);
 
-		si_blit_decompress_depth_in_place(sctx, tex,
-						  sview->is_stencil_sampler,
-						  view->u.tex.first_level, view->u.tex.last_level,
-						  0, util_max_layer(&tex->resource.b.b, view->u.tex.first_level));
+		si_blit_decompress_zs_in_place(sctx, tex,
+					       sview->is_stencil_sampler ? PIPE_MASK_S
+									 : PIPE_MASK_Z,
+					       view->u.tex.first_level, view->u.tex.last_level,
+					       0, util_max_layer(&tex->resource.b.b, view->u.tex.first_level));
 	}
 }
 
@@ -273,29 +309,31 @@ static void si_blit_decompress_color(struct pipe_context *ctx,
 		bool need_dcc_decompress)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
-	unsigned layer, level, checked_last_layer, max_layer;
+	void* custom_blend;
+	unsigned layer, checked_last_layer, max_layer;
+	unsigned level_mask =
+		u_bit_consecutive(first_level, last_level - first_level + 1);
 
-	if (!rtex->dirty_level_mask && !need_dcc_decompress)
+	if (!need_dcc_decompress)
+		level_mask &= rtex->dirty_level_mask;
+	if (!level_mask)
 		return;
 
-	for (level = first_level; level <= last_level; level++) {
-		void* custom_blend;
+	if (rtex->dcc_offset && need_dcc_decompress) {
+		custom_blend = sctx->custom_blend_dcc_decompress;
+	} else if (rtex->fmask.size) {
+		custom_blend = sctx->custom_blend_decompress;
+	} else {
+		custom_blend = sctx->custom_blend_fastclear;
+	}
 
-		if (!(rtex->dirty_level_mask & (1 << level)) && !need_dcc_decompress)
-			continue;
-
-		if (rtex->dcc_offset && need_dcc_decompress) {
-			custom_blend = sctx->custom_blend_dcc_decompress;
-		} else if (rtex->fmask.size) {
-			custom_blend = sctx->custom_blend_decompress;
-		} else {
-			custom_blend = sctx->custom_blend_fastclear;
-		}
+	while (level_mask) {
+		unsigned level = u_bit_scan(&level_mask);
 
 		/* The smaller the mipmap level, the less layers there are
 		 * as far as 3D textures are concerned. */
 		max_layer = util_max_layer(&rtex->resource.b.b, level);
-		checked_last_layer = last_layer < max_layer ? last_layer : max_layer;
+		checked_last_layer = MIN2(last_layer, max_layer);
 
 		for (layer = first_layer; layer <= checked_last_layer; layer++) {
 			struct pipe_surface *cbsurf, surf_tmpl;
@@ -326,13 +364,13 @@ si_decompress_sampler_color_textures(struct si_context *sctx,
 				     struct si_textures_info *textures)
 {
 	unsigned i;
-	uint64_t mask = textures->compressed_colortex_mask;
+	unsigned mask = textures->compressed_colortex_mask;
 
 	while (mask) {
 		struct pipe_sampler_view *view;
 		struct r600_texture *tex;
 
-		i = u_bit_scan64(&mask);
+		i = u_bit_scan(&mask);
 
 		view = textures->views.views[i];
 		assert(view);
@@ -352,13 +390,13 @@ si_decompress_image_color_textures(struct si_context *sctx,
 				   struct si_images_info *images)
 {
 	unsigned i;
-	uint64_t mask = images->compressed_colortex_mask;
+	unsigned mask = images->compressed_colortex_mask;
 
 	while (mask) {
 		const struct pipe_image_view *view;
 		struct r600_texture *tex;
 
-		i = u_bit_scan64(&mask);
+		i = u_bit_scan(&mask);
 
 		view = &images->views[i];
 		assert(view->resource->target != PIPE_BUFFER);
@@ -403,11 +441,13 @@ static void si_decompress_textures(struct si_context *sctx, int shader_start,
 	}
 }
 
-void si_decompress_graphics_textures(struct si_context *sctx) {
+void si_decompress_graphics_textures(struct si_context *sctx)
+{
 	si_decompress_textures(sctx, 0, SI_NUM_GRAPHICS_SHADERS);
 }
 
-void si_decompress_compute_textures(struct si_context *sctx) {
+void si_decompress_compute_textures(struct si_context *sctx)
+{
 	si_decompress_textures(sctx, SI_NUM_GRAPHICS_SHADERS, SI_NUM_SHADERS);
 }
 
@@ -457,7 +497,7 @@ static void si_clear(struct pipe_context *ctx, unsigned buffers,
 		if (buffers & PIPE_CLEAR_DEPTH) {
 			/* Need to disable EXPCLEAR temporarily if clearing
 			 * to a new value. */
-			if (zstex->depth_cleared && zstex->depth_clear_value != depth) {
+			if (!zstex->depth_cleared || zstex->depth_clear_value != depth) {
 				sctx->db_depth_disable_expclear = true;
 			}
 
@@ -473,7 +513,7 @@ static void si_clear(struct pipe_context *ctx, unsigned buffers,
 
 			/* Need to disable EXPCLEAR temporarily if clearing
 			 * to a new value. */
-			if (zstex->stencil_cleared && zstex->stencil_clear_value != stencil) {
+			if (!zstex->stencil_cleared || zstex->stencil_clear_value != stencil) {
 				sctx->db_stencil_disable_expclear = true;
 			}
 
@@ -542,20 +582,21 @@ static void si_clear_depth_stencil(struct pipe_context *ctx,
  * rendering. */
 static void si_decompress_subresource(struct pipe_context *ctx,
 				      struct pipe_resource *tex,
-				      unsigned level,
+				      unsigned planes, unsigned level,
 				      unsigned first_layer, unsigned last_layer)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
 	struct r600_texture *rtex = (struct r600_texture*)tex;
 
 	if (rtex->is_depth && !rtex->is_flushing_texture) {
-		si_blit_decompress_depth_in_place(sctx, rtex, false,
-						  level, level,
-						  first_layer, last_layer);
-		if (rtex->surface.flags & RADEON_SURF_SBUFFER)
-			si_blit_decompress_depth_in_place(sctx, rtex, true,
-							  level, level,
-							  first_layer, last_layer);
+		planes &= PIPE_MASK_Z | PIPE_MASK_S;
+
+		if (!(rtex->surface.flags & RADEON_SURF_SBUFFER))
+			planes &= ~PIPE_MASK_S;
+
+		si_blit_decompress_zs_in_place(sctx, rtex, planes,
+					       level, level,
+					       first_layer, last_layer);
 	} else if (rtex->fmask.size || rtex->cmask.size || rtex->dcc_offset) {
 		si_blit_decompress_color(ctx, rtex, level, level,
 					 first_layer, last_layer, false);
@@ -589,7 +630,7 @@ void si_resource_copy_region(struct pipe_context *ctx,
 
 	/* Handle buffers first. */
 	if (dst->target == PIPE_BUFFER && src->target == PIPE_BUFFER) {
-		si_copy_buffer(sctx, dst, src, dstx, src_box->x, src_box->width, false);
+		si_copy_buffer(sctx, dst, src, dstx, src_box->x, src_box->width);
 		return;
 	}
 
@@ -597,7 +638,7 @@ void si_resource_copy_region(struct pipe_context *ctx,
 
 	/* The driver doesn't decompress resources automatically while
 	 * u_blitter is rendering. */
-	si_decompress_subresource(ctx, src, src_level,
+	si_decompress_subresource(ctx, src, PIPE_MASK_RGBAZS, src_level,
 				  src_box->z, src_box->z + src_box->depth - 1);
 
 	dst_width = u_minify(dst->width0, dst_level);
@@ -765,7 +806,8 @@ static bool do_hardware_msaa_resolve(struct pipe_context *ctx,
 	    info->dst.resource->nr_samples <= 1 &&
 	    util_max_layer(info->src.resource, 0) == 0 &&
 	    util_max_layer(info->dst.resource, info->dst.level) == 0 &&
-	    info->dst.format == info->src.format &&
+	    util_is_format_compatible(util_format_description(info->src.format),
+				      util_format_description(info->dst.format)) &&
 	    !util_format_is_pure_integer(format) &&
 	    !util_format_is_depth_or_stencil(format) &&
 	    !info->scissor_enable &&
@@ -813,7 +855,8 @@ static void si_blit(struct pipe_context *ctx,
 
 	/* The driver doesn't decompress resources automatically while
 	 * u_blitter is rendering. */
-	si_decompress_subresource(ctx, info->src.resource, info->src.level,
+	si_decompress_subresource(ctx, info->src.resource, info->mask,
+				  info->src.level,
 				  info->src.box.z,
 				  info->src.box.z + info->src.box.depth - 1);
 
@@ -907,7 +950,8 @@ static void si_pipe_clear_buffer(struct pipe_context *ctx,
 		dword_value = *(uint32_t*)clear_value_ptr;
 	}
 
-	sctx->b.clear_buffer(ctx, dst, offset, size, dword_value, false);
+	sctx->b.clear_buffer(ctx, dst, offset, size, dword_value,
+			     R600_COHERENCY_SHADER);
 }
 
 void si_init_blit_functions(struct si_context *sctx)

@@ -39,6 +39,7 @@
 #include "clip.h"
 #include "tilemgr.h"
 #include "tessellator.h"
+#include <limits>
 
 //////////////////////////////////////////////////////////////////////////
 /// @brief Helper macro to generate a bitmask
@@ -675,8 +676,8 @@ THREAD SWR_GS_CONTEXT tlsGsContext;
 /// @param pa - The primitive assembly object.
 /// @param pGsOut - output stream for GS
 template <
-    bool HasStreamOutT,
-    bool HasRastT>
+    typename HasStreamOutT,
+    typename HasRastT>
 static void GeometryShaderStage(
     DRAW_CONTEXT *pDC,
     uint32_t workerId,
@@ -759,7 +760,7 @@ static void GeometryShaderStage(
 
     // set up new binner and state for the GS output topology
     PFN_PROCESS_PRIMS pfnClipFunc = nullptr;
-    if (HasRastT)
+    if (HasRastT::value)
     {
         switch (pState->outputTopology)
         {
@@ -819,7 +820,7 @@ static void GeometryShaderStage(
                 else
                 {
                     // early exit if this stream is not enabled for streamout
-                    if (HasStreamOutT && !state.soState.streamEnable[stream])
+                    if (HasStreamOutT::value && !state.soState.streamEnable[stream])
                     {
                         continue;
                     }
@@ -842,12 +843,12 @@ static void GeometryShaderStage(
                         {
                             totalPrimsGenerated += gsPa.NumPrims();
 
-                            if (HasStreamOutT)
+                            if (HasStreamOutT::value)
                             {
                                 StreamOut(pDC, gsPa, workerId, pSoPrimData, stream);
                             }
 
-                            if (HasRastT && state.soState.streamToRasterizer == stream)
+                            if (HasRastT::value && state.soState.streamToRasterizer == stream)
                             {
                                 simdscalari vPrimId;
                                 // pull primitiveID from the GS output if available
@@ -945,7 +946,7 @@ static void AllocateTessellationData(SWR_CONTEXT* pContext)
     if (gt_pTessellationThreadData == nullptr)
     {
         gt_pTessellationThreadData = (TessellationThreadLocalData*)
-            _aligned_malloc(sizeof(TessellationThreadLocalData), 64);
+            AlignedMalloc(sizeof(TessellationThreadLocalData), 64);
         memset(gt_pTessellationThreadData, 0, sizeof(*gt_pTessellationThreadData));
     }
 }
@@ -957,9 +958,9 @@ static void AllocateTessellationData(SWR_CONTEXT* pContext)
 /// @param pa - The primitive assembly object.
 /// @param pGsOut - output stream for GS
 template <
-    bool HasGeometryShaderT,
-    bool HasStreamOutT,
-    bool HasRastT>
+    typename HasGeometryShaderT,
+    typename HasStreamOutT,
+    typename HasRastT>
 static void TessellationStages(
     DRAW_CONTEXT *pDC,
     uint32_t workerId,
@@ -984,7 +985,7 @@ static void TessellationStages(
         gt_pTessellationThreadData->tsCtxSize);
     if (tsCtx == nullptr)
     {
-        gt_pTessellationThreadData->pTxCtx = _aligned_malloc(gt_pTessellationThreadData->tsCtxSize, 64);
+        gt_pTessellationThreadData->pTxCtx = AlignedMalloc(gt_pTessellationThreadData->tsCtxSize, 64);
         tsCtx = TSInitCtx(
             tsState.domain,
             tsState.partitioning,
@@ -995,7 +996,7 @@ static void TessellationStages(
     SWR_ASSERT(tsCtx);
 
     PFN_PROCESS_PRIMS pfnClipFunc = nullptr;
-    if (HasRastT)
+    if (HasRastT::value)
     {
         switch (tsState.postDSTopology)
         {
@@ -1062,8 +1063,8 @@ static void TessellationStages(
         size_t requiredAllocSize = sizeof(simdvector) * requiredDSOutputVectors;
         if (requiredDSOutputVectors > gt_pTessellationThreadData->numDSOutputVectors)
         {
-            _aligned_free(gt_pTessellationThreadData->pDSOutput);
-            gt_pTessellationThreadData->pDSOutput = (simdscalar*)_aligned_malloc(requiredAllocSize, 64);
+            AlignedFree(gt_pTessellationThreadData->pDSOutput);
+            gt_pTessellationThreadData->pDSOutput = (simdscalar*)AlignedMalloc(requiredAllocSize, 64);
             gt_pTessellationThreadData->numDSOutputVectors = requiredDSOutputVectors;
         }
         SWR_ASSERT(gt_pTessellationThreadData->pDSOutput);
@@ -1107,7 +1108,7 @@ static void TessellationStages(
 
         while (tessPa.HasWork())
         {
-            if (HasGeometryShaderT)
+            if (HasGeometryShaderT::value)
             {
                 GeometryShaderStage<HasStreamOutT, HasRastT>(
                     pDC, workerId, tessPa, pGsOut, pCutBuffer, pCutStreamBuffer, pSoPrimData,
@@ -1115,12 +1116,12 @@ static void TessellationStages(
             }
             else
             {
-                if (HasStreamOutT)
+                if (HasStreamOutT::value)
                 {
                     StreamOut(pDC, tessPa, workerId, pSoPrimData, 0);
                 }
 
-                if (HasRastT)
+                if (HasRastT::value)
                 {
                     simdvector prim[3]; // Only deal with triangles, lines, or points
                     RDTSC_START(FEPAAssemble);
@@ -1149,7 +1150,7 @@ static void TessellationStages(
 /// @brief FE handler for SwrDraw.
 /// @tparam IsIndexedT - Is indexed drawing enabled
 /// @tparam HasTessellationT - Is tessellation enabled
-/// @tparam HasGeometryShaderT - Is the geometry shader stage enabled
+/// @tparam HasGeometryShaderT::value - Is the geometry shader stage enabled
 /// @tparam HasStreamOutT - Is stream-out enabled
 /// @tparam HasRastT - Is rasterization enabled
 /// @param pContext - pointer to SWR context.
@@ -1157,11 +1158,12 @@ static void TessellationStages(
 /// @param workerId - thread's worker id.
 /// @param pUserData - Pointer to DRAW_WORK
 template <
-    bool IsIndexedT,
-    bool HasTessellationT,
-    bool HasGeometryShaderT,
-    bool HasStreamOutT,
-    bool HasRastT>
+    typename IsIndexedT,
+    typename IsCutIndexEnabledT,
+    typename HasTessellationT,
+    typename HasGeometryShaderT,
+    typename HasStreamOutT,
+    typename HasRastT>
 void ProcessDraw(
     SWR_CONTEXT *pContext,
     DRAW_CONTEXT *pDC,
@@ -1188,7 +1190,7 @@ void ProcessDraw(
     uint32_t endVertex = work.numVerts; 
 
     const int32_t* pLastRequestedIndex = nullptr;
-    if (IsIndexedT)
+    if (IsIndexedT::value)
     {
         switch (work.type)
         {
@@ -1223,7 +1225,7 @@ void ProcessDraw(
 
     vsContext.pVin = &vin;
 
-    if (IsIndexedT)
+    if (IsIndexedT::value)
     {
         fetchInfo.BaseVertex = work.baseVertex;
 
@@ -1247,12 +1249,12 @@ void ProcessDraw(
     void* pGsOut = nullptr;
     void* pCutBuffer = nullptr;
     void* pStreamCutBuffer = nullptr;
-    if (HasGeometryShaderT)
+    if (HasGeometryShaderT::value)
     {
         AllocateGsBuffers(pDC, state, &pGsOut, &pCutBuffer, &pStreamCutBuffer);
     }
 
-    if (HasTessellationT)
+    if (HasTessellationT::value)
     {
         SWR_ASSERT(state.tsState.tsEnable == true);
         SWR_ASSERT(state.pfnHsFunc != nullptr);
@@ -1269,7 +1271,7 @@ void ProcessDraw(
 
     // allocate space for streamout input prim data
     uint32_t* pSoPrimData = nullptr;
-    if (HasStreamOutT)
+    if (HasStreamOutT::value)
     {
         pSoPrimData = (uint32_t*)pDC->pArena->AllocAligned(4096, 16);
 
@@ -1282,7 +1284,7 @@ void ProcessDraw(
     }
 
     // choose primitive assembler
-    PA_FACTORY<IsIndexedT> paFactory(pDC, state.topology, work.numVerts);
+    PA_FACTORY<IsIndexedT, IsCutIndexEnabledT> paFactory(pDC, state.topology, work.numVerts);
     PA_STATE& pa = paFactory.GetPA();
 
     /// @todo: temporarily move instance loop in the FE to ensure SO ordering
@@ -1291,7 +1293,7 @@ void ProcessDraw(
         simdscalari vIndex;
         uint32_t  i = 0;
 
-        if (IsIndexedT)
+        if (IsIndexedT::value)
         {
             fetchInfo.pIndices = work.pIB;
         }
@@ -1309,7 +1311,7 @@ void ProcessDraw(
             // PaGetNextVsOutput currently has the side effect of updating some PA state machine state.
             // So we need to keep this outside of (i < endVertex) check.
             simdmask* pvCutIndices = nullptr;
-            if (IsIndexedT)
+            if (IsIndexedT::value)
             {
                 pvCutIndices = &pa.GetNextVsIndices();
             }
@@ -1332,7 +1334,7 @@ void ProcessDraw(
                 vsContext.mask = GenerateMask(endVertex - i);
 
                 // forward cut mask to the PA
-                if (IsIndexedT)
+                if (IsIndexedT::value)
                 {
                     *pvCutIndices = _simd_movemask_ps(_simd_castsi_ps(fetchInfo.CutMask));
                 }
@@ -1372,12 +1374,12 @@ void ProcessDraw(
                         {
                             UPDATE_STAT(IaPrimitives, pa.NumPrims());
 
-                            if (HasTessellationT)
+                            if (HasTessellationT::value)
                             {
                                 TessellationStages<HasGeometryShaderT, HasStreamOutT, HasRastT>(
                                     pDC, workerId, pa, pGsOut, pCutBuffer, pStreamCutBuffer, pSoPrimData, pa.GetPrimID(work.startPrimID));
                             }
-                            else if (HasGeometryShaderT)
+                            else if (HasGeometryShaderT::value)
                             {
                                 GeometryShaderStage<HasStreamOutT, HasRastT>(
                                     pDC, workerId, pa, pGsOut, pCutBuffer, pStreamCutBuffer, pSoPrimData, pa.GetPrimID(work.startPrimID));
@@ -1385,12 +1387,12 @@ void ProcessDraw(
                             else
                             {
                                 // If streamout is enabled then stream vertices out to memory.
-                                if (HasStreamOutT)
+                                if (HasStreamOutT::value)
                                 {
                                     StreamOut(pDC, pa, workerId, pSoPrimData, 0);
                                 }
 
-                                if (HasRastT)
+                                if (HasRastT::value)
                                 {
                                     SWR_ASSERT(pDC->pState->pfnProcessPrims);
                                     pDC->pState->pfnProcessPrims(pDC, pa, workerId, prim,
@@ -1403,7 +1405,7 @@ void ProcessDraw(
             } while (pa.NextPrim());
 
             i += KNOB_SIMD_WIDTH;
-            if (IsIndexedT)
+            if (IsIndexedT::value)
             {
                 fetchInfo.pIndices = (int*)((uint8_t*)fetchInfo.pIndices + KNOB_SIMD_WIDTH * indexSize);
             }
@@ -1417,39 +1419,30 @@ void ProcessDraw(
 
     RDTSC_STOP(FEProcessDraw, numPrims * work.numInstances, pDC->drawId);
 }
-// Explicit Instantiation of all combinations
-template void ProcessDraw<false, false, false, false, false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, false, false, false, true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, false, false, true,  false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, false, false, true,  true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, false, true,  false, false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, false, true,  false, true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, false, true,  true,  false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, false, true,  true,  true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, true,  false, false, false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, true,  false, false, true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, true,  false, true,  false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, true,  false, true,  true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, true,  true,  false, false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, true,  true,  false, true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, true,  true,  true,  false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<false, true,  true,  true,  true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  false, false, false, false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  false, false, false, true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  false, false, true,  false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  false, false, true,  true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  false, true,  false, false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  false, true,  false, true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  false, true,  true,  false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  false, true,  true,  true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  true,  false, false, false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  true,  false, false, true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  true,  false, true,  false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  true,  false, true,  true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  true,  true,  false, false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  true,  true,  false, true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  true,  true,  true,  false>(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
-template void ProcessDraw<true,  true,  true,  true,  true >(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t workerId, void *pUserData);
+
+struct FEDrawChooser
+{
+    typedef PFN_FE_WORK_FUNC FuncType;
+
+    template <typename... ArgsB>
+    static FuncType GetFunc()
+    {
+        return ProcessDraw<ArgsB...>;
+    }
+};
+
+
+// Selector for correct templated Draw front-end function
+PFN_FE_WORK_FUNC GetProcessDrawFunc(
+    bool IsIndexed,
+    bool IsCutIndexEnabled,
+    bool HasTessellation,
+    bool HasGeometryShader,
+    bool HasStreamOut,
+    bool HasRasterization)
+{
+    return TemplateArgUnroller<FEDrawChooser>::GetFunc(IsIndexed, IsCutIndexEnabled, HasTessellation, HasGeometryShader, HasStreamOut, HasRasterization);
+}
 
 
 //////////////////////////////////////////////////////////////////////////
@@ -1584,6 +1577,7 @@ void BinTriangles(
     const SWR_RASTSTATE& rastState = state.rastState;
     const SWR_FRONTEND_STATE& feState = state.frontendState;
     const SWR_GS_STATE& gsState = state.gsState;
+    MacroTileMgr *pTileMgr = pDC->pTileMgr;
 
     // Simple wireframe mode for debugging purposes only
 
@@ -1646,7 +1640,7 @@ void BinTriangles(
     int maskLo = _simd_movemask_pd(_simd_castsi_pd(_simd_cmpeq_epi64(vDet[0], _simd_setzero_si())));
     int maskHi = _simd_movemask_pd(_simd_castsi_pd(_simd_cmpeq_epi64(vDet[1], _simd_setzero_si())));
 
-    int cullZeroAreaMask = maskLo | ((maskHi << KNOB_SIMD_WIDTH / 2));
+    int cullZeroAreaMask = maskLo | (maskHi << (KNOB_SIMD_WIDTH / 2));
 
     uint32_t origTriMask = triMask;
     triMask &= ~cullZeroAreaMask;
@@ -1792,6 +1786,7 @@ void BinTriangles(
         _simd_store_si((simdscalari*)aRTAI, _simd_setzero_si());
     }
 
+
     // scan remaining valid triangles and bin each separately
     while (_BitScanForward(&triIndex, triMask))
     {
@@ -1844,7 +1839,6 @@ void BinTriangles(
             ProcessUserClipDist<3>(pa, triIndex, rastState.clipDistanceMask, desc.pUserClipBuffer);
         }
 
-        MacroTileMgr *pTileMgr = pDC->pTileMgr;
         for (uint32_t y = aMTTop[triIndex]; y <= aMTBottom[triIndex]; ++y)
         {
             for (uint32_t x = aMTLeft[triIndex]; x <= aMTRight[triIndex]; ++x)
@@ -1857,7 +1851,6 @@ void BinTriangles(
                 }
             }
         }
-
         triMask &= ~(1 << triIndex);
     }
 

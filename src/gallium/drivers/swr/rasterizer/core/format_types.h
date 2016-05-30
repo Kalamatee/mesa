@@ -27,6 +27,8 @@
 ******************************************************************************/
 #pragma once
 
+#include "utils.h"
+
 //////////////////////////////////////////////////////////////////////////
 /// PackTraits - Helpers for packing / unpacking same pixel sizes
 //////////////////////////////////////////////////////////////////////////
@@ -620,7 +622,6 @@ template<> struct TypeTraits<SWR_TYPE_FLOAT, 16> : PackTraits<16>
 
         static const uint32_t HALF_EXP_BITS = 5;
         static const uint32_t HALF_MANTISSA_BITS = 10;
-        static const uint32_t HALF_MANTISSA_MASK = (1U << HALF_MANTISSA_BITS) - 1;
         static const uint32_t HALF_EXP_MASK = ((1U << HALF_EXP_BITS) - 1) << HALF_MANTISSA_BITS;
 
         // minimum exponent required, exponents below this are flushed to 0.
@@ -1061,13 +1062,13 @@ struct ComponentTraits
         switch (comp)
         {
         case 0:
-            return TypeTraits<X, NumBitsX>::convertSrgb(in);;
+            return TypeTraits<X, NumBitsX>::convertSrgb(in);
         case 1:
-            return TypeTraits<Y, NumBitsY>::convertSrgb(in);;
+            return TypeTraits<Y, NumBitsY>::convertSrgb(in);
         case 2:
-            return TypeTraits<Z, NumBitsZ>::convertSrgb(in);;
+            return TypeTraits<Z, NumBitsZ>::convertSrgb(in);
         case 3:
-            return TypeTraits<W, NumBitsW>::convertSrgb(in);;
+            return TypeTraits<W, NumBitsW>::convertSrgb(in);
         }
         SWR_ASSERT(0);
         return TypeTraits<X, NumBitsX>::convertSrgb(in);

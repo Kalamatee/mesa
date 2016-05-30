@@ -24,6 +24,10 @@ SUBDIRS = . gtest util mapi/glapi/gen mapi
 # include only conditionally ?
 SUBDIRS += compiler
 
+if HAVE_INTEL_DRIVERS
+SUBDIRS += intel
+endif
+
 if NEED_OPENGL_COMMON
 SUBDIRS += mesa
 endif
@@ -34,16 +38,28 @@ if HAVE_DRI_GLX
 SUBDIRS += glx
 endif
 
-if HAVE_EGL_PLATFORM_WAYLAND
-SUBDIRS += egl/wayland/wayland-egl egl/wayland/wayland-drm
+## Optionally required by GBM and EGL
+if HAVE_PLATFORM_WAYLAND
+SUBDIRS += egl/wayland/wayland-drm
 endif
 
+## Optionally required by EGL (aka PLATFORM_GBM)
 if HAVE_GBM
 SUBDIRS += gbm
 endif
 
+## Optionally required by EGL
+if HAVE_PLATFORM_WAYLAND
+SUBDIRS += egl/wayland/wayland-egl
+endif
+
 if HAVE_EGL
 SUBDIRS += egl
+endif
+
+## Requires the i965 compiler (part of mesa) and wayland-drm
+if HAVE_INTEL_VULKAN
+SUBDIRS += intel/vulkan
 endif
 
 if HAVE_GALLIUM
@@ -55,10 +71,6 @@ EXTRA_DIST = \
 
 AM_CFLAGS = $(VISIBILITY_CFLAGS)
 AM_CXXFLAGS = $(VISIBILITY_CXXFLAGS)
-
-if HAVE_INTEL_DRIVERS
-SUBDIRS += intel
-endif
 
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/include/ \

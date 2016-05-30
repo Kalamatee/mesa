@@ -108,8 +108,10 @@ struct ir3_compile {
 	 */
 	bool array_index_add_half;
 
-	/* for looking up which system value is which */
-	unsigned sysval_semantics[8];
+	/* on a4xx, bitmask of samplers which need astc+srgb workaround: */
+	unsigned astc_srgb;
+
+	unsigned max_texture_index;
 
 	/* set if we encounter something we can't handle yet, so we
 	 * can bail cleanly and fallback to TGSI compiler f/e
@@ -134,6 +136,12 @@ compile_init(struct ir3_compiler *compiler,
 		ctx->levels_add_one = false;
 		ctx->unminify_coords = false;
 		ctx->array_index_add_half = true;
+
+		if (so->type == SHADER_VERTEX)
+			ctx->astc_srgb = so->key.vastc_srgb;
+		else if (so->type == SHADER_FRAGMENT)
+			ctx->astc_srgb = so->key.fastc_srgb;
+
 	} else {
 		/* no special handling for "flat" */
 		ctx->flat_bypass = false;
@@ -620,14 +628,14 @@ create_driver_param(struct ir3_compile *ctx, enum ir3_driver_param dp)
  */
 static void
 split_dest(struct ir3_block *block, struct ir3_instruction **dst,
-		struct ir3_instruction *src, unsigned n)
+		struct ir3_instruction *src, unsigned base, unsigned n)
 {
 	struct ir3_instruction *prev = NULL;
 	for (int i = 0, j = 0; i < n; i++) {
 		struct ir3_instruction *split = ir3_instr_create(block, OPC_META_FO);
 		ir3_reg_create(split, 0, IR3_REG_SSA);
 		ir3_reg_create(split, 0, IR3_REG_SSA)->instr = src;
-		split->fo.off = i;
+		split->fo.off = i + base;
 
 		if (prev) {
 			split->cp.left = prev;
@@ -637,7 +645,7 @@ split_dest(struct ir3_block *block, struct ir3_instruction **dst,
 		}
 		prev = split;
 
-		if (src->regs[0]->wrmask & (1 << i))
+		if (src->regs[0]->wrmask & (1 << (i + base)))
 			dst[j++] = split;
 	}
 }
@@ -1440,6 +1448,7 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 	case nir_texop_query_levels:
 	case nir_texop_texture_samples:
 	case nir_texop_samples_identical:
+	case nir_texop_txf_ms_mcs:
 		compile_error(ctx, "Unhandled NIR tex type: %d\n", tex->op);
 		return;
 	}
@@ -1543,12 +1552,35 @@ emit_tex(struct ir3_compile *ctx, nir_tex_instr *tex)
 	if (opc == OPC_GETLOD)
 		type = TYPE_U32;
 
-	sam = ir3_SAM(b, opc, type, TGSI_WRITEMASK_XYZW,
-			flags, tex->texture_index, tex->texture_index,
-			create_collect(b, src0, nsrc0),
-			create_collect(b, src1, nsrc1));
+	unsigned tex_idx = tex->texture_index;
 
-	split_dest(b, dst, sam, 4);
+	ctx->max_texture_index = MAX2(ctx->max_texture_index, tex_idx);
+
+	struct ir3_instruction *col0 = create_collect(b, src0, nsrc0);
+	struct ir3_instruction *col1 = create_collect(b, src1, nsrc1);
+
+	sam = ir3_SAM(b, opc, type, TGSI_WRITEMASK_XYZW, flags,
+			tex_idx, tex_idx, col0, col1);
+
+	if ((ctx->astc_srgb & (1 << tex_idx)) && !nir_tex_instr_is_query(tex)) {
+		/* only need first 3 components: */
+		sam->regs[0]->wrmask = 0x7;
+		split_dest(b, dst, sam, 0, 3);
+
+		/* we need to sample the alpha separately with a non-ASTC
+		 * texture state:
+		 */
+		sam = ir3_SAM(b, opc, type, TGSI_WRITEMASK_W, flags,
+				tex_idx, tex_idx, col0, col1);
+
+		array_insert(ctx->ir->astc_srgb, sam);
+
+		/* fixup .w component: */
+		split_dest(b, &dst[3], sam, 3, 1);
+	} else {
+		/* normal (non-workaround) case: */
+		split_dest(b, dst, sam, 0, 4);
+	}
 
 	/* GETLOD returns results in 4.8 fixed point */
 	if (opc == OPC_GETLOD) {
@@ -1576,7 +1608,7 @@ emit_tex_query_levels(struct ir3_compile *ctx, nir_tex_instr *tex)
 	/* even though there is only one component, since it ends
 	 * up in .z rather than .x, we need a split_dest()
 	 */
-	split_dest(b, dst, sam, 3);
+	split_dest(b, dst, sam, 0, 3);
 
 	/* The # of levels comes from getinfo.z. We need to add 1 to it, since
 	 * the value in TEX_CONST_0 is zero-based.
@@ -1610,7 +1642,7 @@ emit_tex_txs(struct ir3_compile *ctx, nir_tex_instr *tex)
 	sam = ir3_SAM(b, OPC_GETSIZE, TYPE_U32, TGSI_WRITEMASK_XYZW, flags,
 			tex->texture_index, tex->texture_index, lod, NULL);
 
-	split_dest(b, dst, sam, 4);
+	split_dest(b, dst, sam, 0, 4);
 
 	/* Array size actually ends up in .w rather than .z. This doesn't
 	 * matter for miplevel 0, but for higher mips the value in z is
@@ -1780,7 +1812,7 @@ emit_block(struct ir3_compile *ctx, nir_block *nblock)
 	_mesa_hash_table_destroy(ctx->addr_ht, NULL);
 	ctx->addr_ht = NULL;
 
-	nir_foreach_instr(nblock, instr) {
+	nir_foreach_instr(instr, nblock) {
 		emit_instr(ctx, instr);
 		if (ctx->error)
 			return;
@@ -1982,6 +2014,10 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 	DBG("; in: slot=%u, len=%ux%u, drvloc=%u",
 			slot, array_len, ncomp, n);
 
+	/* let's pretend things other than vec4 don't exist: */
+	ncomp = MAX2(ncomp, 4);
+	compile_assert(ctx, ncomp == 4);
+
 	so->inputs[n].slot = slot;
 	so->inputs[n].compmask = (1 << ncomp) - 1;
 	so->inputs_count = MAX2(so->inputs_count, n + 1);
@@ -1996,6 +2032,18 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 				so->inputs[n].bary = false;
 				so->frag_coord = true;
 				instr = create_frag_coord(ctx, i);
+			} else if (slot == VARYING_SLOT_PNTC) {
+				/* see for example st_get_generic_varying_index().. this is
+				 * maybe a bit mesa/st specific.  But we need things to line
+				 * up for this in fdN_program:
+				 *    unsigned texmask = 1 << (slot - VARYING_SLOT_VAR0);
+				 *    if (emit->sprite_coord_enable & texmask) {
+				 *       ...
+				 *    }
+				 */
+				so->inputs[n].slot = VARYING_SLOT_VAR8;
+				so->inputs[n].bary = true;
+				instr = create_frag_input(ctx, false);
 			} else if (slot == VARYING_SLOT_FACE) {
 				so->inputs[n].bary = false;
 				so->frag_face = true;
@@ -2031,11 +2079,14 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 				instr = create_frag_input(ctx, use_ldlv);
 			}
 
+			compile_assert(ctx, idx < ctx->ir->ninputs);
+
 			ctx->ir->inputs[idx] = instr;
 		}
 	} else if (ctx->so->type == SHADER_VERTEX) {
 		for (int i = 0; i < ncomp; i++) {
 			unsigned idx = (n * 4) + i;
+			compile_assert(ctx, idx < ctx->ir->ninputs);
 			ctx->ir->inputs[idx] = create_input(ctx->block, idx);
 		}
 	} else {
@@ -2059,6 +2110,10 @@ setup_output(struct ir3_compile *ctx, nir_variable *out)
 
 	DBG("; out: slot=%u, len=%ux%u, drvloc=%u",
 			slot, array_len, ncomp, n);
+
+	/* let's pretend things other than vec4 don't exist: */
+	ncomp = MAX2(ncomp, 4);
+	compile_assert(ctx, ncomp == 4);
 
 	if (ctx->so->type == SHADER_FRAGMENT) {
 		switch (slot) {
@@ -2114,9 +2169,19 @@ setup_output(struct ir3_compile *ctx, nir_variable *out)
 
 	for (int i = 0; i < ncomp; i++) {
 		unsigned idx = (n * 4) + i;
-
+		compile_assert(ctx, idx < ctx->ir->noutputs);
 		ctx->ir->outputs[idx] = create_immed(ctx->block, fui(0.0));
 	}
+}
+
+static int
+max_drvloc(struct exec_list *vars)
+{
+	int drvloc = -1;
+	nir_foreach_variable(var, vars) {
+		drvloc = MAX2(drvloc, (int)var->data.driver_location);
+	}
+	return drvloc;
 }
 
 static void
@@ -2126,20 +2191,21 @@ emit_instructions(struct ir3_compile *ctx)
 	nir_function_impl *fxn = NULL;
 
 	/* Find the main function: */
-	nir_foreach_function(ctx->s, function) {
+	nir_foreach_function(function, ctx->s) {
 		compile_assert(ctx, strcmp(function->name, "main") == 0);
 		compile_assert(ctx, function->impl);
 		fxn = function->impl;
 		break;
 	}
 
-	ninputs  = exec_list_length(&ctx->s->inputs) * 4;
-	noutputs = exec_list_length(&ctx->s->outputs) * 4;
+
+	ninputs  = (max_drvloc(&ctx->s->inputs) + 1) * 4;
+	noutputs = (max_drvloc(&ctx->s->outputs) + 1) * 4;
 
 	/* or vtx shaders, we need to leave room for sysvals:
 	 */
 	if (ctx->so->type == SHADER_VERTEX) {
-		ninputs += 8;
+		ninputs += 16;
 	}
 
 	ctx->ir = ir3_create(ctx->compiler, ninputs, noutputs);
@@ -2150,7 +2216,7 @@ emit_instructions(struct ir3_compile *ctx)
 	list_addtail(&ctx->block->node, &ctx->ir->block_list);
 
 	if (ctx->so->type == SHADER_VERTEX) {
-		ctx->ir->ninputs -= 8;
+		ctx->ir->ninputs -= 16;
 	}
 
 	/* for fragment shader, we have a single input register (usually
@@ -2268,6 +2334,40 @@ fixup_frag_inputs(struct ir3_compile *ctx)
 	ir->inputs = inputs;
 }
 
+/* Fixup tex sampler state for astc/srgb workaround instructions.  We
+ * need to assign the tex state indexes for these after we know the
+ * max tex index.
+ */
+static void
+fixup_astc_srgb(struct ir3_compile *ctx)
+{
+	struct ir3_shader_variant *so = ctx->so;
+	/* indexed by original tex idx, value is newly assigned alpha sampler
+	 * state tex idx.  Zero is invalid since there is at least one sampler
+	 * if we get here.
+	 */
+	unsigned alt_tex_state[16] = {0};
+	unsigned tex_idx = ctx->max_texture_index + 1;
+	unsigned idx = 0;
+
+	so->astc_srgb.base = tex_idx;
+
+	for (unsigned i = 0; i < ctx->ir->astc_srgb_count; i++) {
+		struct ir3_instruction *sam = ctx->ir->astc_srgb[i];
+
+		compile_assert(ctx, sam->cat5.tex < ARRAY_SIZE(alt_tex_state));
+
+		if (alt_tex_state[sam->cat5.tex] == 0) {
+			/* assign new alternate/alpha tex state slot: */
+			alt_tex_state[sam->cat5.tex] = tex_idx++;
+			so->astc_srgb.orig_idx[idx++] = sam->cat5.tex;
+			so->astc_srgb.count++;
+		}
+
+		sam->cat5.tex = alt_tex_state[sam->cat5.tex];
+	}
+}
+
 int
 ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		struct ir3_shader_variant *so)
@@ -2354,7 +2454,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		ir3_print(ir);
 	}
 
-	ir3_cp(ir);
+	ir3_cp(ir, so);
 
 	if (fd_mesa_debug & FD_DBG_OPTMSGS) {
 		printf("BEFORE GROUPING:\n");
@@ -2401,8 +2501,8 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		/* preserve hack for depth output.. tgsi writes depth to .z,
 		 * but what we give the hw is the scalar register:
 		 */
-		if ((so->type == SHADER_FRAGMENT) &&
-			(so->outputs[i].slot == FRAG_RESULT_DEPTH))
+		if (so->shader->from_tgsi && (so->type == SHADER_FRAGMENT) &&
+				(so->outputs[i].slot == FRAG_RESULT_DEPTH))
 			so->outputs[i].regid += 2;
 	}
 
@@ -2432,6 +2532,9 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 		so->inputs[i].regid = regid;
 		so->inputs[i].compmask = compmask;
 	}
+
+	if (ctx->astc_srgb)
+		fixup_astc_srgb(ctx);
 
 	/* We need to do legalize after (for frag shader's) the "bary.f"
 	 * offsets (inloc) have been assigned.

@@ -54,6 +54,7 @@
 #include <X11/Xlib-xcb.h>
 #include <xcb/xcb.h>
 #include <xcb/glx.h>
+#include "GL/mesa_glinterop.h"
 
 static const char __glXGLXClientVendorName[] = "Mesa Project and SGI";
 static const char __glXGLXClientVersion[] = "1.4";
@@ -1656,7 +1657,7 @@ glXGetFBConfigs(Display * dpy, int screen, int *nelements)
 
    *nelements = 0;
    if (priv && (priv->screens != NULL)
-       && (screen >= 0) && (screen <= ScreenCount(dpy))
+       && (screen >= 0) && (screen < ScreenCount(dpy))
        && (priv->screens[screen]->configs != NULL)
        && (priv->screens[screen]->configs->fbconfigID
 	   != (int) GLX_DONT_CARE)) {
@@ -2691,3 +2692,56 @@ __glXGetUST(int64_t * ust)
    }
 }
 #endif /* GLX_DIRECT_RENDERING */
+
+#if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
+
+int
+MesaGLInteropGLXQueryDeviceInfo(Display *dpy, GLXContext context,
+                                mesa_glinterop_device_info *out)
+{
+   struct glx_context *gc = (struct glx_context*)context;
+   int ret;
+
+   __glXLock();
+
+   if (!gc || gc->xid == None || !gc->isDirect) {
+      __glXUnlock();
+      return MESA_GLINTEROP_INVALID_CONTEXT;
+   }
+
+   if (!gc->vtable->interop_query_device_info) {
+      __glXUnlock();
+      return MESA_GLINTEROP_UNSUPPORTED;
+   }
+
+   ret = gc->vtable->interop_query_device_info(gc, out);
+   __glXUnlock();
+   return ret;
+}
+
+int
+MesaGLInteropGLXExportObject(Display *dpy, GLXContext context,
+                             mesa_glinterop_export_in *in,
+                             mesa_glinterop_export_out *out)
+{
+   struct glx_context *gc = (struct glx_context*)context;
+   int ret;
+
+   __glXLock();
+
+   if (!gc || gc->xid == None || !gc->isDirect) {
+      __glXUnlock();
+      return MESA_GLINTEROP_INVALID_CONTEXT;
+   }
+
+   if (!gc->vtable->interop_export_object) {
+      __glXUnlock();
+      return MESA_GLINTEROP_UNSUPPORTED;
+   }
+
+   ret = gc->vtable->interop_export_object(gc, in, out);
+   __glXUnlock();
+   return ret;
+}
+
+#endif /* defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL) */

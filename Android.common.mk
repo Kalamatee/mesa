@@ -54,6 +54,7 @@ LOCAL_CFLAGS += \
 	-DHAVE___BUILTIN_CLZLL \
 	-DHAVE___BUILTIN_UNREACHABLE \
 	-DHAVE_PTHREAD=1 \
+	-DHAVE_DLOPEN \
 	-fvisibility=hidden \
 	-Wno-sign-compare
 
@@ -65,7 +66,6 @@ ifeq ($(strip $(MESA_ENABLE_ASM)),true)
 ifeq ($(TARGET_ARCH),x86)
 LOCAL_CFLAGS += \
 	-DUSE_X86_ASM \
-	-DHAVE_DLOPEN \
 
 endif
 endif
@@ -82,6 +82,13 @@ LOCAL_CPPFLAGS += \
 	$(if $(filter true,$(MESA_LOLLIPOP_BUILD)),-D_USING_LIBCXX) \
 	-Wno-error=non-virtual-dtor \
 	-Wno-non-virtual-dtor
+
+ifeq ($(MESA_LOLLIPOP_BUILD),true)
+  LOCAL_CFLAGS_32 += -DDEFAULT_DRIVER_DIR=\"/system/lib/$(MESA_DRI_MODULE_REL_PATH)\"
+  LOCAL_CFLAGS_64 += -DDEFAULT_DRIVER_DIR=\"/system/lib64/$(MESA_DRI_MODULE_REL_PATH)\"
+else
+  LOCAL_CFLAGS += -DDEFAULT_DRIVER_DIR=\"/system/lib/$(MESA_DRI_MODULE_REL_PATH)\"
+endif
 
 # uncomment to keep the debug symbols
 #LOCAL_STRIP_MODULE := false

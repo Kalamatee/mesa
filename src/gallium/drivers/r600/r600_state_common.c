@@ -121,7 +121,7 @@ static unsigned r600_conv_pipe_prim(unsigned prim)
 		[PIPE_PRIM_PATCHES]                     = V_008958_DI_PT_PATCH,
 		[R600_PRIM_RECTANGLE_LIST]		= V_008958_DI_PT_RECTLIST
 	};
-	assert(prim < Elements(prim_conv));
+	assert(prim < ARRAY_SIZE(prim_conv));
 	return prim_conv[prim];
 }
 
@@ -145,7 +145,7 @@ unsigned r600_conv_prim_to_gs_out(unsigned mode)
 		[PIPE_PRIM_PATCHES]			= V_028A6C_OUTPRIM_TYPE_POINTLIST,
 		[R600_PRIM_RECTANGLE_LIST]		= V_028A6C_OUTPRIM_TYPE_TRISTRIP
 	};
-	assert(mode < Elements(prim_conv));
+	assert(mode < ARRAY_SIZE(prim_conv));
 
 	return prim_conv[mode];
 }
@@ -1125,7 +1125,7 @@ static void r600_set_sample_mask(struct pipe_context *pipe, unsigned sample_mask
 
 static void r600_update_driver_const_buffers(struct r600_context *rctx)
 {
-	int sh, size;;
+	int sh, size;
 	void *ptr;
 	struct pipe_constant_buffer cb;
 	for (sh = 0; sh < PIPE_SHADER_TYPES; sh++) {
@@ -1283,7 +1283,7 @@ void r600_set_sample_locations_constant_buffer(struct r600_context *rctx)
 	struct pipe_context *ctx = &rctx->b.b;
 
 	assert(rctx->framebuffer.nr_samples < R600_UCP_SIZE);
-	assert(rctx->framebuffer.nr_samples <= Elements(rctx->sample_positions)/4);
+	assert(rctx->framebuffer.nr_samples <= ARRAY_SIZE(rctx->sample_positions)/4);
 
 	memset(rctx->sample_positions, 0, 4 * 4 * 16);
 	for (i = 0; i < rctx->framebuffer.nr_samples; i++) {
@@ -1378,7 +1378,7 @@ static void r600_generate_fixed_func_tcs(struct r600_context *rctx)
 {
 	struct ureg_src const0, const1;
 	struct ureg_dst tessouter, tessinner;
-	struct ureg_program *ureg = ureg_create(TGSI_PROCESSOR_TESS_CTRL);
+	struct ureg_program *ureg = ureg_create(PIPE_SHADER_TESS_CTRL);
 
 	if (!ureg)
 		return; /* if we get here, we're screwed */
@@ -1681,7 +1681,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 	}
 
 	/* make sure that the gfx ring is only one active */
-	if (rctx->b.dma.cs && rctx->b.dma.cs->cdw) {
+	if (radeon_emitted(rctx->b.dma.cs, 0)) {
 		rctx->b.dma.flush(rctx, RADEON_FLUSH_ASYNC, NULL);
 	}
 
@@ -1871,8 +1871,8 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 
 	/* Draw packets. */
 	if (!info.indirect) {
-		cs->buf[cs->cdw++] = PKT3(PKT3_NUM_INSTANCES, 0, 0);
-		cs->buf[cs->cdw++] = info.instance_count;
+		radeon_emit(cs, PKT3(PKT3_NUM_INSTANCES, 0, 0));
+		radeon_emit(cs, info.instance_count);
 	}
 
 	if (unlikely(info.indirect)) {
@@ -1883,66 +1883,65 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 		rctx->vgt_state.last_draw_was_indirect = true;
 		rctx->last_start_instance = -1;
 
-		cs->buf[cs->cdw++] = PKT3(EG_PKT3_SET_BASE, 2, 0);
-		cs->buf[cs->cdw++] = EG_DRAW_INDEX_INDIRECT_PATCH_TABLE_BASE;
-		cs->buf[cs->cdw++] = va;
-		cs->buf[cs->cdw++] = (va >> 32UL) & 0xFF;
+		radeon_emit(cs, PKT3(EG_PKT3_SET_BASE, 2, 0));
+		radeon_emit(cs, EG_DRAW_INDEX_INDIRECT_PATCH_TABLE_BASE);
+		radeon_emit(cs, va);
+		radeon_emit(cs, (va >> 32UL) & 0xFF);
 
-		cs->buf[cs->cdw++] = PKT3(PKT3_NOP, 0, 0);
-		cs->buf[cs->cdw++] = radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
-							   (struct r600_resource*)info.indirect,
-							   RADEON_USAGE_READ,
-                                                           RADEON_PRIO_DRAW_INDIRECT);
+		radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+		radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
+							  (struct r600_resource*)info.indirect,
+							  RADEON_USAGE_READ,
+                                                          RADEON_PRIO_DRAW_INDIRECT));
 	}
 
 	if (info.indexed) {
-		cs->buf[cs->cdw++] = PKT3(PKT3_INDEX_TYPE, 0, 0);
-		cs->buf[cs->cdw++] = ib.index_size == 4 ?
-					(VGT_INDEX_32 | (R600_BIG_ENDIAN ? VGT_DMA_SWAP_32_BIT : 0)) :
-					(VGT_INDEX_16 | (R600_BIG_ENDIAN ? VGT_DMA_SWAP_16_BIT : 0));
+		radeon_emit(cs, PKT3(PKT3_INDEX_TYPE, 0, 0));
+		radeon_emit(cs, ib.index_size == 4 ?
+				(VGT_INDEX_32 | (R600_BIG_ENDIAN ? VGT_DMA_SWAP_32_BIT : 0)) :
+				(VGT_INDEX_16 | (R600_BIG_ENDIAN ? VGT_DMA_SWAP_16_BIT : 0)));
 
 		if (ib.user_buffer) {
 			unsigned size_bytes = info.count*ib.index_size;
 			unsigned size_dw = align(size_bytes, 4) / 4;
-			cs->buf[cs->cdw++] = PKT3(PKT3_DRAW_INDEX_IMMD, 1 + size_dw, render_cond_bit);
-			cs->buf[cs->cdw++] = info.count;
-			cs->buf[cs->cdw++] = V_0287F0_DI_SRC_SEL_IMMEDIATE;
-			memcpy(cs->buf+cs->cdw, ib.user_buffer, size_bytes);
-			cs->cdw += size_dw;
+			radeon_emit(cs, PKT3(PKT3_DRAW_INDEX_IMMD, 1 + size_dw, render_cond_bit));
+			radeon_emit(cs, info.count);
+			radeon_emit(cs, V_0287F0_DI_SRC_SEL_IMMEDIATE);
+			radeon_emit_array(cs, ib.user_buffer, size_dw);
 		} else {
 			uint64_t va = r600_resource(ib.buffer)->gpu_address + ib.offset;
 
 			if (likely(!info.indirect)) {
-				cs->buf[cs->cdw++] = PKT3(PKT3_DRAW_INDEX, 3, render_cond_bit);
-				cs->buf[cs->cdw++] = va;
-				cs->buf[cs->cdw++] = (va >> 32UL) & 0xFF;
-				cs->buf[cs->cdw++] = info.count;
-				cs->buf[cs->cdw++] = V_0287F0_DI_SRC_SEL_DMA;
-				cs->buf[cs->cdw++] = PKT3(PKT3_NOP, 0, 0);
-				cs->buf[cs->cdw++] = radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
-									   (struct r600_resource*)ib.buffer,
-									   RADEON_USAGE_READ,
-                                                                           RADEON_PRIO_INDEX_BUFFER);
+				radeon_emit(cs, PKT3(PKT3_DRAW_INDEX, 3, render_cond_bit));
+				radeon_emit(cs, va);
+				radeon_emit(cs, (va >> 32UL) & 0xFF);
+				radeon_emit(cs, info.count);
+				radeon_emit(cs, V_0287F0_DI_SRC_SEL_DMA);
+				radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+				radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
+									  (struct r600_resource*)ib.buffer,
+									  RADEON_USAGE_READ,
+                                                                          RADEON_PRIO_INDEX_BUFFER));
 			}
 			else {
 				uint32_t max_size = (ib.buffer->width0 - ib.offset) / ib.index_size;
 
-				cs->buf[cs->cdw++] = PKT3(EG_PKT3_INDEX_BASE, 1, 0);
-				cs->buf[cs->cdw++] = va;
-				cs->buf[cs->cdw++] = (va >> 32UL) & 0xFF;
+				radeon_emit(cs, PKT3(EG_PKT3_INDEX_BASE, 1, 0));
+				radeon_emit(cs, va);
+				radeon_emit(cs, (va >> 32UL) & 0xFF);
 
-				cs->buf[cs->cdw++] = PKT3(PKT3_NOP, 0, 0);
-				cs->buf[cs->cdw++] = radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
-									   (struct r600_resource*)ib.buffer,
-									   RADEON_USAGE_READ,
-                                                                           RADEON_PRIO_INDEX_BUFFER);
+				radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+				radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
+									  (struct r600_resource*)ib.buffer,
+									  RADEON_USAGE_READ,
+                                                                          RADEON_PRIO_INDEX_BUFFER));
 
-				cs->buf[cs->cdw++] = PKT3(EG_PKT3_INDEX_BUFFER_SIZE, 0, 0);
-				cs->buf[cs->cdw++] = max_size;
+				radeon_emit(cs, PKT3(EG_PKT3_INDEX_BUFFER_SIZE, 0, 0));
+				radeon_emit(cs, max_size);
 
-				cs->buf[cs->cdw++] = PKT3(EG_PKT3_DRAW_INDEX_INDIRECT, 1, render_cond_bit);
-				cs->buf[cs->cdw++] = info.indirect_offset;
-				cs->buf[cs->cdw++] = V_0287F0_DI_SRC_SEL_DMA;
+				radeon_emit(cs, PKT3(EG_PKT3_DRAW_INDEX_INDIRECT, 1, render_cond_bit));
+				radeon_emit(cs, info.indirect_offset);
+				radeon_emit(cs, V_0287F0_DI_SRC_SEL_DMA);
 			}
 		}
 	} else {
@@ -1952,29 +1951,29 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 
 			radeon_set_context_reg(cs, R_028B30_VGT_STRMOUT_DRAW_OPAQUE_VERTEX_STRIDE, t->stride_in_dw);
 
-			cs->buf[cs->cdw++] = PKT3(PKT3_COPY_DW, 4, 0);
-			cs->buf[cs->cdw++] = COPY_DW_SRC_IS_MEM | COPY_DW_DST_IS_REG;
-			cs->buf[cs->cdw++] = va & 0xFFFFFFFFUL;     /* src address lo */
-			cs->buf[cs->cdw++] = (va >> 32UL) & 0xFFUL; /* src address hi */
-			cs->buf[cs->cdw++] = R_028B2C_VGT_STRMOUT_DRAW_OPAQUE_BUFFER_FILLED_SIZE >> 2; /* dst register */
-			cs->buf[cs->cdw++] = 0; /* unused */
+			radeon_emit(cs, PKT3(PKT3_COPY_DW, 4, 0));
+			radeon_emit(cs, COPY_DW_SRC_IS_MEM | COPY_DW_DST_IS_REG);
+			radeon_emit(cs, va & 0xFFFFFFFFUL);     /* src address lo */
+			radeon_emit(cs, (va >> 32UL) & 0xFFUL); /* src address hi */
+			radeon_emit(cs, R_028B2C_VGT_STRMOUT_DRAW_OPAQUE_BUFFER_FILLED_SIZE >> 2); /* dst register */
+			radeon_emit(cs, 0); /* unused */
 
-			cs->buf[cs->cdw++] = PKT3(PKT3_NOP, 0, 0);
-			cs->buf[cs->cdw++] = radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
-								   t->buf_filled_size, RADEON_USAGE_READ,
-								   RADEON_PRIO_SO_FILLED_SIZE);
+			radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
+			radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx,
+								  t->buf_filled_size, RADEON_USAGE_READ,
+								  RADEON_PRIO_SO_FILLED_SIZE));
 		}
 
 		if (likely(!info.indirect)) {
-			cs->buf[cs->cdw++] = PKT3(PKT3_DRAW_INDEX_AUTO, 1, render_cond_bit);
-			cs->buf[cs->cdw++] = info.count;
+			radeon_emit(cs, PKT3(PKT3_DRAW_INDEX_AUTO, 1, render_cond_bit));
+			radeon_emit(cs, info.count);
 		}
 		else {
-			cs->buf[cs->cdw++] = PKT3(EG_PKT3_DRAW_INDIRECT, 1, render_cond_bit);
-			cs->buf[cs->cdw++] = info.indirect_offset;
+			radeon_emit(cs, PKT3(EG_PKT3_DRAW_INDIRECT, 1, render_cond_bit));
+			radeon_emit(cs, info.indirect_offset);
 		}
-		cs->buf[cs->cdw++] = V_0287F0_DI_SRC_SEL_AUTO_INDEX |
-					(info.count_from_stream_output ? S_0287F0_USE_OPAQUE(1) : 0);
+		radeon_emit(cs, V_0287F0_DI_SRC_SEL_AUTO_INDEX |
+				(info.count_from_stream_output ? S_0287F0_USE_OPAQUE(1) : 0));
 	}
 
 	/* SMX returns CONTEXT_DONE too early workaround */
@@ -1991,8 +1990,8 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 
 	/* ES ring rolling over at EOP - workaround */
 	if (rctx->b.chip_class == R600) {
-		cs->buf[cs->cdw++] = PKT3(PKT3_EVENT_WRITE, 0, 0);
-		cs->buf[cs->cdw++] = EVENT_TYPE(EVENT_TYPE_SQ_NON_EVENT);
+		radeon_emit(cs, PKT3(PKT3_EVENT_WRITE, 0, 0));
+		radeon_emit(cs, EVENT_TYPE(EVENT_TYPE_SQ_NON_EVENT));
 	}
 
 	/* Set the depth buffer as dirty. */
@@ -2191,22 +2190,22 @@ unsigned r600_get_swizzle_combined(const unsigned char *swizzle_format,
 	/* Get swizzle. */
 	for (i = 0; i < 4; i++) {
 		switch (swizzle[i]) {
-		case UTIL_FORMAT_SWIZZLE_Y:
+		case PIPE_SWIZZLE_Y:
 			result |= swizzle_bit[1] << swizzle_shift[i];
 			break;
-		case UTIL_FORMAT_SWIZZLE_Z:
+		case PIPE_SWIZZLE_Z:
 			result |= swizzle_bit[2] << swizzle_shift[i];
 			break;
-		case UTIL_FORMAT_SWIZZLE_W:
+		case PIPE_SWIZZLE_W:
 			result |= swizzle_bit[3] << swizzle_shift[i];
 			break;
-		case UTIL_FORMAT_SWIZZLE_0:
+		case PIPE_SWIZZLE_0:
 			result |= V_038010_SQ_SEL_0 << swizzle_shift[i];
 			break;
-		case UTIL_FORMAT_SWIZZLE_1:
+		case PIPE_SWIZZLE_1:
 			result |= V_038010_SQ_SEL_1 << swizzle_shift[i];
 			break;
-		default: /* UTIL_FORMAT_SWIZZLE_X */
+		default: /* PIPE_SWIZZLE_X */
 			result |= swizzle_bit[0] << swizzle_shift[i];
 		}
 	}
@@ -2217,7 +2216,8 @@ unsigned r600_get_swizzle_combined(const unsigned char *swizzle_format,
 uint32_t r600_translate_texformat(struct pipe_screen *screen,
 				  enum pipe_format format,
 				  const unsigned char *swizzle_view,
-				  uint32_t *word4_p, uint32_t *yuv_format_p)
+				  uint32_t *word4_p, uint32_t *yuv_format_p,
+				  bool do_endian_swap)
 {
 	struct r600_screen *rscreen = (struct r600_screen *)screen;
 	uint32_t result = 0, word4 = 0, yuv_format = 0;
@@ -2226,6 +2226,9 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 	bool is_srgb_valid = FALSE;
 	const unsigned char swizzle_xxxx[4] = {0, 0, 0, 0};
 	const unsigned char swizzle_yyyy[4] = {1, 1, 1, 1};
+	const unsigned char swizzle_xxxy[4] = {0, 0, 0, 1};
+	const unsigned char swizzle_zyx1[4] = {2, 1, 0, 5};
+	const unsigned char swizzle_zyxw[4] = {2, 1, 0, 3};
 
 	int i;
 	const uint32_t sign_bit[4] = {
@@ -2234,11 +2237,41 @@ uint32_t r600_translate_texformat(struct pipe_screen *screen,
 		S_038010_FORMAT_COMP_Z(V_038010_SQ_FORMAT_COMP_SIGNED),
 		S_038010_FORMAT_COMP_W(V_038010_SQ_FORMAT_COMP_SIGNED)
 	};
+
+	/* Need to replace the specified texture formats in case of big-endian.
+	 * These formats are formats that have channels with number of bits
+	 * not divisible by 8.
+	 * Mesa conversion functions don't swap bits for those formats, and because
+	 * we transmit this over a serial bus to the GPU (PCIe), the
+	 * bit-endianess is important!!!
+	 * In case we have an "opposite" format, just use that for the swizzling
+	 * information. If we don't have such an "opposite" format, we need
+	 * to use a fixed swizzle info instead (see below)
+	 */
+	if (format == PIPE_FORMAT_R4A4_UNORM && do_endian_swap)
+		format = PIPE_FORMAT_A4R4_UNORM;
+
 	desc = util_format_description(format);
 
 	/* Depth and stencil swizzling is handled separately. */
 	if (desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS) {
-		word4 |= r600_get_swizzle_combined(desc->swizzle, swizzle_view, FALSE);
+		/* Need to check for specific texture formats that don't have
+		 * an "opposite" format we can use. For those formats, we directly
+		 * specify the swizzling, which is the LE swizzling as defined in
+		 * u_format.csv
+		 */
+		if (do_endian_swap) {
+			if (format == PIPE_FORMAT_L4A4_UNORM)
+				word4 |= r600_get_swizzle_combined(swizzle_xxxy, swizzle_view, FALSE);
+			else if (format == PIPE_FORMAT_B4G4R4A4_UNORM)
+				word4 |= r600_get_swizzle_combined(swizzle_zyxw, swizzle_view, FALSE);
+			else if (format == PIPE_FORMAT_B4G4R4X4_UNORM || format == PIPE_FORMAT_B5G6R5_UNORM)
+				word4 |= r600_get_swizzle_combined(swizzle_zyx1, swizzle_view, FALSE);
+			else
+				word4 |= r600_get_swizzle_combined(desc->swizzle, swizzle_view, FALSE);
+		} else {
+			word4 |= r600_get_swizzle_combined(desc->swizzle, swizzle_view, FALSE);
+		}
 	}
 
 	/* Colorspace (return non-RGB formats directly). */
@@ -2579,7 +2612,8 @@ out_unknown:
 	return ~0;
 }
 
-uint32_t r600_translate_colorformat(enum chip_class chip, enum pipe_format format)
+uint32_t r600_translate_colorformat(enum chip_class chip, enum pipe_format format,
+						bool do_endian_swap)
 {
 	const struct util_format_description *desc = util_format_description(format);
 	int channel = util_format_get_first_non_void_channel(format);
@@ -2637,7 +2671,7 @@ uint32_t r600_translate_colorformat(enum chip_class chip, enum pipe_format forma
 					return V_0280A0_COLOR_32_32;
 			}
 		} else if (HAS_SIZE(8,24,0,0)) {
-			return V_0280A0_COLOR_24_8;
+			return (do_endian_swap ? V_0280A0_COLOR_8_24 : V_0280A0_COLOR_24_8);
 		} else if (HAS_SIZE(24,8,0,0)) {
 			return V_0280A0_COLOR_8_24;
 		}
@@ -2679,7 +2713,7 @@ uint32_t r600_translate_colorformat(enum chip_class chip, enum pipe_format forma
 	return ~0U;
 }
 
-uint32_t r600_colorformat_endian_swap(uint32_t colorformat)
+uint32_t r600_colorformat_endian_swap(uint32_t colorformat, bool do_endian_swap)
 {
 	if (R600_BIG_ENDIAN) {
 		switch(colorformat) {
@@ -2689,17 +2723,24 @@ uint32_t r600_colorformat_endian_swap(uint32_t colorformat)
 			return ENDIAN_NONE;
 
 		/* 16-bit buffers. */
+		case V_0280A0_COLOR_8_8:
+			/*
+			 * No need to do endian swaps on array formats,
+			 * as mesa<-->pipe formats conversion take into account
+			 * the endianess
+			 */
+			return ENDIAN_NONE;
+
 		case V_0280A0_COLOR_5_6_5:
 		case V_0280A0_COLOR_1_5_5_5:
 		case V_0280A0_COLOR_4_4_4_4:
 		case V_0280A0_COLOR_16:
-		case V_0280A0_COLOR_8_8:
-			return ENDIAN_8IN16;
+			return (do_endian_swap ? ENDIAN_8IN16 : ENDIAN_NONE);
 
 		/* 32-bit buffers. */
 		case V_0280A0_COLOR_8_8_8_8:
 			/*
-			 * No need to do endian swaps on four 8-bits components,
+			 * No need to do endian swaps on array formats,
 			 * as mesa<-->pipe formats conversion take into account
 			 * the endianess
 			 */
@@ -2709,9 +2750,11 @@ uint32_t r600_colorformat_endian_swap(uint32_t colorformat)
 		case V_0280A0_COLOR_8_24:
 		case V_0280A0_COLOR_24_8:
 		case V_0280A0_COLOR_32_FLOAT:
+			return (do_endian_swap ? ENDIAN_8IN32 : ENDIAN_NONE);
+
 		case V_0280A0_COLOR_16_16_FLOAT:
 		case V_0280A0_COLOR_16_16:
-			return ENDIAN_8IN32;
+			return ENDIAN_8IN16;
 
 		/* 64-bit buffers. */
 		case V_0280A0_COLOR_16_16_16_16:
@@ -2744,7 +2787,7 @@ static void r600_invalidate_buffer(struct pipe_context *ctx, struct pipe_resourc
 
 	/* Reallocate the buffer in the same pipe_resource. */
 	r600_init_resource(&rctx->screen->b, rbuffer, rbuffer->b.b.width0,
-			   alignment, TRUE);
+			   alignment);
 
 	/* We changed the buffer, now we need to bind it where the old one was bound. */
 	/* Vertex buffers. */
@@ -2758,7 +2801,8 @@ static void r600_invalidate_buffer(struct pipe_context *ctx, struct pipe_resourc
 	}
 	/* Streamout buffers. */
 	for (i = 0; i < rctx->b.streamout.num_targets; i++) {
-		if (rctx->b.streamout.targets[i]->b.buffer == &rbuffer->b.b) {
+		if (rctx->b.streamout.targets[i] &&
+		    rctx->b.streamout.targets[i]->b.buffer == &rbuffer->b.b) {
 			if (rctx->b.streamout.begin_emitted) {
 				r600_emit_streamout_end(&rctx->b);
 			}

@@ -55,171 +55,20 @@ void si_init_atom(struct si_context *sctx, struct r600_atom *atom,
 	*list_elem = atom;
 }
 
-unsigned si_array_mode(unsigned mode)
-{
-	switch (mode) {
-	case RADEON_SURF_MODE_LINEAR_ALIGNED:
-		return V_009910_ARRAY_LINEAR_ALIGNED;
-	case RADEON_SURF_MODE_1D:
-		return V_009910_ARRAY_1D_TILED_THIN1;
-	case RADEON_SURF_MODE_2D:
-		return V_009910_ARRAY_2D_TILED_THIN1;
-	default:
-	case RADEON_SURF_MODE_LINEAR:
-		return V_009910_ARRAY_LINEAR_GENERAL;
-	}
-}
-
-uint32_t si_num_banks(struct si_screen *sscreen, struct r600_texture *tex)
-{
-	if (sscreen->b.chip_class >= CIK &&
-	    sscreen->b.info.cik_macrotile_mode_array_valid) {
-		unsigned index, tileb;
-
-		tileb = 8 * 8 * tex->surface.bpe;
-		tileb = MIN2(tex->surface.tile_split, tileb);
-
-		for (index = 0; tileb > 64; index++) {
-			tileb >>= 1;
-		}
-		assert(index < 16);
-
-		return (sscreen->b.info.cik_macrotile_mode_array[index] >> 6) & 0x3;
-	}
-
-	if (sscreen->b.chip_class == SI &&
-	    sscreen->b.info.si_tile_mode_array_valid) {
-		/* Don't use stencil_tiling_index, because num_banks is always
-		 * read from the depth mode. */
-		unsigned tile_mode_index = tex->surface.tiling_index[0];
-		assert(tile_mode_index < 32);
-
-		return G_009910_NUM_BANKS(sscreen->b.info.si_tile_mode_array[tile_mode_index]);
-	}
-
-	/* The old way. */
-	switch (sscreen->b.info.r600_num_banks) {
-	case 2:
-		return V_02803C_ADDR_SURF_2_BANK;
-	case 4:
-		return V_02803C_ADDR_SURF_4_BANK;
-	case 8:
-	default:
-		return V_02803C_ADDR_SURF_8_BANK;
-	case 16:
-		return V_02803C_ADDR_SURF_16_BANK;
-	}
-}
-
-unsigned cik_tile_split(unsigned tile_split)
-{
-	switch (tile_split) {
-	case 64:
-		tile_split = V_028040_ADDR_SURF_TILE_SPLIT_64B;
-		break;
-	case 128:
-		tile_split = V_028040_ADDR_SURF_TILE_SPLIT_128B;
-		break;
-	case 256:
-		tile_split = V_028040_ADDR_SURF_TILE_SPLIT_256B;
-		break;
-	case 512:
-		tile_split = V_028040_ADDR_SURF_TILE_SPLIT_512B;
-		break;
-	default:
-	case 1024:
-		tile_split = V_028040_ADDR_SURF_TILE_SPLIT_1KB;
-		break;
-	case 2048:
-		tile_split = V_028040_ADDR_SURF_TILE_SPLIT_2KB;
-		break;
-	case 4096:
-		tile_split = V_028040_ADDR_SURF_TILE_SPLIT_4KB;
-		break;
-	}
-	return tile_split;
-}
-
-unsigned cik_macro_tile_aspect(unsigned macro_tile_aspect)
-{
-	switch (macro_tile_aspect) {
-	default:
-	case 1:
-		macro_tile_aspect = V_02803C_ADDR_SURF_MACRO_ASPECT_1;
-		break;
-	case 2:
-		macro_tile_aspect = V_02803C_ADDR_SURF_MACRO_ASPECT_2;
-		break;
-	case 4:
-		macro_tile_aspect = V_02803C_ADDR_SURF_MACRO_ASPECT_4;
-		break;
-	case 8:
-		macro_tile_aspect = V_02803C_ADDR_SURF_MACRO_ASPECT_8;
-		break;
-	}
-	return macro_tile_aspect;
-}
-
-unsigned cik_bank_wh(unsigned bankwh)
-{
-	switch (bankwh) {
-	default:
-	case 1:
-		bankwh = V_02803C_ADDR_SURF_BANK_WIDTH_1;
-		break;
-	case 2:
-		bankwh = V_02803C_ADDR_SURF_BANK_WIDTH_2;
-		break;
-	case 4:
-		bankwh = V_02803C_ADDR_SURF_BANK_WIDTH_4;
-		break;
-	case 8:
-		bankwh = V_02803C_ADDR_SURF_BANK_WIDTH_8;
-		break;
-	}
-	return bankwh;
-}
-
-unsigned cik_db_pipe_config(struct si_screen *sscreen, unsigned tile_mode)
-{
-	if (sscreen->b.info.si_tile_mode_array_valid) {
-		uint32_t gb_tile_mode = sscreen->b.info.si_tile_mode_array[tile_mode];
-
-		return G_009910_PIPE_CONFIG(gb_tile_mode);
-	}
-
-	/* This is probably broken for a lot of chips, but it's only used
-	 * if the kernel cannot return the tile mode array for CIK. */
-	switch (sscreen->b.info.num_tile_pipes) {
-	case 16:
-		return V_02803C_X_ADDR_SURF_P16_32X32_16X16;
-	case 8:
-		return V_02803C_X_ADDR_SURF_P8_32X32_16X16;
-	case 4:
-	default:
-		if (sscreen->b.info.num_render_backends == 4)
-			return V_02803C_X_ADDR_SURF_P4_16X16;
-		else
-			return V_02803C_X_ADDR_SURF_P4_8X16;
-	case 2:
-		return V_02803C_ADDR_SURF_P2;
-	}
-}
-
 static unsigned si_map_swizzle(unsigned swizzle)
 {
 	switch (swizzle) {
-	case UTIL_FORMAT_SWIZZLE_Y:
+	case PIPE_SWIZZLE_Y:
 		return V_008F0C_SQ_SEL_Y;
-	case UTIL_FORMAT_SWIZZLE_Z:
+	case PIPE_SWIZZLE_Z:
 		return V_008F0C_SQ_SEL_Z;
-	case UTIL_FORMAT_SWIZZLE_W:
+	case PIPE_SWIZZLE_W:
 		return V_008F0C_SQ_SEL_W;
-	case UTIL_FORMAT_SWIZZLE_0:
+	case PIPE_SWIZZLE_0:
 		return V_008F0C_SQ_SEL_0;
-	case UTIL_FORMAT_SWIZZLE_1:
+	case PIPE_SWIZZLE_1:
 		return V_008F0C_SQ_SEL_1;
-	default: /* UTIL_FORMAT_SWIZZLE_X */
+	default: /* PIPE_SWIZZLE_X */
 		return V_008F0C_SQ_SEL_X;
 	}
 }
@@ -615,7 +464,7 @@ static void *si_create_blend_state_mode(struct pipe_context *ctx,
 			continue;
 
 		/* cb_render_state will disable unused ones */
-		blend->cb_target_mask |= state->rt[j].colormask << (4 * i);
+		blend->cb_target_mask |= (unsigned)state->rt[j].colormask << (4 * i);
 
 		if (!state->rt[j].blend_enable) {
 			si_pm4_set_reg(pm4, R_028780_CB_BLEND0_CONTROL + i * 4, blend_cntl);
@@ -679,7 +528,7 @@ static void *si_create_blend_state_mode(struct pipe_context *ctx,
 		}
 		si_pm4_set_reg(pm4, R_028780_CB_BLEND0_CONTROL + i * 4, blend_cntl);
 
-		blend->blend_enable_4bit |= 0xf << (i * 4);
+		blend->blend_enable_4bit |= 0xfu << (i * 4);
 
 		/* This is only important for formats without alpha. */
 		if (srcRGB == PIPE_BLENDFACTOR_SRC_ALPHA ||
@@ -688,7 +537,7 @@ static void *si_create_blend_state_mode(struct pipe_context *ctx,
 		    dstRGB == PIPE_BLENDFACTOR_SRC_ALPHA_SATURATE ||
 		    srcRGB == PIPE_BLENDFACTOR_INV_SRC_ALPHA ||
 		    dstRGB == PIPE_BLENDFACTOR_INV_SRC_ALPHA)
-			blend->need_src_alpha_4bit |= 0xf << (i * 4);
+			blend->need_src_alpha_4bit |= 0xfu << (i * 4);
 	}
 
 	if (blend->cb_target_mask) {
@@ -771,7 +620,8 @@ static void si_set_clip_state(struct pipe_context *ctx,
 	cb.user_buffer = state->ucp;
 	cb.buffer_offset = 0;
 	cb.buffer_size = 4*4*8;
-	ctx->set_constant_buffer(ctx, PIPE_SHADER_VERTEX, SI_DRIVER_STATE_CONST_BUF, &cb);
+	si_set_constant_buffer(sctx, &sctx->rw_buffers,
+			       SI_VS_CONST_CLIP_PLANES, &cb);
 	pipe_resource_reference(&cb.buffer, NULL);
 }
 
@@ -1254,7 +1104,8 @@ static void si_emit_db_render_state(struct si_context *sctx, struct r600_atom *s
 	/* DB_RENDER_OVERRIDE2 */
 	radeon_set_context_reg(cs, R_028010_DB_RENDER_OVERRIDE2,
 		S_028010_DISABLE_ZMASK_EXPCLEAR_OPTIMIZATION(sctx->db_depth_disable_expclear) |
-		S_028010_DISABLE_SMEM_EXPCLEAR_OPTIMIZATION(sctx->db_stencil_disable_expclear));
+		S_028010_DISABLE_SMEM_EXPCLEAR_OPTIMIZATION(sctx->db_stencil_disable_expclear) |
+		S_028010_DECOMPRESS_Z_ON_FLUSH(sctx->framebuffer.nr_samples >= 4));
 
 	db_shader_control = S_02880C_ALPHA_TO_MASK_DISABLE(sctx->framebuffer.cb0_is_integer) |
 		            sctx->ps_db_shader_control;
@@ -1292,6 +1143,11 @@ static uint32_t si_translate_colorformat(enum pipe_format format)
 		return V_028C70_COLOR_10_11_11;
 
 	if (desc->layout != UTIL_FORMAT_LAYOUT_PLAIN)
+		return V_028C70_COLOR_INVALID;
+
+	/* hw cannot support mixed formats (except depth/stencil, since
+	 * stencil is not written to). */
+	if (desc->is_mixed && desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS)
 		return V_028C70_COLOR_INVALID;
 
 	switch (desc->nr_channels) {
@@ -1572,6 +1428,11 @@ static uint32_t si_translate_texformat(struct pipe_screen *screen,
 
 	/* R8G8Bx_SNORM - TODO CxV8U8 */
 
+	/* hw cannot support mixed formats (except depth/stencil, since only
+	 * depth is read).*/
+	if (desc->is_mixed && desc->colorspace != UTIL_FORMAT_COLORSPACE_ZS)
+		goto out_unknown;
+
 	/* See whether the components are of the same size. */
 	for (i = 1; i < desc->nr_channels; i++) {
 		uniform = uniform && desc->channel[0].size == desc->channel[i].size;
@@ -1761,14 +1622,17 @@ static uint32_t si_translate_buffer_dataformat(struct pipe_screen *screen,
 					       const struct util_format_description *desc,
 					       int first_non_void)
 {
-	unsigned type = desc->channel[first_non_void].type;
+	unsigned type;
 	int i;
-
-	if (type == UTIL_FORMAT_TYPE_FIXED)
-		return V_008F0C_BUF_DATA_FORMAT_INVALID;
 
 	if (desc->format == PIPE_FORMAT_R11G11B10_FLOAT)
 		return V_008F0C_BUF_DATA_FORMAT_10_11_11;
+
+	assert(first_non_void >= 0);
+	type = desc->channel[first_non_void].type;
+
+	if (type == UTIL_FORMAT_TYPE_FIXED)
+		return V_008F0C_BUF_DATA_FORMAT_INVALID;
 
 	if (desc->nr_channels == 4 &&
 	    desc->channel[0].size == 10 &&
@@ -1838,6 +1702,8 @@ static uint32_t si_translate_buffer_numformat(struct pipe_screen *screen,
 	if (desc->format == PIPE_FORMAT_R11G11B10_FLOAT)
 		return V_008F0C_BUF_NUM_FORMAT_FLOAT;
 
+	assert(first_non_void >= 0);
+
 	switch (desc->channel[first_non_void].type) {
 	case UTIL_FORMAT_TYPE_SIGNED:
 		if (desc->channel[first_non_void].normalized)
@@ -1876,7 +1742,7 @@ static bool si_is_vertex_format_supported(struct pipe_screen *screen, enum pipe_
 static bool si_is_colorbuffer_format_supported(enum pipe_format format)
 {
 	return si_translate_colorformat(format) != V_028C70_COLOR_INVALID &&
-		r600_translate_colorswap(format) != ~0U;
+		r600_translate_colorswap(format, FALSE) != ~0U;
 }
 
 static bool si_is_zs_format_supported(enum pipe_format format)
@@ -1968,7 +1834,8 @@ boolean si_is_format_supported(struct pipe_screen *screen,
 	return retval == usage;
 }
 
-unsigned si_tile_mode_index(struct r600_texture *rtex, unsigned level, bool stencil)
+static unsigned si_tile_mode_index(struct r600_texture *rtex, unsigned level,
+				   bool stencil)
 {
 	unsigned tile_mode_index = 0;
 
@@ -2115,17 +1982,8 @@ static void si_initialize_color_surface(struct si_context *sctx,
 	int i;
 	unsigned blend_clamp = 0, blend_bypass = 0;
 
-	/* Layered rendering doesn't work with LINEAR_GENERAL.
-	 * (LINEAR_ALIGNED and others work) */
-	if (rtex->surface.level[level].mode == RADEON_SURF_MODE_LINEAR) {
-		assert(surf->base.u.tex.first_layer == surf->base.u.tex.last_layer);
-		offset += rtex->surface.level[level].slice_size *
-			  surf->base.u.tex.first_layer;
-		color_view = 0;
-	} else {
-		color_view = S_028C6C_SLICE_START(surf->base.u.tex.first_layer) |
-			     S_028C6C_SLICE_MAX(surf->base.u.tex.last_layer);
-	}
+	color_view = S_028C6C_SLICE_START(surf->base.u.tex.first_layer) |
+		     S_028C6C_SLICE_MAX(surf->base.u.tex.last_layer);
 
 	pitch = (rtex->surface.level[level].nblk_x) / 8 - 1;
 	slice = (rtex->surface.level[level].nblk_x * rtex->surface.level[level].nblk_y) / 64;
@@ -2169,7 +2027,7 @@ static void si_initialize_color_surface(struct si_context *sctx,
 		R600_ERR("Invalid CB format: %d, disabling CB.\n", surf->base.format);
 	}
 	assert(format != V_028C70_COLOR_INVALID);
-	swap = r600_translate_colorswap(surf->base.format);
+	swap = r600_translate_colorswap(surf->base.format, FALSE);
 	endian = si_colorformat_endian_swap(format);
 
 	/* blend clamp should be set for all NORM/SRGB types */
@@ -2204,7 +2062,7 @@ static void si_initialize_color_surface(struct si_context *sctx,
 
 	/* Intensity is implemented as Red, so treat it that way. */
 	color_attrib = S_028C74_TILE_MODE_INDEX(tile_mode_index) |
-		S_028C74_FORCE_DST_ALPHA_1(desc->swizzle[3] == UTIL_FORMAT_SWIZZLE_1 ||
+		S_028C74_FORCE_DST_ALPHA_1(desc->swizzle[3] == PIPE_SWIZZLE_1 ||
 					   util_format_is_intensity(surf->base.format));
 
 	if (rtex->resource.b.b.nr_samples > 1) {
@@ -2283,12 +2141,10 @@ static void si_initialize_color_surface(struct si_context *sctx,
 static void si_init_depth_surface(struct si_context *sctx,
 				  struct r600_surface *surf)
 {
-	struct si_screen *sscreen = sctx->screen;
 	struct r600_texture *rtex = (struct r600_texture*)surf->base.texture;
 	unsigned level = surf->base.u.tex.level;
 	struct radeon_surf_level *levelinfo = &rtex->surface.level[level];
-	unsigned format, tile_mode_index, array_mode;
-	unsigned macro_aspect, tile_split, stile_split, bankh, bankw, nbanks, pipe_config;
+	unsigned format;
 	uint32_t z_info, s_info, db_depth_info;
 	uint64_t z_offs, s_offs;
 	uint32_t db_htile_data_base, db_htile_surface, pa_su_poly_offset_db_fmt_cntl = 0;
@@ -2336,41 +2192,25 @@ static void si_init_depth_surface(struct si_context *sctx,
 		s_info = S_028044_FORMAT(V_028044_STENCIL_INVALID);
 
 	if (sctx->b.chip_class >= CIK) {
-		switch (rtex->surface.level[level].mode) {
-		case RADEON_SURF_MODE_2D:
-			array_mode = V_02803C_ARRAY_2D_TILED_THIN1;
-			break;
-		case RADEON_SURF_MODE_1D:
-		case RADEON_SURF_MODE_LINEAR_ALIGNED:
-		case RADEON_SURF_MODE_LINEAR:
-		default:
-			array_mode = V_02803C_ARRAY_1D_TILED_THIN1;
-			break;
-		}
-		tile_split = rtex->surface.tile_split;
-		stile_split = rtex->surface.stencil_tile_split;
-		macro_aspect = rtex->surface.mtilea;
-		bankw = rtex->surface.bankw;
-		bankh = rtex->surface.bankh;
-		tile_split = cik_tile_split(tile_split);
-		stile_split = cik_tile_split(stile_split);
-		macro_aspect = cik_macro_tile_aspect(macro_aspect);
-		bankw = cik_bank_wh(bankw);
-		bankh = cik_bank_wh(bankh);
-		nbanks = si_num_banks(sscreen, rtex);
-		tile_mode_index = si_tile_mode_index(rtex, level, false);
-		pipe_config = cik_db_pipe_config(sscreen, tile_mode_index);
+		struct radeon_info *info = &sctx->screen->b.info;
+		unsigned index = rtex->surface.tiling_index[level];
+		unsigned stencil_index = rtex->surface.stencil_tiling_index[level];
+		unsigned macro_index = rtex->surface.macro_tile_index;
+		unsigned tile_mode = info->si_tile_mode_array[index];
+		unsigned stencil_tile_mode = info->si_tile_mode_array[stencil_index];
+		unsigned macro_mode = info->cik_macrotile_mode_array[macro_index];
 
-		db_depth_info |= S_02803C_ARRAY_MODE(array_mode) |
-			S_02803C_PIPE_CONFIG(pipe_config) |
-			S_02803C_BANK_WIDTH(bankw) |
-			S_02803C_BANK_HEIGHT(bankh) |
-			S_02803C_MACRO_TILE_ASPECT(macro_aspect) |
-			S_02803C_NUM_BANKS(nbanks);
-		z_info |= S_028040_TILE_SPLIT(tile_split);
-		s_info |= S_028044_TILE_SPLIT(stile_split);
+		db_depth_info |=
+			S_02803C_ARRAY_MODE(G_009910_ARRAY_MODE(tile_mode)) |
+			S_02803C_PIPE_CONFIG(G_009910_PIPE_CONFIG(tile_mode)) |
+			S_02803C_BANK_WIDTH(G_009990_BANK_WIDTH(macro_mode)) |
+			S_02803C_BANK_HEIGHT(G_009990_BANK_HEIGHT(macro_mode)) |
+			S_02803C_MACRO_TILE_ASPECT(G_009990_MACRO_TILE_ASPECT(macro_mode)) |
+			S_02803C_NUM_BANKS(G_009990_NUM_BANKS(macro_mode));
+		z_info |= S_028040_TILE_SPLIT(G_009910_TILE_SPLIT(tile_mode));
+		s_info |= S_028044_TILE_SPLIT(G_009910_TILE_SPLIT(stencil_tile_mode));
 	} else {
-		tile_mode_index = si_tile_mode_index(rtex, level, false);
+		unsigned tile_mode_index = si_tile_mode_index(rtex, level, false);
 		z_info |= S_028040_TILE_MODE_INDEX(tile_mode_index);
 		tile_mode_index = si_tile_mode_index(rtex, level, true);
 		s_info |= S_028044_TILE_MODE_INDEX(tile_mode_index);
@@ -2382,9 +2222,21 @@ static void si_init_depth_surface(struct si_context *sctx,
 		z_info |= S_028040_TILE_SURFACE_ENABLE(1) |
 			  S_028040_ALLOW_EXPCLEAR(1);
 
-		if (rtex->surface.flags & RADEON_SURF_SBUFFER)
-			s_info |= S_028044_ALLOW_EXPCLEAR(1);
-		else
+		if (rtex->surface.flags & RADEON_SURF_SBUFFER) {
+			/* Workaround: For a not yet understood reason, the
+			 * combination of MSAA, fast stencil clear and stencil
+			 * decompress messes with subsequent stencil buffer
+			 * uses. Problem was reproduced on Verde, Bonaire,
+			 * Tonga, and Carrizo.
+			 *
+			 * Disabling EXPCLEAR works around the problem.
+			 *
+			 * Check piglit's arb_texture_multisample-stencil-clear
+			 * test if you want to try changing this.
+			 */
+			if (rtex->resource.b.b.nr_samples <= 1)
+				s_info |= S_028044_ALLOW_EXPCLEAR(1);
+		} else
 			/* Use all of the htile_buffer for depth if there's no stencil. */
 			s_info |= S_028044_TILE_STENCIL_DISABLE(1);
 
@@ -2543,8 +2395,8 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 			assert(0);
 		}
 		constbuf.buffer_size = sctx->framebuffer.nr_samples * 2 * 4;
-		ctx->set_constant_buffer(ctx, PIPE_SHADER_FRAGMENT,
-					 SI_DRIVER_STATE_CONST_BUF, &constbuf);
+		si_set_constant_buffer(sctx, &sctx->rw_buffers,
+				       SI_PS_CONST_SAMPLE_POSITIONS, &constbuf);
 
 		/* Smoothing (only possible with nr_samples == 1) uses the same
 		 * sample locations as the MSAA it simulates.
@@ -2948,7 +2800,7 @@ si_make_texture_descriptor(struct si_screen *screen,
 		    S_008F24_LAST_ARRAY(last_layer));
 
 	if (tex->dcc_offset) {
-		unsigned swap = r600_translate_colorswap(pipe_format);
+		unsigned swap = r600_translate_colorswap(pipe_format, FALSE);
 
 		state[6] = S_008F28_COMPRESSION_EN(1) | S_008F28_ALPHA_IS_ON_MSB(swap <= 1);
 		state[7] = (tex->resource.gpu_address +
@@ -3337,7 +3189,7 @@ static void si_set_vertex_buffers(struct pipe_context *ctx,
 	struct pipe_vertex_buffer *dst = sctx->vertex_buffer + start_slot;
 	int i;
 
-	assert(start_slot + count <= Elements(sctx->vertex_buffer));
+	assert(start_slot + count <= ARRAY_SIZE(sctx->vertex_buffer));
 
 	if (buffers) {
 		for (i = 0; i < count; i++) {
@@ -3374,60 +3226,6 @@ static void si_set_index_buffer(struct pipe_context *ctx,
 /*
  * Misc
  */
-static void si_set_polygon_stipple(struct pipe_context *ctx,
-				   const struct pipe_poly_stipple *state)
-{
-	struct si_context *sctx = (struct si_context *)ctx;
-	struct pipe_resource *tex;
-	struct pipe_sampler_view *view;
-	bool is_zero = true;
-	bool is_one = true;
-	int i;
-
-	/* The hardware obeys 0 and 1 swizzles in the descriptor even if
-	 * the resource is NULL/invalid. Take advantage of this fact and skip
-	 * texture allocation if the stipple pattern is constant.
-	 *
-	 * This is an optimization for the common case when stippling isn't
-	 * used but set_polygon_stipple is still called by st/mesa.
-	 */
-	for (i = 0; i < Elements(state->stipple); i++) {
-		is_zero = is_zero && state->stipple[i] == 0;
-		is_one = is_one && state->stipple[i] == 0xffffffff;
-	}
-
-	if (is_zero || is_one) {
-		struct pipe_sampler_view templ = {{0}};
-
-		templ.swizzle_r = PIPE_SWIZZLE_ZERO;
-		templ.swizzle_g = PIPE_SWIZZLE_ZERO;
-		templ.swizzle_b = PIPE_SWIZZLE_ZERO;
-		/* The pattern should be inverted in the texture. */
-		templ.swizzle_a = is_zero ? PIPE_SWIZZLE_ONE : PIPE_SWIZZLE_ZERO;
-
-		view = ctx->create_sampler_view(ctx, NULL, &templ);
-	} else {
-		/* Create a new texture. */
-		tex = util_pstipple_create_stipple_texture(ctx, state->stipple);
-		if (!tex)
-			return;
-
-		view = util_pstipple_create_sampler_view(ctx, tex);
-		pipe_resource_reference(&tex, NULL);
-	}
-
-	ctx->set_sampler_views(ctx, PIPE_SHADER_FRAGMENT,
-			       SI_POLY_STIPPLE_SAMPLER, 1, &view);
-	pipe_sampler_view_reference(&view, NULL);
-
-	/* Bind the sampler state if needed. */
-	if (!sctx->pstipple_sampler_state) {
-		sctx->pstipple_sampler_state = util_pstipple_create_sampler(ctx);
-		ctx->bind_sampler_states(ctx, PIPE_SHADER_FRAGMENT,
-					 SI_POLY_STIPPLE_SAMPLER, 1,
-					 &sctx->pstipple_sampler_state);
-	}
-}
 
 static void si_set_tess_state(struct pipe_context *ctx,
 			      const float default_outer_level[4],
@@ -3448,8 +3246,8 @@ static void si_set_tess_state(struct pipe_context *ctx,
 			       (void*)array, sizeof(array),
 			       &cb.buffer_offset);
 
-	ctx->set_constant_buffer(ctx, PIPE_SHADER_TESS_CTRL,
-				 SI_DRIVER_STATE_CONST_BUF, &cb);
+	si_set_constant_buffer(sctx, &sctx->rw_buffers,
+			       SI_HS_CONST_DEFAULT_TESS_LEVELS, &cb);
 	pipe_resource_reference(&cb.buffer, NULL);
 }
 
@@ -3590,7 +3388,6 @@ void si_init_state_functions(struct si_context *sctx)
 
 	sctx->b.b.texture_barrier = si_texture_barrier;
 	sctx->b.b.memory_barrier = si_memory_barrier;
-	sctx->b.b.set_polygon_stipple = si_set_polygon_stipple;
 	sctx->b.b.set_min_samples = si_set_min_samples;
 	sctx->b.b.set_tess_state = si_set_tess_state;
 
@@ -3599,12 +3396,6 @@ void si_init_state_functions(struct si_context *sctx)
 	sctx->b.need_gfx_cs_space = si_need_gfx_cs_space;
 
 	sctx->b.b.draw_vbo = si_draw_vbo;
-
-	if (sctx->b.chip_class >= CIK) {
-		sctx->b.dma_copy = cik_sdma_copy;
-	} else {
-		sctx->b.dma_copy = si_dma_copy;
-	}
 
 	si_init_config(sctx);
 }
@@ -3616,10 +3407,10 @@ static void si_query_opaque_metadata(struct r600_common_screen *rscreen,
 	struct si_screen *sscreen = (struct si_screen*)rscreen;
 	struct pipe_resource *res = &rtex->resource.b.b;
 	static const unsigned char swizzle[] = {
-		PIPE_SWIZZLE_RED,
-		PIPE_SWIZZLE_GREEN,
-		PIPE_SWIZZLE_BLUE,
-		PIPE_SWIZZLE_ALPHA
+		PIPE_SWIZZLE_X,
+		PIPE_SWIZZLE_Y,
+		PIPE_SWIZZLE_Z,
+		PIPE_SWIZZLE_W
 	};
 	uint32_t desc[8], i;
 	bool is_array = util_resource_is_array_texture(res);
@@ -3821,8 +3612,8 @@ static void si_init_config(struct si_context *sctx)
 		return;
 
 	si_pm4_cmd_begin(pm4, PKT3_CONTEXT_CONTROL);
-	si_pm4_cmd_add(pm4, 0x80000000);
-	si_pm4_cmd_add(pm4, 0x80000000);
+	si_pm4_cmd_add(pm4, CONTEXT_CONTROL_LOAD_ENABLE(1));
+	si_pm4_cmd_add(pm4, CONTEXT_CONTROL_SHADOW_ENABLE(1));
 	si_pm4_cmd_end(pm4, false);
 
 	si_pm4_set_reg(pm4, R_028A18_VGT_HOS_MAX_TESS_LEVEL, fui(64));
@@ -4000,6 +3791,11 @@ static void si_init_config(struct si_context *sctx)
 			       S_028424_OVERWRITE_COMBINER_WATERMARK(4));
 		si_pm4_set_reg(pm4, R_028C58_VGT_VERTEX_REUSE_BLOCK_CNTL, 30);
 		si_pm4_set_reg(pm4, R_028C5C_VGT_OUT_DEALLOC_CNTL, 32);
+		si_pm4_set_reg(pm4, R_028B50_VGT_TESS_DISTRIBUTION,
+		               S_028B50_ACCUM_ISOLINE(32) |
+		               S_028B50_ACCUM_TRI(11) |
+		               S_028B50_ACCUM_QUAD(11) |
+		               S_028B50_DONUT_SPLIT(16));
 	}
 
 	if (sctx->b.family == CHIP_STONEY)

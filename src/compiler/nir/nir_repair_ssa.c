@@ -70,7 +70,7 @@ repair_ssa_def(nir_ssa_def *def, void *void_state)
    struct repair_ssa_state *state = void_state;
 
    bool is_valid = true;
-   nir_foreach_use(def, src) {
+   nir_foreach_use(src, def) {
       if (!nir_block_dominates(def->parent_instr->block, get_src_block(src))) {
          is_valid = false;
          break;
@@ -90,22 +90,12 @@ repair_ssa_def(nir_ssa_def *def, void *void_state)
 
    nir_phi_builder_value_set_block_def(val, def->parent_instr->block, def);
 
-   nir_foreach_use_safe(def, src) {
+   nir_foreach_use_safe(src, def) {
       nir_block *src_block = get_src_block(src);
       if (!nir_block_dominates(def->parent_instr->block, src_block)) {
          nir_instr_rewrite_src(src->parent_instr, src, nir_src_for_ssa(
             nir_phi_builder_value_get_block_def(val, src_block)));
       }
-   }
-
-   return true;
-}
-
-static bool
-repair_ssa_block(nir_block *block, void *state)
-{
-   nir_foreach_instr_safe(block, instr) {
-      nir_foreach_ssa_def(instr, repair_ssa_def, state);
    }
 
    return true;
@@ -123,7 +113,11 @@ nir_repair_ssa_impl(nir_function_impl *impl)
    nir_metadata_require(impl, nir_metadata_block_index |
                               nir_metadata_dominance);
 
-   nir_foreach_block(impl, repair_ssa_block, &state);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr_safe(instr, block) {
+         nir_foreach_ssa_def(instr, repair_ssa_def, &state);
+      }
+   }
 
    if (state.progress)
       nir_metadata_preserve(impl, nir_metadata_block_index |
@@ -149,7 +143,7 @@ nir_repair_ssa(nir_shader *shader)
 {
    bool progress = false;
 
-   nir_foreach_function(shader, function) {
+   nir_foreach_function(function, shader) {
       if (function->impl)
          progress = nir_repair_ssa_impl(function->impl) || progress;
    }

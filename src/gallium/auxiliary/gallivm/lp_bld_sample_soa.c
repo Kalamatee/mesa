@@ -228,11 +228,16 @@ lp_build_coord_mirror(struct lp_build_sample_context *bld,
    LLVMValueRef fract, flr, isOdd;
 
    lp_build_ifloor_fract(coord_bld, coord, &flr, &fract);
+   /* kill off NaNs */
+   /* XXX: not safe without arch rounding, fract can be anything. */
+   fract = lp_build_max_ext(coord_bld, fract, coord_bld->zero,
+                            GALLIVM_NAN_RETURN_OTHER_SECOND_NONNAN);
 
    /* isOdd = flr & 1 */
    isOdd = LLVMBuildAnd(bld->gallivm->builder, flr, int_coord_bld->one, "");
 
    /* make coord positive or negative depending on isOdd */
+   /* XXX slight overkill masking out sign bit is unnecessary */
    coord = lp_build_set_sign(coord_bld, fract, isOdd);
 
    /* convert isOdd to float */
@@ -272,10 +277,15 @@ lp_build_coord_repeat_npot_linear(struct lp_build_sample_context *bld,
     * we avoided the 0.5/length division before the repeat wrap,
     * now need to fix up edge cases with selects
     */
+   /*
+    * Note we do a float (unordered) compare so we can eliminate NaNs.
+    * (Otherwise would need fract_safe above).
+    */
+   mask = lp_build_compare(coord_bld->gallivm, coord_bld->type,
+                           PIPE_FUNC_LESS, coord_f, coord_bld->zero);
+
    /* convert to int, compute lerp weight */
    lp_build_ifloor_fract(coord_bld, coord_f, coord0_i, weight_f);
-   mask = lp_build_compare(int_coord_bld->gallivm, int_coord_bld->type,
-                           PIPE_FUNC_LESS, *coord0_i, int_coord_bld->zero);
    *coord0_i = lp_build_select(int_coord_bld, mask, length_minus_one, *coord0_i);
 }
 
@@ -375,7 +385,8 @@ lp_build_sample_wrap_linear(struct lp_build_sample_context *bld,
          }
 
          /* clamp to length max */
-         coord = lp_build_min(coord_bld, coord, length_f);
+         coord = lp_build_min_ext(coord_bld, coord, length_f,
+                                  GALLIVM_NAN_RETURN_OTHER_SECOND_NONNAN);
          /* subtract 0.5 */
          coord = lp_build_sub(coord_bld, coord, half);
          /* clamp to [0, length - 0.5] */
@@ -398,7 +409,7 @@ lp_build_sample_wrap_linear(struct lp_build_sample_context *bld,
          coord = lp_build_add(coord_bld, coord, offset);
       }
       /* was: clamp to [-0.5, length + 0.5], then sub 0.5 */
-      /* can skip clamp (though might not work for very large coord values */
+      /* can skip clamp (though might not work for very large coord values) */
       coord = lp_build_sub(coord_bld, coord, half);
       /* convert to int, compute lerp weight */
       lp_build_ifloor_fract(coord_bld, coord, &coord0, &weight);
@@ -465,7 +476,8 @@ lp_build_sample_wrap_linear(struct lp_build_sample_context *bld,
          coord = lp_build_abs(coord_bld, coord);
 
          /* clamp to length max */
-         coord = lp_build_min(coord_bld, coord, length_f);
+         coord = lp_build_min_ext(coord_bld, coord, length_f,
+                                  GALLIVM_NAN_RETURN_OTHER_SECOND_NONNAN);
          /* subtract 0.5 */
          coord = lp_build_sub(coord_bld, coord, half);
          /* clamp to [0, length - 0.5] */
@@ -628,9 +640,15 @@ lp_build_sample_wrap_nearest(struct lp_build_sample_context *bld,
 
       /* itrunc == ifloor here */
       icoord = lp_build_itrunc(coord_bld, coord);
-
-      /* clamp to [0, length - 1] */
-      icoord = lp_build_min(int_coord_bld, icoord, length_minus_one);
+      /*
+       * Use unsigned min due to possible undef values (NaNs, overflow)
+       */
+      {
+         struct lp_build_context abs_coord_bld = *int_coord_bld;
+         abs_coord_bld.type.sign = FALSE;
+         /* clamp to [0, length - 1] */
+         icoord = lp_build_min(&abs_coord_bld, icoord, length_minus_one);
+      }
       break;
 
    case PIPE_TEX_WRAP_MIRROR_CLAMP_TO_BORDER:
@@ -1360,7 +1378,7 @@ lp_build_sample_image_linear(struct lp_build_sample_context *bld,
          if (is_gather) {
             /* more hacks for swizzling, should be X, ONE or ZERO... */
             unsigned chan_swiz = bld->static_texture_state->swizzle_r;
-            if (chan_swiz <= PIPE_SWIZZLE_ALPHA) {
+            if (chan_swiz <= PIPE_SWIZZLE_W) {
                colors0[0] = lp_build_select(texel_bld, cmpval10,
                                             texel_bld->one, texel_bld->zero);
                colors0[1] = lp_build_select(texel_bld, cmpval11,
@@ -1370,7 +1388,7 @@ lp_build_sample_image_linear(struct lp_build_sample_context *bld,
                colors0[3] = lp_build_select(texel_bld, cmpval00,
                                             texel_bld->one, texel_bld->zero);
             }
-            else if (chan_swiz == PIPE_SWIZZLE_ZERO) {
+            else if (chan_swiz == PIPE_SWIZZLE_0) {
                colors0[0] = colors0[1] = colors0[2] = colors0[3] =
                             texel_bld->zero;
             }
@@ -1838,7 +1856,7 @@ lp_build_sample_common(struct lp_build_sample_context *bld,
       const struct util_format_description *format_desc = bld->format_desc;
       unsigned chan_type;
       /* not entirely sure we couldn't end up with non-valid swizzle here */
-      chan_type = format_desc->swizzle[0] <= UTIL_FORMAT_SWIZZLE_W ?
+      chan_type = format_desc->swizzle[0] <= PIPE_SWIZZLE_W ?
                      format_desc->channel[format_desc->swizzle[0]].type :
                      UTIL_FORMAT_TYPE_FLOAT;
       if (chan_type != UTIL_FORMAT_TYPE_FLOAT) {
@@ -1957,7 +1975,7 @@ lp_build_clamp_border_color(struct lp_build_sample_context *bld,
       else {
          chan = util_format_get_first_non_void_channel(format_desc->format);
       }
-      if (chan >= 0 && chan <= UTIL_FORMAT_SWIZZLE_W) {
+      if (chan >= 0 && chan <= PIPE_SWIZZLE_W) {
          unsigned chan_type = format_desc->channel[chan].type;
          unsigned chan_norm = format_desc->channel[chan].normalized;
          unsigned chan_pure = format_desc->channel[chan].pure_integer;
@@ -2256,8 +2274,8 @@ lp_build_sample_general(struct lp_build_sample_context *bld,
              * All pixels require just nearest filtering, which is way
              * cheaper than linear, hence do a separate path for that.
              */
-            lp_build_sample_mipmap(bld, PIPE_TEX_FILTER_NEAREST, FALSE,
-                                   mip_filter_for_nearest,
+            lp_build_sample_mipmap(bld, PIPE_TEX_FILTER_NEAREST,
+                                   mip_filter_for_nearest, FALSE,
                                    coords, offsets,
                                    ilevel0, ilevel1, lod_fpart,
                                    texels);
@@ -3302,7 +3320,7 @@ lp_build_sample_soa_func(struct gallivm_state *gallivm,
       }
 
       LLVMSetFunctionCallConv(function, LLVMFastCallConv);
-      LLVMSetLinkage(function, LLVMPrivateLinkage);
+      LLVMSetLinkage(function, LLVMInternalLinkage);
 
       lp_build_sample_gen_func(gallivm,
                                static_texture_state,

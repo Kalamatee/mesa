@@ -523,7 +523,7 @@ clone_block(clone_state *state, struct exec_list *cf_list, const nir_block *blk)
    /* We need this for phi sources */
    add_remap(state, nblk, blk);
 
-   nir_foreach_instr(blk, instr) {
+   nir_foreach_instr(instr, blk) {
       if (instr->type == nir_instr_type_phi) {
          /* Phi instructions are a bit of a special case when cloning because
           * we don't want inserting the instruction to automatically handle
@@ -701,7 +701,7 @@ nir_shader_clone(void *mem_ctx, const nir_shader *s)
     * functions of other functions and we don't know what order the functions
     * will have in the list.
     */
-   nir_foreach_function(s, fxn) {
+   nir_foreach_function(fxn, s) {
       nir_function *nfxn = remap_global(&state, fxn);
       nfxn->impl = clone_function_impl(&state, fxn->impl);
       nfxn->impl->function = nfxn;

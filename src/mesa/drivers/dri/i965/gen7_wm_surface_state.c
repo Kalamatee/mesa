@@ -273,6 +273,7 @@ gen7_emit_texture_surface_state(struct brw_context *brw,
                                 unsigned format,
                                 unsigned swizzle,
                                 uint32_t *surf_offset,
+                                int surf_index /* unused */,
                                 bool rw, bool for_gather)
 {
    const unsigned depth = max_layer - min_layer;
@@ -352,7 +353,8 @@ static void
 gen7_update_texture_surface(struct gl_context *ctx,
                             unsigned unit,
                             uint32_t *surf_offset,
-                            bool for_gather)
+                            bool for_gather,
+                            uint32_t plane)
 {
    struct brw_context *brw = brw_context(ctx);
    struct gl_texture_object *obj = ctx->Texture.Unit[unit]._Current;
@@ -387,12 +389,14 @@ gen7_update_texture_surface(struct gl_context *ctx,
       if (for_gather && format == BRW_SURFACEFORMAT_R32G32_FLOAT)
          format = BRW_SURFACEFORMAT_R32G32_FLOAT_LD;
 
+      const int surf_index = surf_offset - &brw->wm.base.surf_offset[0];
+
       gen7_emit_texture_surface_state(brw, mt, obj->Target,
                                       obj->MinLayer, obj->MinLayer + depth,
                                       obj->MinLevel + obj->BaseLevel,
                                       obj->MinLevel + intel_obj->_MaxLevel + 1,
-                                      format, swizzle,
-                                      surf_offset, false, for_gather);
+                                      format, swizzle, surf_offset,
+                                      surf_index, false, for_gather);
    }
 }
 

@@ -1182,16 +1182,41 @@ lp_build_lerp_simple(struct lp_build_context *bld,
       res = lp_build_mul(bld, x, delta);
    }
 
-   res = lp_build_add(bld, v0, res);
+   if ((flags & LP_BLD_LERP_WIDE_NORMALIZED) && !bld->type.sign) {
+      /*
+       * At this point both res and v0 only use the lower half of the bits,
+       * the rest is zero. Instead of add / mask, do add with half wide type.
+       */
+      struct lp_type narrow_type;
+      struct lp_build_context narrow_bld;
 
-   if (((flags & LP_BLD_LERP_WIDE_NORMALIZED) && !bld->type.sign) ||
-       bld->type.fixed) {
-      /* We need to mask out the high order bits when lerping 8bit normalized colors stored on 16bits */
-      /* XXX: This step is necessary for lerping 8bit colors stored on 16bits,
-       * but it will be wrong for true fixed point use cases. Basically we need
-       * a more powerful lp_type, capable of further distinguishing the values
-       * interpretation from the value storage. */
-      res = LLVMBuildAnd(builder, res, lp_build_const_int_vec(bld->gallivm, bld->type, (1 << half_width) - 1), "");
+      memset(&narrow_type, 0, sizeof narrow_type);
+      narrow_type.sign   = bld->type.sign;
+      narrow_type.width  = bld->type.width/2;
+      narrow_type.length = bld->type.length*2;
+
+      lp_build_context_init(&narrow_bld, bld->gallivm, narrow_type);
+      res = LLVMBuildBitCast(builder, res, narrow_bld.vec_type, "");
+      v0 = LLVMBuildBitCast(builder, v0, narrow_bld.vec_type, "");
+      res = lp_build_add(&narrow_bld, v0, res);
+      res = LLVMBuildBitCast(builder, res, bld->vec_type, "");
+   } else {
+      res = lp_build_add(bld, v0, res);
+
+      if (bld->type.fixed) {
+         /*
+          * We need to mask out the high order bits when lerping 8bit
+          * normalized colors stored on 16bits
+          */
+         /* XXX: This step is necessary for lerping 8bit colors stored on
+          * 16bits, but it will be wrong for true fixed point use cases.
+          * Basically we need a more powerful lp_type, capable of further
+          * distinguishing the values interpretation from the value storage.
+          */
+         LLVMValueRef low_bits;
+         low_bits = lp_build_const_int_vec(bld->gallivm, bld->type, (1 << half_width) - 1);
+         res = LLVMBuildAnd(builder, res, low_bits, "");
+      }
    }
 
    return res;
@@ -2069,8 +2094,8 @@ lp_build_fract(struct lp_build_context *bld,
 
 
 /**
- * Prevent returning a fractional part of 1.0 for very small negative values of
- * 'a' by clamping against 0.99999(9).
+ * Prevent returning 1.0 for very small negative values of 'a' by clamping
+ * against 0.99999(9). (Will also return that value for NaNs.)
  */
 static inline LLVMValueRef
 clamp_fract(struct lp_build_context *bld, LLVMValueRef fract)
@@ -2080,13 +2105,14 @@ clamp_fract(struct lp_build_context *bld, LLVMValueRef fract)
    /* this is the largest number smaller than 1.0 representable as float */
    max = lp_build_const_vec(bld->gallivm, bld->type,
                             1.0 - 1.0/(1LL << (lp_mantissa(bld->type) + 1)));
-   return lp_build_min(bld, fract, max);
+   return lp_build_min_ext(bld, fract, max,
+                           GALLIVM_NAN_RETURN_OTHER_SECOND_NONNAN);
 }
 
 
 /**
  * Same as lp_build_fract, but guarantees that the result is always smaller
- * than one.
+ * than one. Will also return the smaller-than-one value for infs, NaNs.
  */
 LLVMValueRef
 lp_build_fract_safe(struct lp_build_context *bld,
@@ -3038,7 +3064,7 @@ lp_build_exp2(struct lp_build_context *bld,
    expipart = LLVMBuildBitCast(builder, expipart, vec_type, "");
 
    expfpart = lp_build_polynomial(bld, fpart, lp_build_exp2_polynomial,
-                                  Elements(lp_build_exp2_polynomial));
+                                  ARRAY_SIZE(lp_build_exp2_polynomial));
 
    res = LLVMBuildFMul(builder, expipart, expfpart, "");
 
@@ -3236,7 +3262,7 @@ lp_build_log2_approx(struct lp_build_context *bld,
 
       /* compute P(z) */
       logmant = lp_build_polynomial(bld, z, lp_build_log2_polynomial,
-                                    Elements(lp_build_log2_polynomial));
+                                    ARRAY_SIZE(lp_build_log2_polynomial));
 
       /* logmant = y * P(z) */
       logmant = lp_build_mul(bld, y, logmant);

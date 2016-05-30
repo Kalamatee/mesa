@@ -144,8 +144,7 @@ get_io_offset(nir_builder *b, nir_deref_var *deref,
 }
 
 static nir_intrinsic_op
-load_op(struct lower_io_state *state,
-        nir_variable_mode mode, bool per_vertex)
+load_op(nir_variable_mode mode, bool per_vertex)
 {
    nir_intrinsic_op op;
    switch (mode) {
@@ -211,13 +210,12 @@ atomic_op(nir_intrinsic_op opcode)
 }
 
 static bool
-nir_lower_io_block(nir_block *block, void *void_state)
+nir_lower_io_block(nir_block *block,
+                   struct lower_io_state *state)
 {
-   struct lower_io_state *state = void_state;
-
    nir_builder *b = &state->builder;
 
-   nir_foreach_instr_safe(block, instr) {
+   nir_foreach_instr_safe(instr, block) {
       if (instr->type != nir_instr_type_intrinsic)
          continue;
 
@@ -271,7 +269,7 @@ nir_lower_io_block(nir_block *block, void *void_state)
 
          nir_intrinsic_instr *load =
             nir_intrinsic_instr_create(state->mem_ctx,
-                                       load_op(state, mode, per_vertex));
+                                       load_op(mode, per_vertex));
          load->num_components = intrin->num_components;
 
          nir_intrinsic_set_base(load,
@@ -403,7 +401,9 @@ nir_lower_io_impl(nir_function_impl *impl,
    state.modes = modes;
    state.type_size = type_size;
 
-   nir_foreach_block(impl, nir_lower_io_block, &state);
+   nir_foreach_block(block, impl) {
+      nir_lower_io_block(block, &state);
+   }
 
    nir_metadata_preserve(impl, nir_metadata_block_index |
                                nir_metadata_dominance);
@@ -413,7 +413,7 @@ void
 nir_lower_io(nir_shader *shader, nir_variable_mode modes,
              int (*type_size)(const struct glsl_type *))
 {
-   nir_foreach_function(shader, function) {
+   nir_foreach_function(function, shader) {
       if (function->impl)
          nir_lower_io_impl(function->impl, modes, type_size);
    }

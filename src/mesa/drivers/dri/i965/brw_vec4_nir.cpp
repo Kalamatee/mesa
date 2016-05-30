@@ -41,7 +41,7 @@ vec4_visitor::emit_nir_code()
    nir_setup_system_values();
 
    /* get the main function and emit it */
-   nir_foreach_function(nir, function) {
+   nir_foreach_function(function, nir) {
       assert(strcmp(function->name, "main") == 0);
       assert(function->impl);
       nir_emit_impl(function->impl);
@@ -60,36 +60,31 @@ vec4_visitor::nir_setup_system_value_intrinsic(nir_intrinsic_instr *instr)
    case nir_intrinsic_load_vertex_id_zero_base:
       reg = &nir_system_values[SYSTEM_VALUE_VERTEX_ID_ZERO_BASE];
       if (reg->file == BAD_FILE)
-         *reg = *make_reg_for_system_value(SYSTEM_VALUE_VERTEX_ID_ZERO_BASE,
-                                           glsl_type::int_type);
+         *reg = *make_reg_for_system_value(SYSTEM_VALUE_VERTEX_ID_ZERO_BASE);
       break;
 
    case nir_intrinsic_load_base_vertex:
       reg = &nir_system_values[SYSTEM_VALUE_BASE_VERTEX];
       if (reg->file == BAD_FILE)
-         *reg = *make_reg_for_system_value(SYSTEM_VALUE_BASE_VERTEX,
-                                           glsl_type::int_type);
+         *reg = *make_reg_for_system_value(SYSTEM_VALUE_BASE_VERTEX);
       break;
 
    case nir_intrinsic_load_instance_id:
       reg = &nir_system_values[SYSTEM_VALUE_INSTANCE_ID];
       if (reg->file == BAD_FILE)
-         *reg = *make_reg_for_system_value(SYSTEM_VALUE_INSTANCE_ID,
-                                           glsl_type::int_type);
+         *reg = *make_reg_for_system_value(SYSTEM_VALUE_INSTANCE_ID);
       break;
 
    case nir_intrinsic_load_base_instance:
       reg = &nir_system_values[SYSTEM_VALUE_BASE_INSTANCE];
       if (reg->file == BAD_FILE)
-         *reg = *make_reg_for_system_value(SYSTEM_VALUE_BASE_INSTANCE,
-                                           glsl_type::int_type);
+         *reg = *make_reg_for_system_value(SYSTEM_VALUE_BASE_INSTANCE);
       break;
 
    case nir_intrinsic_load_draw_id:
       reg = &nir_system_values[SYSTEM_VALUE_DRAW_ID];
       if (reg->file == BAD_FILE)
-         *reg = *make_reg_for_system_value(SYSTEM_VALUE_DRAW_ID,
-                                           glsl_type::int_type);
+         *reg = *make_reg_for_system_value(SYSTEM_VALUE_DRAW_ID);
       break;
 
    default:
@@ -98,11 +93,9 @@ vec4_visitor::nir_setup_system_value_intrinsic(nir_intrinsic_instr *instr)
 }
 
 static bool
-setup_system_values_block(nir_block *block, void *void_visitor)
+setup_system_values_block(nir_block *block, vec4_visitor *v)
 {
-   vec4_visitor *v = (vec4_visitor *)void_visitor;
-
-   nir_foreach_instr(block, instr) {
+   nir_foreach_instr(instr, block) {
       if (instr->type != nir_instr_type_intrinsic)
          continue;
 
@@ -121,10 +114,12 @@ vec4_visitor::nir_setup_system_values()
       nir_system_values[i] = dst_reg();
    }
 
-   nir_foreach_function(nir, function) {
+   nir_foreach_function(function, nir) {
       assert(strcmp(function->name, "main") == 0);
       assert(function->impl);
-      nir_foreach_block(function->impl, setup_system_values_block, this);
+      nir_foreach_block(block, function->impl) {
+         setup_system_values_block(block, this);
+      }
    }
 }
 
@@ -213,7 +208,7 @@ vec4_visitor::nir_emit_loop(nir_loop *loop)
 void
 vec4_visitor::nir_emit_block(nir_block *block)
 {
-   nir_foreach_instr(block, instr) {
+   nir_foreach_instr(instr, block) {
       nir_emit_instr(instr);
    }
 }
@@ -272,7 +267,7 @@ dst_reg_for_nir_reg(vec4_visitor *v, nir_register *nir_reg,
 }
 
 dst_reg
-vec4_visitor::get_nir_dest(nir_dest dest)
+vec4_visitor::get_nir_dest(const nir_dest &dest)
 {
    if (dest.is_ssa) {
       dst_reg dst = dst_reg(VGRF, alloc.allocate(1));
@@ -285,19 +280,19 @@ vec4_visitor::get_nir_dest(nir_dest dest)
 }
 
 dst_reg
-vec4_visitor::get_nir_dest(nir_dest dest, enum brw_reg_type type)
+vec4_visitor::get_nir_dest(const nir_dest &dest, enum brw_reg_type type)
 {
    return retype(get_nir_dest(dest), type);
 }
 
 dst_reg
-vec4_visitor::get_nir_dest(nir_dest dest, nir_alu_type type)
+vec4_visitor::get_nir_dest(const nir_dest &dest, nir_alu_type type)
 {
    return get_nir_dest(dest, brw_type_for_nir_type(type));
 }
 
 src_reg
-vec4_visitor::get_nir_src(nir_src src, enum brw_reg_type type,
+vec4_visitor::get_nir_src(const nir_src &src, enum brw_reg_type type,
                           unsigned num_components)
 {
    dst_reg reg;
@@ -319,14 +314,14 @@ vec4_visitor::get_nir_src(nir_src src, enum brw_reg_type type,
 }
 
 src_reg
-vec4_visitor::get_nir_src(nir_src src, nir_alu_type type,
+vec4_visitor::get_nir_src(const nir_src &src, nir_alu_type type,
                           unsigned num_components)
 {
    return get_nir_src(src, brw_type_for_nir_type(type), num_components);
 }
 
 src_reg
-vec4_visitor::get_nir_src(nir_src src, unsigned num_components)
+vec4_visitor::get_nir_src(const nir_src &src, unsigned num_components)
 {
    /* if type is not specified, default to signed int */
    return get_nir_src(src, nir_type_int, num_components);
@@ -691,7 +686,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
 
       dest = get_nir_dest(instr->dest);
 
-      src = src_reg(dst_reg(UNIFORM, instr->const_index[0] / 16));
+      src = src_reg(dst_reg(UNIFORM, nir_intrinsic_base(instr) / 16));
       src.type = dest.type;
 
       /* Uniforms don't actually have to be vec4 aligned.  In the case that
@@ -712,7 +707,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
 
          unsigned offset = const_offset->u32[0] + shift * 4;
          src.reg_offset = offset / 16;
-         shift = (nir_intrinsic_base(instr) % 16) / 4;
+         shift = (offset % 16) / 4;
          src.swizzle += BRW_SWIZZLE4(shift, shift, shift, shift);
 
          emit(MOV(dest, src));

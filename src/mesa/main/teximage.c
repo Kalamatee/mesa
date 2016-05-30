@@ -69,43 +69,48 @@
  * format needs to be a 32 bit component and in case of GL_HALF_FLOAT_OES it
  * needs to be a 16 bit component.
  *
- * For example, given base format GL_RGBA, type GL_Float return GL_RGBA32F_ARB.
+ * For example, given base format GL_RGBA, type GL_FLOAT return GL_RGBA32F_ARB.
  */
 static GLenum
-adjust_for_oes_float_texture(GLenum format, GLenum type)
+adjust_for_oes_float_texture(const struct gl_context *ctx,
+                             GLenum format, GLenum type)
 {
    switch (type) {
    case GL_FLOAT:
-      switch (format) {
-      case GL_RGBA:
-         return GL_RGBA32F;
-      case GL_RGB:
-         return GL_RGB32F;
-      case GL_ALPHA:
-         return GL_ALPHA32F_ARB;
-      case GL_LUMINANCE:
-         return GL_LUMINANCE32F_ARB;
-      case GL_LUMINANCE_ALPHA:
-         return GL_LUMINANCE_ALPHA32F_ARB;
-      default:
-         break;
+      if (ctx->Extensions.OES_texture_float) {
+         switch (format) {
+         case GL_RGBA:
+            return GL_RGBA32F;
+         case GL_RGB:
+            return GL_RGB32F;
+         case GL_ALPHA:
+            return GL_ALPHA32F_ARB;
+         case GL_LUMINANCE:
+            return GL_LUMINANCE32F_ARB;
+         case GL_LUMINANCE_ALPHA:
+            return GL_LUMINANCE_ALPHA32F_ARB;
+         default:
+            break;
+         }
       }
       break;
 
    case GL_HALF_FLOAT_OES:
-      switch (format) {
-      case GL_RGBA:
-         return GL_RGBA16F;
-      case GL_RGB:
-         return GL_RGB16F;
-      case GL_ALPHA:
-         return GL_ALPHA16F_ARB;
-      case GL_LUMINANCE:
-         return GL_LUMINANCE16F_ARB;
-      case GL_LUMINANCE_ALPHA:
-         return GL_LUMINANCE_ALPHA16F_ARB;
-      default:
-         break;
+      if (ctx->Extensions.OES_texture_half_float) {
+         switch (format) {
+         case GL_RGBA:
+            return GL_RGBA16F;
+         case GL_RGB:
+            return GL_RGB16F;
+         case GL_ALPHA:
+            return GL_ALPHA16F_ARB;
+         case GL_LUMINANCE:
+            return GL_LUMINANCE16F_ARB;
+         case GL_LUMINANCE_ALPHA:
+            return GL_LUMINANCE_ALPHA16F_ARB;
+         default:
+            break;
+         }
       }
       break;
 
@@ -1112,7 +1117,7 @@ error_check_subtexture_dimensions(struct gl_context *ctx, GLuint dims,
                                   GLsizei subDepth, const char *func)
 {
    const GLenum target = destImage->TexObject->Target;
-   GLuint bw, bh;
+   GLuint bw, bh, bd;
 
    /* Check size */
    if (subWidth < 0) {
@@ -1185,14 +1190,14 @@ error_check_subtexture_dimensions(struct gl_context *ctx, GLuint dims,
     * compressed formats supported by Mesa allow sub-textures to be updated
     * along compressed block boundaries.
     */
-   _mesa_get_format_block_size(destImage->TexFormat, &bw, &bh);
+   _mesa_get_format_block_size_3d(destImage->TexFormat, &bw, &bh, &bd);
 
-   if (bw != 1 || bh != 1) {
+   if (bw != 1 || bh != 1 || bd != 1) {
       /* offset must be multiple of block size */
-      if ((xoffset % bw != 0) || (yoffset % bh != 0)) {
+      if ((xoffset % bw != 0) || (yoffset % bh != 0) || (zoffset % bd != 0)) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "%s(xoffset = %d, yoffset = %d)",
-                     func, xoffset, yoffset);
+                     "%s(xoffset = %d, yoffset = %d, zoffset = %d)",
+                     func, xoffset, yoffset, zoffset);
          return GL_TRUE;
       }
 
@@ -1212,6 +1217,13 @@ error_check_subtexture_dimensions(struct gl_context *ctx, GLuint dims,
           (yoffset + subHeight != (GLint) destImage->Height)) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
                      "%s(height = %d)", func, subHeight);
+         return GL_TRUE;
+      }
+
+      if ((subDepth % bd != 0) &&
+          (zoffset + subDepth != (GLint) destImage->Depth)) {
+         _mesa_error(ctx, GL_INVALID_OPERATION,
+                     "%s(depth = %d)", func, subDepth);
          return GL_TRUE;
       }
    }
@@ -2530,6 +2542,15 @@ copytexsubimage_error_check(struct gl_context *ctx, GLuint dimensions,
       }
    }
 
+   /* In the ES 3.2 specification's Table 8.13 (Valid CopyTexImage source
+    * framebuffer/destination texture base internal format combinations),
+    * all the entries for stencil are left blank (unsupported).
+    */
+   if (_mesa_is_gles(ctx) && _mesa_is_stencil_format(texImage->_BaseFormat)) {
+      _mesa_error(ctx, GL_INVALID_OPERATION, "%s(stencil disallowed)", caller);
+      return GL_TRUE;
+   }
+
    /* if we get here, the parameters are OK */
    return GL_FALSE;
 }
@@ -2888,7 +2909,7 @@ teximage(struct gl_context *ctx, GLboolean compressed, GLuint dims,
             texObj->_IsHalfFloat = GL_TRUE;
          }
 
-         internalFormat = adjust_for_oes_float_texture(format, type);
+         internalFormat = adjust_for_oes_float_texture(ctx, format, type);
       }
 
       texFormat = _mesa_choose_texture_format(ctx, texObj, target, level,
@@ -3425,8 +3446,9 @@ get_copy_tex_image_source(struct gl_context *ctx, mesa_format texFormat)
    if (_mesa_get_format_bits(texFormat, GL_DEPTH_BITS) > 0) {
       /* reading from depth/stencil buffer */
       return ctx->ReadBuffer->Attachment[BUFFER_DEPTH].Renderbuffer;
-   }
-   else {
+   } else if (_mesa_get_format_bits(texFormat, GL_STENCIL_BITS) > 0) {
+      return ctx->ReadBuffer->Attachment[BUFFER_STENCIL].Renderbuffer;
+   } else {
       /* copying from color buffer */
       return ctx->ReadBuffer->_ColorReadBuffer;
    }

@@ -149,15 +149,20 @@ unop("imov", tint, "src0")
 unop("ineg", tint, "-src0")
 unop("fneg", tfloat, "-src0")
 unop("inot", tint, "~src0") # invert every bit of the integer
-unop("fnot", tfloat, "(src0 == 0.0f) ? 1.0f : 0.0f")
-unop("fsign", tfloat, "(src0 == 0.0f) ? 0.0f : ((src0 > 0.0f) ? 1.0f : -1.0f)")
+unop("fnot", tfloat, ("bit_size == 64 ? ((src0 == 0.0) ? 1.0 : 0.0f) : " +
+                      "((src0 == 0.0f) ? 1.0f : 0.0f)"))
+unop("fsign", tfloat, ("bit_size == 64 ? " +
+                       "((src0 == 0.0) ? 0.0 : ((src0 > 0.0) ? 1.0 : -1.0)) : " +
+                       "((src0 == 0.0f) ? 0.0f : ((src0 > 0.0f) ? 1.0f : -1.0f))"))
 unop("isign", tint, "(src0 == 0) ? 0 : ((src0 > 0) ? 1 : -1)")
 unop("iabs", tint, "(src0 < 0) ? -src0 : src0")
-unop("fabs", tfloat, "fabsf(src0)")
-unop("fsat", tfloat, "(src0 > 1.0f) ? 1.0f : ((src0 <= 0.0f) ? 0.0f : src0)")
-unop("frcp", tfloat, "1.0f / src0")
-unop("frsq", tfloat, "1.0f / sqrtf(src0)")
-unop("fsqrt", tfloat, "sqrtf(src0)")
+unop("fabs", tfloat, "bit_size == 64 ? fabs(src0) : fabsf(src0)")
+unop("fsat", tfloat, ("bit_size == 64 ? " +
+                      "((src0 > 1.0) ? 1.0 : ((src0 <= 0.0) ? 0.0 : src0)) : " +
+                      "((src0 > 1.0f) ? 1.0f : ((src0 <= 0.0f) ? 0.0f : src0))"))
+unop("frcp", tfloat, "bit_size == 64 ? 1.0 / src0 : 1.0f / src0")
+unop("frsq", tfloat, "bit_size == 64 ? 1.0 / sqrt(src0) : 1.0f / sqrtf(src0)")
+unop("fsqrt", tfloat, "bit_size == 64 ? sqrt(src0) : sqrtf(src0)")
 unop("fexp2", tfloat, "exp2f(src0)")
 unop("flog2", tfloat, "log2f(src0)")
 unop_convert("f2i", tint32, tfloat32, "src0") # Float-to-integer conversion.
@@ -177,8 +182,8 @@ unop_convert("b2i", tint32, tbool, "src0 ? 1 : 0") # Boolean-to-int conversion
 unop_convert("u2f", tfloat32, tuint32, "src0") # Unsigned-to-float conversion.
 unop_convert("u2d", tfloat64, tuint32, "src0") # Unsigned-to-double conversion.
 # double-to-float conversion
-unop_convert("d2f", tfloat32, tfloat64, "src0") # Single to double precision
-unop_convert("f2d", tfloat64, tfloat32, "src0") # Double to single precision
+unop_convert("d2f", tfloat32, tfloat64, "src0") # Double to single precision
+unop_convert("f2d", tfloat64, tfloat32, "src0") # Single to double precision
 
 # Unary floating-point rounding operations.
 
@@ -262,33 +267,11 @@ dst.x = (src0.x <<  0) |
         (src0.w << 24);
 """)
 
-unop_horiz("pack_double_2x32", 1, tuint64, 2, tuint32, """
-union {
-    uint64_t u64;
-    struct {
-        uint32_t i1;
-        uint32_t i2;
-    };
-} di;
+unop_horiz("pack_double_2x32", 1, tuint64, 2, tuint32,
+           "dst.x = src0.x | ((uint64_t)src0.y << 32);")
 
-di.i1 = src0.x;
-di.i2 = src0.y;
-dst.x = di.u64;
-""")
-
-unop_horiz("unpack_double_2x32", 2, tuint32, 1, tuint64, """
-union {
-    uint64_t u64;
-    struct {
-        uint32_t i1;
-        uint32_t i2;
-    };
-} di;
-
-di.u64 = src0.x;
-dst.x = di.i1;
-dst.y = di.i2;
-""")
+unop_horiz("unpack_double_2x32", 2, tuint32, 1, tuint64,
+           "dst.x = src0.x; dst.y = src0.x >> 32;")
 
 # Lowered floating point unpacking operations.
 
@@ -298,29 +281,8 @@ unop_horiz("unpack_half_2x16_split_x", 1, tfloat32, 1, tuint32,
 unop_horiz("unpack_half_2x16_split_y", 1, tfloat32, 1, tuint32,
            "unpack_half_1x16((uint16_t)(src0.x >> 16))")
 
-unop_convert("unpack_double_2x32_split_x", tuint32, tuint64, """
-union {
-    uint64_t u64;
-    struct {
-        uint32_t x;
-        uint32_t y;
-    };
-} di;
-di.u64 = src0;
-dst = di.x;
-""")
-
-unop_convert("unpack_double_2x32_split_y", tuint32, tuint64, """
-union {
-    uint64_t u64;
-    struct {
-        uint32_t x;
-        uint32_t y;
-    };
-} di;
-di.u64 = src0;
-dst = di.y;
-""")
+unop_convert("unpack_double_2x32_split_x", tuint32, tuint64, "src0")
+unop_convert("unpack_double_2x32_split_y", tuint32, tuint64, "src0 >> 32")
 
 # Bit operations, part of ARB_gpu_shader5.
 
@@ -600,18 +562,8 @@ binop("fpow", tfloat, "", "bit_size == 64 ? powf(src0, src1) : pow(src0, src1)")
 binop_horiz("pack_half_2x16_split", 1, tuint32, 1, tfloat32, 1, tfloat32,
             "pack_half_1x16(src0.x) | (pack_half_1x16(src1.x) << 16)")
 
-binop_convert("pack_double_2x32_split", tuint64, tuint32, "", """
-union {
-    uint64_t u64;
-    struct {
-        uint32_t x;
-        uint32_t y;
-    };
-} di;
-di.x = src0;
-di.y = src1;
-dst = di.u64;
-""")
+binop_convert("pack_double_2x32_split", tuint64, tuint32, "",
+              "src0 | ((uint64_t)src1 << 32)")
 
 # bfm implements the behavior of the first operation of the SM5 "bfi" assembly
 # and that of the "bfi1" i965 instruction. That is, it has undefined behavior
@@ -624,7 +576,7 @@ else
    dst = ((1u << bits) - 1) << offset;
 """)
 
-opcode("ldexp", 0, tfloat, [0, 0], [tfloat, tint], "", """
+opcode("ldexp", 0, tfloat, [0, 0], [tfloat, tint32], "", """
 dst = (bit_size == 64) ? ldexp(src0, src1) : ldexpf(src0, src1);
 /* flush denormals to zero. */
 if (!isnormal(dst))

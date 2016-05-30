@@ -211,7 +211,7 @@ ilo_get_compute_param(struct pipe_screen *screen,
       size = strlen(val.ir_target) + 1;
       break;
    case PIPE_COMPUTE_CAP_GRID_DIMENSION:
-      val.grid_dimension = Elements(val.max_grid_size);
+      val.grid_dimension = ARRAY_SIZE(val.max_grid_size);
 
       ptr = &val.grid_dimension;
       size = sizeof(val.grid_dimension);
@@ -500,6 +500,8 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_PCI_FUNCTION:
    case PIPE_CAP_FRAMEBUFFER_NO_ATTACHMENT:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
+   case PIPE_CAP_CULL_DISTANCE:
+   case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:

@@ -356,7 +356,7 @@ struct tgsi_exec_machine
 
    /* System values */
    unsigned                      SysSemanticToIndex[TGSI_SEMANTIC_COUNT];
-   union tgsi_exec_channel       SystemValue[TGSI_MAX_MISC_INPUTS];
+   struct tgsi_exec_vector       SystemValue[TGSI_MAX_MISC_INPUTS];
 
    struct tgsi_exec_vector       *Addrs;
    struct tgsi_exec_vector       *Predicates;
@@ -371,7 +371,7 @@ struct tgsi_exec_machine
    unsigned ConstsSize[PIPE_MAX_CONSTANT_BUFFERS];
 
    const struct tgsi_token       *Tokens;   /**< Declarations, instructions */
-   unsigned                      Processor; /**< TGSI_PROCESSOR_x */
+   enum pipe_shader_type         ShaderType; /**< PIPE_SHADER_x */
 
    /* GEOMETRY processor only. */
    unsigned                      *Primitives;
@@ -384,6 +384,10 @@ struct tgsi_exec_machine
    struct tgsi_exec_vector       QuadPos;
    float                         Face;    /**< +1 if front facing, -1 if back facing */
    bool                          flatshade_color;
+
+   /* Compute Only */
+   void                          *LocalMem;
+   unsigned                      LocalMemSize;
 
    /* See GLSL 4.50 specification for definition of helper invocations */
    uint NonHelperMask;  /**< non-helpers */
@@ -441,10 +445,12 @@ struct tgsi_exec_machine
       SamplerViews[PIPE_MAX_SHADER_SAMPLER_VIEWS];
 
    boolean UsedGeometryShader;
+
+   int pc;
 };
 
 struct tgsi_exec_machine *
-tgsi_exec_machine_create( void );
+tgsi_exec_machine_create(enum pipe_shader_type shader_type);
 
 void
 tgsi_exec_machine_destroy(struct tgsi_exec_machine *mach);
@@ -460,7 +466,7 @@ tgsi_exec_machine_bind_shader(
 
 uint
 tgsi_exec_machine_run(
-   struct tgsi_exec_machine *mach );
+   struct tgsi_exec_machine *mach, int start_pc );
 
 
 void

@@ -210,7 +210,7 @@ tex_type(unsigned target)
 }
 
 static bool
-use_srgb_lowering(struct pipe_context *pctx, enum pipe_format format)
+use_astc_srgb_workaround(struct pipe_context *pctx, enum pipe_format format)
 {
 	return (fd_screen(pctx->screen)->gpu_id == 420) &&
 		(util_format_description(format)->layout == UTIL_FORMAT_LAYOUT_ASTC);
@@ -241,10 +241,9 @@ fd4_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 				cso->swizzle_b, cso->swizzle_a);
 
 	if (util_format_is_srgb(cso->format)) {
-		if (use_srgb_lowering(pctx, cso->format))
-			so->lower_srgb = true;
-		else
-			so->texconst0 |= A4XX_TEX_CONST_0_SRGB;
+		if (use_astc_srgb_workaround(pctx, cso->format))
+			so->astc_srgb = true;
+		so->texconst0 |= A4XX_TEX_CONST_0_SRGB;
 	}
 
 	if (cso->target == PIPE_BUFFER) {
@@ -314,24 +313,24 @@ fd4_set_sampler_views(struct pipe_context *pctx, unsigned shader,
 {
 	struct fd_context *ctx = fd_context(pctx);
 	struct fd4_context *fd4_ctx = fd4_context(ctx);
-	uint16_t lower_srgb = 0;
+	uint16_t astc_srgb = 0;
 	unsigned i;
 
 	for (i = 0; i < nr; i++) {
 		if (views[i]) {
 			struct fd4_pipe_sampler_view *view =
 					fd4_pipe_sampler_view(views[i]);
-			if (view->lower_srgb)
-				lower_srgb |= (1 << i);
+			if (view->astc_srgb)
+				astc_srgb |= (1 << i);
 		}
 	}
 
 	fd_set_sampler_views(pctx, shader, start, nr, views);
 
 	if (shader == PIPE_SHADER_FRAGMENT) {
-		fd4_ctx->flower_srgb = lower_srgb;
+		fd4_ctx->fastc_srgb = astc_srgb;
 	} else if (shader == PIPE_SHADER_VERTEX) {
-		fd4_ctx->vlower_srgb = lower_srgb;
+		fd4_ctx->vastc_srgb = astc_srgb;
 	}
 }
 

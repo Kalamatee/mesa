@@ -33,6 +33,7 @@
 #include "util/u_suballoc.h"
 #include "util/list.h"
 #include "util/u_transfer.h"
+#include "util/u_memory.h"
 
 #include "tgsi/tgsi_scan.h"
 
@@ -733,9 +734,11 @@ unsigned r600_get_swizzle_combined(const unsigned char *swizzle_format,
 				   boolean vtx);
 uint32_t r600_translate_texformat(struct pipe_screen *screen, enum pipe_format format,
 				  const unsigned char *swizzle_view,
-				  uint32_t *word4_p, uint32_t *yuv_format_p);
-uint32_t r600_translate_colorformat(enum chip_class chip, enum pipe_format format);
-uint32_t r600_colorformat_endian_swap(uint32_t colorformat);
+				  uint32_t *word4_p, uint32_t *yuv_format_p,
+				  bool do_endian_swap);
+uint32_t r600_translate_colorformat(enum chip_class chip, enum pipe_format format,
+				  bool do_endian_swap);
+uint32_t r600_colorformat_endian_swap(uint32_t colorformat, bool do_endian_swap);
 
 /* r600_uvd.c */
 struct pipe_video_codec *r600_uvd_create_decoder(struct pipe_context *context,
@@ -759,9 +762,9 @@ struct pipe_video_buffer *r600_video_buffer_create(struct pipe_context *pipe,
 #define R600_LOOP_CONST_OFFSET                 0X0003E200
 #define EG_LOOP_CONST_OFFSET               0x0003A200
 
-#define PKT_TYPE_S(x)                   (((x) & 0x3) << 30)
-#define PKT_COUNT_S(x)                  (((x) & 0x3FFF) << 16)
-#define PKT3_IT_OPCODE_S(x)             (((x) & 0xFF) << 8)
+#define PKT_TYPE_S(x)                   (((unsigned)(x) & 0x3) << 30)
+#define PKT_COUNT_S(x)                  (((unsigned)(x) & 0x3FFF) << 16)
+#define PKT3_IT_OPCODE_S(x)             (((unsigned)(x) & 0xFF) << 8)
 #define PKT3_PREDICATE(x)               (((x) >> 0) & 0x1)
 #define PKT3(op, count, predicate) (PKT_TYPE_S(3) | PKT_COUNT_S(count) | PKT3_IT_OPCODE_S(op) | PKT3_PREDICATE(predicate))
 
@@ -878,8 +881,8 @@ static inline void radeon_set_ctl_const_seq(struct radeon_winsys_cs *cs, unsigne
 {
 	assert(reg >= R600_CTL_CONST_OFFSET);
 	assert(cs->cdw+2+num <= cs->max_dw);
-	cs->buf[cs->cdw++] = PKT3(PKT3_SET_CTL_CONST, num, 0);
-	cs->buf[cs->cdw++] = (reg - R600_CTL_CONST_OFFSET) >> 2;
+	radeon_emit(cs, PKT3(PKT3_SET_CTL_CONST, num, 0));
+	radeon_emit(cs, (reg - R600_CTL_CONST_OFFSET) >> 2);
 }
 
 static inline void radeon_compute_set_context_reg(struct radeon_winsys_cs *cs, unsigned reg, unsigned value)

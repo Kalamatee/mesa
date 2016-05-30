@@ -50,9 +50,10 @@ static struct fd4_shader_stateobj *
 create_shader_stateobj(struct pipe_context *pctx, const struct pipe_shader_state *cso,
 		enum shader_t type)
 {
+	struct fd_context *ctx = fd_context(pctx);
+	struct ir3_compiler *compiler = ctx->screen->compiler;
 	struct fd4_shader_stateobj *so = CALLOC_STRUCT(fd4_shader_stateobj);
-	struct ir3_compiler *compiler = fd_context(pctx)->screen->compiler;
-	so->shader = ir3_shader_create(compiler, cso, type);
+	so->shader = ir3_shader_create(compiler, cso, type, &ctx->debug);
 	return so;
 }
 
@@ -228,6 +229,13 @@ fd4_program_emit(struct fd_ringbuffer *ring, struct fd4_emit *emit,
 	constmode = 1;
 
 	pos_regid = ir3_find_output_regid(s[VS].v, VARYING_SLOT_POS);
+	if (pos_regid == regid(63, 0)) {
+		/* hw dislikes when there is no position output, which can
+		 * happen for transform-feedback vertex shaders.  Just tell
+		 * the hw to use r0.x, with whatever random value is there:
+		 */
+		pos_regid = regid(0, 0);
+	}
 	posz_regid = ir3_find_output_regid(s[FS].v, FRAG_RESULT_DEPTH);
 	psize_regid = ir3_find_output_regid(s[VS].v, VARYING_SLOT_PSIZ);
 	if (s[FS].v->color0_mrt) {

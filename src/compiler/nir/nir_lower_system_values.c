@@ -28,19 +28,12 @@
 #include "nir.h"
 #include "nir_builder.h"
 
-struct lower_system_values_state {
-   nir_builder builder;
-   bool progress;
-};
-
 static bool
-convert_block(nir_block *block, void *void_state)
+convert_block(nir_block *block, nir_builder *b)
 {
-   struct lower_system_values_state *state = void_state;
+   bool progress = false;
 
-   nir_builder *b = &state->builder;
-
-   nir_foreach_instr_safe(block, instr) {
+   nir_foreach_instr_safe(instr, block) {
       if (instr->type != nir_instr_type_intrinsic)
          continue;
 
@@ -75,7 +68,7 @@ convert_block(nir_block *block, void *void_state)
             nir_load_system_value(b, nir_intrinsic_load_local_invocation_id, 0);
 
          sysval = nir_iadd(b, nir_imul(b, group_id,
-                                          nir_build_imm(b, 3, local_size)),
+                                       nir_build_imm(b, 3, 32, local_size)),
                               local_id);
          break;
       }
@@ -129,24 +122,26 @@ convert_block(nir_block *block, void *void_state)
       nir_ssa_def_rewrite_uses(&load_var->dest.ssa, nir_src_for_ssa(sysval));
       nir_instr_remove(&load_var->instr);
 
-      state->progress = true;
+      progress = true;
    }
 
-   return true;
+   return progress;
 }
 
 static bool
 convert_impl(nir_function_impl *impl)
 {
-   struct lower_system_values_state state;
+   bool progress = false;
+   nir_builder builder;
+   nir_builder_init(&builder, impl);
 
-   state.progress = false;
-   nir_builder_init(&state.builder, impl);
+   nir_foreach_block(block, impl) {
+      progress |= convert_block(block, &builder);
+   }
 
-   nir_foreach_block(impl, convert_block, &state);
    nir_metadata_preserve(impl, nir_metadata_block_index |
                                nir_metadata_dominance);
-   return state.progress;
+   return progress;
 }
 
 bool
@@ -154,7 +149,7 @@ nir_lower_system_values(nir_shader *shader)
 {
    bool progress = false;
 
-   nir_foreach_function(shader, function) {
+   nir_foreach_function(function, shader) {
       if (function->impl)
          progress = convert_impl(function->impl) || progress;
    }

@@ -34,9 +34,9 @@
  */
 
 static bool
-nir_lower_to_source_mods_block(nir_block *block, void *state)
+nir_lower_to_source_mods_block(nir_block *block)
 {
-   nir_foreach_instr(block, instr) {
+   nir_foreach_instr(instr, block) {
       if (instr->type != nir_instr_type_alu)
          continue;
 
@@ -136,7 +136,7 @@ nir_lower_to_source_mods_block(nir_block *block, void *state)
          continue;
 
       bool all_children_are_sat = true;
-      nir_foreach_use(&alu->dest.dest.ssa, child_src) {
+      nir_foreach_use(child_src, &alu->dest.dest.ssa) {
          assert(child_src->is_ssa);
          nir_instr *child = child_src->parent_instr;
          if (child->type != nir_instr_type_alu) {
@@ -162,7 +162,7 @@ nir_lower_to_source_mods_block(nir_block *block, void *state)
 
       alu->dest.saturate = true;
 
-      nir_foreach_use(&alu->dest.dest.ssa, child_src) {
+      nir_foreach_use(child_src, &alu->dest.dest.ssa) {
          assert(child_src->is_ssa);
          nir_instr *child = child_src->parent_instr;
          assert(child->type == nir_instr_type_alu);
@@ -181,17 +181,14 @@ nir_lower_to_source_mods_block(nir_block *block, void *state)
    return true;
 }
 
-static void
-nir_lower_to_source_mods_impl(nir_function_impl *impl)
-{
-   nir_foreach_block(impl, nir_lower_to_source_mods_block, NULL);
-}
-
 void
 nir_lower_to_source_mods(nir_shader *shader)
 {
-   nir_foreach_function(shader, function) {
-      if (function->impl)
-         nir_lower_to_source_mods_impl(function->impl);
+   nir_foreach_function(function, shader) {
+      if (function->impl) {
+         nir_foreach_block(block, function->impl) {
+            nir_lower_to_source_mods_block(block);
+         }
+      }
    }
 }

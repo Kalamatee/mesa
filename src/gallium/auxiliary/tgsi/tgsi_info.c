@@ -272,7 +272,7 @@ tgsi_get_opcode_info( uint opcode )
    if (firsttime) {
       unsigned i;
       firsttime = 0;
-      for (i = 0; i < Elements(opcode_info); i++)
+      for (i = 0; i < ARRAY_SIZE(opcode_info); i++)
          assert(opcode_info[i].opcode == i);
    }
    
@@ -296,15 +296,15 @@ const char *
 tgsi_get_processor_name( uint processor )
 {
    switch (processor) {
-   case TGSI_PROCESSOR_VERTEX:
+   case PIPE_SHADER_VERTEX:
       return "vertex shader";
-   case TGSI_PROCESSOR_FRAGMENT:
+   case PIPE_SHADER_FRAGMENT:
       return "fragment shader";
-   case TGSI_PROCESSOR_GEOMETRY:
+   case PIPE_SHADER_GEOMETRY:
       return "geometry shader";
-   case TGSI_PROCESSOR_TESS_CTRL:
+   case PIPE_SHADER_TESS_CTRL:
       return "tessellation control shader";
-   case TGSI_PROCESSOR_TESS_EVAL:
+   case PIPE_SHADER_TESS_EVAL:
       return "tessellation evaluation shader";
    default:
       return "unknown shader type!";

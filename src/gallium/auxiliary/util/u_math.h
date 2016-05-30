@@ -50,6 +50,10 @@
 #include <strings.h> /* for ffs */
 #endif
 
+#if defined(_MSC_VER)
+#include <intrin.h>
+#endif
+
 
 #ifdef __cplusplus
 extern "C" {
@@ -357,8 +361,6 @@ util_half_inf_sign(int16_t x)
 #define FFS_DEFINED 1
 
 #if defined(_MSC_VER) && (_M_IX86 || _M_AMD64 || _M_IA64)
-unsigned char _BitScanForward(unsigned long* Index, unsigned long Mask);
-#pragma intrinsic(_BitScanForward)
 static inline
 unsigned long ffs( unsigned long u )
 {
@@ -541,6 +543,18 @@ u_bit_scan_consecutive_range64(uint64_t *mask, int *start, int *count)
    *start = ffsll(*mask) - 1;
    *count = ffsll(~(*mask >> *start)) - 1;
    *mask &= ~(((1llu << *count) - 1) << *start);
+}
+
+/* Returns a bitfield in which the first count bits starting at start are
+ * set.
+ */
+static inline unsigned
+u_bit_consecutive(unsigned start, unsigned count)
+{
+   assert(start + count <= 32);
+   if (count == 32)
+      return ~0;
+   return ((1u << count) - 1) << start;
 }
 
 /**

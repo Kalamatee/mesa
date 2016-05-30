@@ -45,7 +45,6 @@ enum intel_msaa_layout;
 extern const struct brw_tracked_state brw_blend_constant_color;
 extern const struct brw_tracked_state brw_cc_vp;
 extern const struct brw_tracked_state brw_cc_unit;
-extern const struct brw_tracked_state brw_clip_prog;
 extern const struct brw_tracked_state brw_clip_unit;
 extern const struct brw_tracked_state brw_vs_pull_constants;
 extern const struct brw_tracked_state brw_tcs_pull_constants;
@@ -57,7 +56,6 @@ extern const struct brw_tracked_state brw_constant_buffer;
 extern const struct brw_tracked_state brw_curbe_offsets;
 extern const struct brw_tracked_state brw_invariant_state;
 extern const struct brw_tracked_state brw_fs_samplers;
-extern const struct brw_tracked_state brw_ff_gs_prog;
 extern const struct brw_tracked_state brw_gs_unit;
 extern const struct brw_tracked_state brw_line_stipple;
 extern const struct brw_tracked_state brw_aa_line_parameters;
@@ -66,12 +64,8 @@ extern const struct brw_tracked_state brw_depthbuffer;
 extern const struct brw_tracked_state brw_polygon_stipple_offset;
 extern const struct brw_tracked_state brw_polygon_stipple;
 extern const struct brw_tracked_state brw_recalculate_urb_fence;
-extern const struct brw_tracked_state brw_sf_prog;
 extern const struct brw_tracked_state brw_sf_unit;
 extern const struct brw_tracked_state brw_sf_vp;
-extern const struct brw_tracked_state brw_state_base_address;
-extern const struct brw_tracked_state brw_urb_fence;
-extern const struct brw_tracked_state brw_vs_prog;
 extern const struct brw_tracked_state brw_vs_samplers;
 extern const struct brw_tracked_state brw_tcs_samplers;
 extern const struct brw_tracked_state brw_tes_samplers;
@@ -91,10 +85,6 @@ extern const struct brw_tracked_state brw_gs_ubo_surfaces;
 extern const struct brw_tracked_state brw_gs_abo_surfaces;
 extern const struct brw_tracked_state brw_gs_image_surfaces;
 extern const struct brw_tracked_state brw_vs_unit;
-extern const struct brw_tracked_state brw_hs_prog;
-extern const struct brw_tracked_state brw_ds_prog;
-extern const struct brw_tracked_state brw_gs_prog;
-extern const struct brw_tracked_state brw_wm_prog;
 extern const struct brw_tracked_state brw_renderbuffer_surfaces;
 extern const struct brw_tracked_state brw_texture_surfaces;
 extern const struct brw_tracked_state brw_wm_binding_table;
@@ -109,7 +99,6 @@ extern const struct brw_tracked_state brw_cs_ubo_surfaces;
 extern const struct brw_tracked_state brw_cs_abo_surfaces;
 extern const struct brw_tracked_state brw_cs_image_surfaces;
 extern const struct brw_tracked_state brw_wm_unit;
-extern const struct brw_tracked_state brw_interpolation_map;
 
 extern const struct brw_tracked_state brw_psp_urb_cbs;
 
@@ -121,7 +110,6 @@ extern const struct brw_tracked_state brw_cs_state;
 extern const struct brw_tracked_state gen7_cs_push_constants;
 extern const struct brw_tracked_state gen6_binding_table_pointers;
 extern const struct brw_tracked_state gen6_blend_state;
-extern const struct brw_tracked_state gen6_cc_state_pointers;
 extern const struct brw_tracked_state gen6_clip_state;
 extern const struct brw_tracked_state gen6_clip_vp;
 extern const struct brw_tracked_state gen6_color_calc_state;
@@ -178,7 +166,6 @@ extern const struct brw_tracked_state gen8_wm_state;
 extern const struct brw_tracked_state gen8_raster_state;
 extern const struct brw_tracked_state gen8_sbe_state;
 extern const struct brw_tracked_state gen8_sf_state;
-extern const struct brw_tracked_state gen8_state_base_address;
 extern const struct brw_tracked_state gen8_sol_state;
 extern const struct brw_tracked_state gen8_sf_clip_viewport;
 extern const struct brw_tracked_state gen8_vertices;
@@ -187,7 +174,8 @@ extern const struct brw_tracked_state gen8_vs_state;
 extern const struct brw_tracked_state brw_cs_work_groups_surface;
 
 static inline bool
-brw_state_dirty(struct brw_context *brw, GLuint mesa_flags, uint64_t brw_flags)
+brw_state_dirty(const struct brw_context *brw,
+                GLuint mesa_flags, uint64_t brw_flags)
 {
    return ((brw->NewGLState & mesa_flags) |
            (brw->ctx.NewDriverState & brw_flags)) != 0;
@@ -203,6 +191,12 @@ void brw_upload_binding_table(struct brw_context *brw,
 void brw_upload_invariant_state(struct brw_context *brw);
 uint32_t
 brw_depthbuffer_format(struct brw_context *brw);
+
+void brw_upload_state_base_address(struct brw_context *brw);
+
+/* gen8_depth_state.c */
+void gen8_write_pma_stall_bits(struct brw_context *brw,
+                               uint32_t pma_stall_bits);
 
 /***********************************************************************
  * brw_state.c
@@ -276,7 +270,6 @@ void brw_configure_w_tiled(const struct intel_mipmap_tree *mt,
                            unsigned *pitch, uint32_t *tiling,
                            unsigned *format);
 
-const char *brw_surface_format_name(unsigned format);
 uint32_t brw_format_for_mesa_format(mesa_format mesa_format);
 
 GLuint translate_tex_target(GLenum target);
@@ -306,22 +299,36 @@ void gen7_init_vtable_surface_functions(struct brw_context *brw);
 
 /* gen8_ps_state.c */
 void gen8_upload_ps_state(struct brw_context *brw,
-                          const struct gl_fragment_program *fp,
                           const struct brw_stage_state *stage_state,
                           const struct brw_wm_prog_data *prog_data,
                           uint32_t fast_clear_op);
 
 void gen8_upload_ps_extra(struct brw_context *brw,
-                          const struct gl_fragment_program *fp,
-                          const struct brw_wm_prog_data *prog_data,
-                          bool multisampled_fbo);
+                          const struct brw_wm_prog_data *prog_data);
 
 /* gen7_sol_state.c */
 void gen7_upload_3dstate_so_decl_list(struct brw_context *brw,
                                       const struct brw_vue_map *vue_map);
 
 /* gen8_surface_state.c */
+
 void gen8_init_vtable_surface_functions(struct brw_context *brw);
+
+unsigned gen8_surface_tiling_mode(uint32_t tiling);
+unsigned gen8_vertical_alignment(const struct brw_context *brw,
+                                 const struct intel_mipmap_tree *mt,
+                                 uint32_t surf_type);
+unsigned gen8_horizontal_alignment(const struct brw_context *brw,
+                                   const struct intel_mipmap_tree *mt,
+                                   uint32_t surf_type);
+uint32_t *gen8_allocate_surface_state(struct brw_context *brw,
+                                      uint32_t *out_offset, int index);
+
+void gen8_emit_fast_clear_color(const struct brw_context *brw,
+                                const struct intel_mipmap_tree *mt,
+                                uint32_t *surf);
+uint32_t gen8_get_aux_mode(const struct brw_context *brw,
+                           const struct intel_mipmap_tree *mt);
 
 /* brw_sampler_state.c */
 void brw_emit_sampler_state(struct brw_context *brw,
@@ -354,10 +361,9 @@ void brw_update_sampler_state(struct brw_context *brw,
 /* gen6_wm_state.c */
 void
 gen6_upload_wm_state(struct brw_context *brw,
-                     const struct brw_fragment_program *fp,
                      const struct brw_wm_prog_data *prog_data,
                      const struct brw_stage_state *stage_state,
-                     bool multisampled_fbo, int min_inv_per_frag,
+                     bool multisampled_fbo,
                      bool dual_source_blend_enable, bool kill_enable,
                      bool color_buffer_write_enable, bool msaa_enabled,
                      bool line_stipple_enable, bool polygon_stipple_enable,
@@ -401,6 +407,15 @@ void gen7_update_binding_table_from_array(struct brw_context *brw,
 void gen7_enable_hw_binding_tables(struct brw_context *brw);
 void gen7_disable_hw_binding_tables(struct brw_context *brw);
 void gen7_reset_hw_bt_pool_offsets(struct brw_context *brw);
+
+/* brw_interpolation_map.c */
+void brw_setup_vue_interpolation(struct brw_context *brw);
+
+/* brw_clip.c */
+void brw_upload_clip_prog(struct brw_context *brw);
+
+/* brw_sf.c */
+void brw_upload_sf_prog(struct brw_context *brw);
 
 /* gen7_l3_state.c */
 void

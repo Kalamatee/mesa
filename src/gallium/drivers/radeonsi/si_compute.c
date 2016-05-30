@@ -70,6 +70,7 @@ static void *si_create_compute_state(
 
 		sel.tokens = tgsi_dup_tokens(cso->prog);
 		if (!sel.tokens) {
+			FREE(program);
 			return NULL;
 		}
 
@@ -84,6 +85,7 @@ static void *si_create_compute_state(
 		if (si_shader_create(sscreen, sctx->tm, &program->shader,
 		                     &sctx->b.debug)) {
 			FREE(sel.tokens);
+			FREE(program);
 			return NULL;
 		}
 
@@ -221,7 +223,7 @@ static bool si_setup_compute_scratch_buffer(struct si_context *sctx,
 	if (sctx->compute_scratch_buffer != shader->scratch_bo && scratch_needed) {
 		uint64_t scratch_va = sctx->compute_scratch_buffer->gpu_address;
 
-		si_shader_apply_scratch_relocs(sctx, shader, scratch_va);
+		si_shader_apply_scratch_relocs(sctx, shader, config, scratch_va);
 
 		if (si_shader_binary_upload(sctx->screen, shader))
 			return false;
