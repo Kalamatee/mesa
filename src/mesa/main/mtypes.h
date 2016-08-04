@@ -333,9 +333,6 @@ struct gl_material
  */
 struct gl_light
 {
-   struct gl_light *next;	/**< double linked list with sentinel */
-   struct gl_light *prev;
-
    GLfloat Ambient[4];		/**< ambient color */
    GLfloat Diffuse[4];		/**< diffuse color */
    GLfloat Specular[4];		/**< specular color */
@@ -630,9 +627,10 @@ struct gl_light_attrib
     * Derived state for optimizations: 
     */
    /*@{*/
+   GLbitfield _EnabledLights;	/**< bitmask containing enabled lights */
+
    GLboolean _NeedEyeCoords;		
    GLboolean _NeedVertices;		/**< Use fast shader? */
-   struct gl_light EnabledList;         /**< List sentinel */
 
    GLfloat _BaseColor[2][3];
    /*@}*/
@@ -756,7 +754,7 @@ struct gl_point_attrib
    GLboolean SmoothFlag;	/**< True if GL_POINT_SMOOTH is enabled */
    GLboolean _Attenuated;	/**< True if Params != [1, 0, 0] */
    GLboolean PointSprite;	/**< GL_NV/ARB_point_sprite */
-   GLboolean CoordReplace[MAX_TEXTURE_COORD_UNITS]; /**< GL_ARB_point_sprite*/
+   GLbitfield CoordReplace;     /**< GL_ARB_point_sprite*/
    GLenum SpriteRMode;		/**< GL_NV_point_sprite (only!) */
    GLenum SpriteOrigin;		/**< GL_ARB_point_sprite */
 };
@@ -796,6 +794,9 @@ struct gl_scissor_attrib
 {
    GLbitfield EnableFlags;	/**< Scissor test enabled? */
    struct gl_scissor_rect ScissorArray[MAX_VIEWPORTS];
+   GLint NumWindowRects;        /**< Count of enabled window rectangles */
+   GLenum WindowRectMode;       /**< Whether to include or exclude the rects */
+   struct gl_scissor_rect WindowRects[MAX_WINDOW_RECTANGLES];
 };
 
 
@@ -1322,11 +1323,9 @@ struct gl_client_array
    GLint Size;                  /**< components per element (1,2,3,4) */
    GLenum Type;                 /**< datatype: GL_FLOAT, GL_INT, etc */
    GLenum Format;               /**< default: GL_RGBA, but may be GL_BGRA */
-   GLsizei Stride;		/**< user-specified stride */
    GLsizei StrideB;		/**< actual stride in bytes */
    GLuint _ElementSize;         /**< size of each element in bytes */
    const GLubyte *Ptr;          /**< Points to array data */
-   GLboolean Enabled;		/**< Enabled flag is a boolean */
    GLboolean Normalized;        /**< GL_ARB_vertex_program */
    GLboolean Integer;           /**< Integer-valued? */
    GLboolean Doubles;       /**< double precision values are not converted to floats */
@@ -2030,9 +2029,9 @@ struct gl_fragment_program
    /**
     * GLSL interpolation qualifier associated with each fragment shader input.
     * For inputs that do not have an interpolation qualifier specified in
-    * GLSL, the value is INTERP_QUALIFIER_NONE.
+    * GLSL, the value is INTERP_MODE_NONE.
     */
-   enum glsl_interp_qualifier InterpQualifier[VARYING_SLOT_MAX];
+   enum glsl_interp_mode InterpQualifier[VARYING_SLOT_MAX];
 
    /**
     * Bitfield indicating, for each fragment shader input, 1 if that input
@@ -2234,79 +2233,10 @@ struct gl_subroutine_function
 };
 
 /**
- * A GLSL vertex or fragment shader object.
+ * Shader information needed by both gl_shader and gl_linked shader.
  */
-struct gl_shader
+struct gl_shader_info
 {
-   /** GL_FRAGMENT_SHADER || GL_VERTEX_SHADER || GL_GEOMETRY_SHADER_ARB ||
-    *  GL_TESS_CONTROL_SHADER || GL_TESS_EVALUATION_SHADER.
-    * Must be the first field.
-    */
-   GLenum Type;
-   gl_shader_stage Stage;
-   GLuint Name;  /**< AKA the handle */
-   GLint RefCount;  /**< Reference count */
-   GLchar *Label;   /**< GL_KHR_debug */
-   GLboolean DeletePending;
-   GLboolean CompileStatus;
-   bool IsES;              /**< True if this shader uses GLSL ES */
-
-   GLuint SourceChecksum;       /**< for debug/logging purposes */
-   const GLchar *Source;  /**< Source code string */
-
-   struct gl_program *Program;  /**< Post-compile assembly code */
-   GLchar *InfoLog;
-
-   unsigned Version;       /**< GLSL version used for linking */
-
-   /**
-    * \name Sampler tracking
-    *
-    * \note Each of these fields is only set post-linking.
-    */
-   /*@{*/
-   unsigned num_samplers;	/**< Number of samplers used by this shader. */
-   GLbitfield active_samplers;	/**< Bitfield of which samplers are used */
-   GLbitfield shadow_samplers;	/**< Samplers used for shadow sampling. */
-   /*@}*/
-
-   /**
-    * Map from sampler unit to texture unit (set by glUniform1i())
-    *
-    * A sampler unit is associated with each sampler uniform by the linker.
-    * The sampler unit associated with each uniform is stored in the
-    * \c gl_uniform_storage::sampler field.
-    */
-   GLubyte SamplerUnits[MAX_SAMPLERS];
-   /** Which texture target is being sampled (TEXTURE_1D/2D/3D/etc_INDEX) */
-   gl_texture_index SamplerTargets[MAX_SAMPLERS];
-
-   /**
-    * Number of default uniform block components used by this shader.
-    *
-    * This field is only set post-linking.
-    */
-   unsigned num_uniform_components;
-
-   /**
-    * Number of combined uniform components used by this shader.
-    *
-    * This field is only set post-linking.  It is the sum of the uniform block
-    * sizes divided by sizeof(float), and num_uniform_compoennts.
-    */
-   unsigned num_combined_uniform_components;
-
-   unsigned NumUniformBlocks;
-   struct gl_uniform_block **UniformBlocks;
-
-   unsigned NumShaderStorageBlocks;
-   struct gl_uniform_block **ShaderStorageBlocks;
-
-   struct exec_list *ir;
-   struct exec_list *packed_varyings;
-   struct exec_list *fragdata_arrays;
-   struct glsl_symbol_table *symbols;
-
    bool uses_builtin_functions;
    bool uses_gl_fragcoord;
    bool redeclares_gl_fragcoord;
@@ -2382,6 +2312,81 @@ struct gl_shader
    } Geom;
 
    /**
+    * Whether early fragment tests are enabled as defined by
+    * ARB_shader_image_load_store.
+    */
+   bool EarlyFragmentTests;
+
+   /**
+    * Compute shader state from ARB_compute_shader layout qualifiers.
+    */
+   struct {
+      /**
+       * Size specified using local_size_{x,y,z}, or all 0's to indicate that
+       * it's not set in this shader.
+       */
+      unsigned LocalSize[3];
+   } Comp;
+};
+
+/**
+ * A linked GLSL shader object.
+ */
+struct gl_linked_shader
+{
+   gl_shader_stage Stage;
+
+   struct gl_program *Program;  /**< Post-compile assembly code */
+
+   /**
+    * \name Sampler tracking
+    *
+    * \note Each of these fields is only set post-linking.
+    */
+   /*@{*/
+   unsigned num_samplers;	/**< Number of samplers used by this shader. */
+   GLbitfield active_samplers;	/**< Bitfield of which samplers are used */
+   GLbitfield shadow_samplers;	/**< Samplers used for shadow sampling. */
+   /*@}*/
+
+   /**
+    * Map from sampler unit to texture unit (set by glUniform1i())
+    *
+    * A sampler unit is associated with each sampler uniform by the linker.
+    * The sampler unit associated with each uniform is stored in the
+    * \c gl_uniform_storage::sampler field.
+    */
+   GLubyte SamplerUnits[MAX_SAMPLERS];
+   /** Which texture target is being sampled (TEXTURE_1D/2D/3D/etc_INDEX) */
+   gl_texture_index SamplerTargets[MAX_SAMPLERS];
+
+   /**
+    * Number of default uniform block components used by this shader.
+    *
+    * This field is only set post-linking.
+    */
+   unsigned num_uniform_components;
+
+   /**
+    * Number of combined uniform components used by this shader.
+    *
+    * This field is only set post-linking.  It is the sum of the uniform block
+    * sizes divided by sizeof(float), and num_uniform_compoennts.
+    */
+   unsigned num_combined_uniform_components;
+
+   unsigned NumUniformBlocks;
+   struct gl_uniform_block **UniformBlocks;
+
+   unsigned NumShaderStorageBlocks;
+   struct gl_uniform_block **ShaderStorageBlocks;
+
+   struct exec_list *ir;
+   struct exec_list *packed_varyings;
+   struct exec_list *fragdata_arrays;
+   struct glsl_symbol_table *symbols;
+
+   /**
     * Map from image uniform index to image unit (set by glUniform1i())
     *
     * An image uniform index is associated with each image uniform by
@@ -2411,23 +2416,6 @@ struct gl_shader
    unsigned NumAtomicBuffers;
 
    /**
-    * Whether early fragment tests are enabled as defined by
-    * ARB_shader_image_load_store.
-    */
-   bool EarlyFragmentTests;
-
-   /**
-    * Compute shader state from ARB_compute_shader layout qualifiers.
-    */
-   struct {
-      /**
-       * Size specified using local_size_{x,y,z}, or all 0's to indicate that
-       * it's not set in this shader.
-       */
-      unsigned LocalSize[3];
-   } Comp;
-
-   /**
      * Number of types for subroutine uniforms.
      */
    GLuint NumSubroutineUniformTypes;
@@ -2447,6 +2435,39 @@ struct gl_shader
    GLuint NumSubroutineFunctions;
    GLuint MaxSubroutineFunctionIndex;
    struct gl_subroutine_function *SubroutineFunctions;
+
+   struct gl_shader_info info;
+};
+
+/**
+ * A GLSL shader object.
+ */
+struct gl_shader
+{
+   /** GL_FRAGMENT_SHADER || GL_VERTEX_SHADER || GL_GEOMETRY_SHADER_ARB ||
+    *  GL_TESS_CONTROL_SHADER || GL_TESS_EVALUATION_SHADER.
+    * Must be the first field.
+    */
+   GLenum Type;
+   gl_shader_stage Stage;
+   GLuint Name;  /**< AKA the handle */
+   GLint RefCount;  /**< Reference count */
+   GLchar *Label;   /**< GL_KHR_debug */
+   GLboolean DeletePending;
+   GLboolean CompileStatus;
+   bool IsES;              /**< True if this shader uses GLSL ES */
+
+   GLuint SourceChecksum;       /**< for debug/logging purposes */
+   const GLchar *Source;  /**< Source code string */
+
+   GLchar *InfoLog;
+
+   unsigned Version;       /**< GLSL version used for linking */
+
+   struct exec_list *ir;
+   struct glsl_symbol_table *symbols;
+
+   struct gl_shader_info info;
 };
 
 
@@ -2615,7 +2636,7 @@ struct gl_shader_variable
    /**
     * Interpolation mode for shader inputs / outputs
     *
-    * \sa ir_variable_interpolation
+    * \sa glsl_interp_mode
     */
    unsigned interpolation:2;
 
@@ -2711,27 +2732,9 @@ struct gl_shader_program
    enum gl_frag_depth_layout FragDepthLayout;
 
    /**
-    * Tessellation Control shader state from layout qualifiers.
-    */
-   struct {
-      /**
-       * 0 - vertices not declared in shader, or
-       * 1 .. GL_MAX_PATCH_VERTICES
-       */
-      GLint VerticesOut;
-   } TessCtrl;
-
-   /**
     * Tessellation Evaluation shader state from layout qualifiers.
     */
    struct {
-      /** GL_TRIANGLES, GL_QUADS or GL_ISOLINES */
-      GLenum PrimitiveMode;
-      /** GL_EQUAL, GL_FRACTIONAL_ODD or GL_FRACTIONAL_EVEN */
-      GLenum Spacing;
-      /** GL_CW or GL_CCW */
-      GLenum VertexOrder;
-      bool PointMode;
       /**
        * True if gl_ClipDistance is written to.  Copied into
        * gl_tess_eval_program by _mesa_copy_linked_program_data().
@@ -2748,14 +2751,7 @@ struct gl_shader_program
     */
    struct {
       GLint VerticesIn;
-      GLint VerticesOut;
-      /**
-       * 1 .. MAX_GEOMETRY_SHADER_INVOCATIONS
-       */
-      GLint Invocations;
-      GLenum InputType;  /**< GL_POINTS, GL_LINES, GL_LINES_ADJACENCY_ARB,
-                              GL_TRIANGLES, or GL_TRIANGLES_ADJACENCY_ARB */
-      GLenum OutputType; /**< GL_POINTS, GL_LINE_STRIP or GL_TRIANGLE_STRIP */
+
       /**
        * True if gl_ClipDistance is written to.  Copied into
        * gl_geometry_program by _mesa_copy_linked_program_data().
@@ -2858,7 +2854,7 @@ struct gl_shader_program
     * \c MESA_SHADER_* defines.  Entries for non-existent stages will be
     * \c NULL.
     */
-   struct gl_shader *_LinkedShaders[MESA_SHADER_STAGES];
+   struct gl_linked_shader *_LinkedShaders[MESA_SHADER_STAGES];
 
    /** List of all active resources after linking. */
    struct gl_program_resource *ProgramResourceList;
@@ -3449,6 +3445,7 @@ struct gl_constants
       GLfloat Min;
       GLfloat Max;
    } ViewportBounds;                         /**< GL_ARB_viewport_array */
+   GLuint MaxWindowRectangles;               /**< GL_EXT_window_rectangles */
 
    struct gl_program_constants Program[MESA_SHADER_STAGES];
    GLuint MaxProgramMatrices;
@@ -3535,6 +3532,11 @@ struct gl_constants
     * Allow GLSL #extension directives in the middle of shaders.
     */
    GLboolean AllowGLSLExtensionDirectiveMidShader;
+
+   /**
+    * Force uninitialized variables to default to zero.
+    */
+   GLboolean GLSLZeroInit;
 
    /**
     * Does the driver support real 32-bit integers?  (Otherwise, integers are
@@ -3762,7 +3764,12 @@ struct gl_constants
    GLuint MaxTessPatchComponents;
    GLuint MaxTessControlTotalOutputComponents;
    bool LowerTessLevel; /**< Lower gl_TessLevel* from float[n] to vecn? */
+   bool LowerTCSPatchVerticesIn; /**< Lower gl_PatchVerticesIn to a uniform */
+   bool LowerTESPatchVerticesIn; /**< Lower gl_PatchVerticesIn to a uniform */
    bool PrimitiveRestartForPatches;
+   bool LowerCsDerivedVariables;    /**< Lower gl_GlobalInvocationID and
+                                     *   gl_LocalInvocationIndex based on
+                                     *   other builtin variables. */
 };
 
 
@@ -3831,6 +3838,7 @@ struct gl_extensions
    GLboolean ARB_shader_bit_encoding;
    GLboolean ARB_shader_clock;
    GLboolean ARB_shader_draw_parameters;
+   GLboolean ARB_shader_group_vote;
    GLboolean ARB_shader_image_load_store;
    GLboolean ARB_shader_image_size;
    GLboolean ARB_shader_precision;
@@ -3912,6 +3920,7 @@ struct gl_extensions
    GLboolean EXT_transform_feedback;
    GLboolean EXT_timer_query;
    GLboolean EXT_vertex_array_bgra;
+   GLboolean EXT_window_rectangles;
    GLboolean OES_copy_image;
    GLboolean OES_sample_variables;
    GLboolean OES_shader_io_blocks;
@@ -3935,7 +3944,9 @@ struct gl_extensions
    GLboolean KHR_robustness;
    GLboolean KHR_texture_compression_astc_hdr;
    GLboolean KHR_texture_compression_astc_ldr;
+   GLboolean KHR_texture_compression_astc_sliced_3d;
    GLboolean MESA_pack_invert;
+   GLboolean MESA_shader_integer_functions;
    GLboolean MESA_ycbcr_texture;
    GLboolean NV_conditional_render;
    GLboolean NV_fog_distance;
@@ -3979,6 +3990,7 @@ struct gl_matrix_stack
 {
    GLmatrix *Top;      /**< points into Stack */
    GLmatrix *Stack;    /**< array [MaxDepth] of GLmatrix */
+   unsigned StackSize; /**< Number of elements in Stack */
    GLuint Depth;       /**< 0 <= Depth < MaxDepth */
    GLuint MaxDepth;    /**< size of Stack[] array */
    GLuint DirtyFlag;   /**< _NEW_MODELVIEW or _NEW_PROJECTION, for example */
@@ -4681,24 +4693,6 @@ enum _debug
    DEBUG_INCOMPLETE_TEXTURE     = (1 << 2),
    DEBUG_INCOMPLETE_FBO         = (1 << 3)
 };
-
-/**
- * Checks if the active fragment shader program can have side effects due
- * to use of things like atomic buffers or images
- */
-static inline bool
-_mesa_active_fragment_shader_has_side_effects(const struct gl_context *ctx)
-{
-   const struct gl_shader *sh;
-
-   if (!ctx->_Shader->_CurrentFragmentProgram)
-      return false;
-
-   sh = ctx->_Shader->_CurrentFragmentProgram->_LinkedShaders[MESA_SHADER_FRAGMENT];
-   return sh->NumAtomicBuffers > 0 ||
-          sh->NumImages > 0 ||
-          sh->NumShaderStorageBlocks > 0;
-}
 
 #ifdef __cplusplus
 }

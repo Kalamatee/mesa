@@ -107,34 +107,48 @@ isl_device_get_sample_counts(struct isl_device *dev)
 bool
 isl_tiling_get_info(const struct isl_device *dev,
                     enum isl_tiling tiling,
-                    uint32_t format_block_size,
+                    uint32_t format_bpb,
                     struct isl_tile_info *tile_info)
 {
-   const uint32_t bs = format_block_size;
-   uint32_t width, height;
+   const uint32_t bs = format_bpb / 8;
+   struct isl_extent2d logical_el, phys_B;
 
-   assert(bs > 0);
+   assert(tiling == ISL_TILING_LINEAR || isl_is_pow2(format_bpb));
 
    switch (tiling) {
    case ISL_TILING_LINEAR:
-      width = 1;
-      height = 1;
+      assert(bs > 0);
+      logical_el = isl_extent2d(1, 1);
+      phys_B = isl_extent2d(bs, 1);
       break;
 
    case ISL_TILING_X:
-      width = 1 << 9;
-      height = 1 << 3;
+      assert(bs > 0);
+      logical_el = isl_extent2d(512 / bs, 8);
+      phys_B = isl_extent2d(512, 8);
       break;
 
    case ISL_TILING_Y0:
-      width = 1 << 7;
-      height = 1 << 5;
+      assert(bs > 0);
+      logical_el = isl_extent2d(128 / bs, 32);
+      phys_B = isl_extent2d(128, 32);
       break;
 
    case ISL_TILING_W:
-      /* XXX: Should W tile be same as Y? */
-      width = 1 << 6;
-      height = 1 << 6;
+      assert(bs == 1);
+      logical_el = isl_extent2d(64, 64);
+      /* From the Broadwell PRM Vol 2d, RENDER_SURFACE_STATE::SurfacePitch:
+       *
+       *    "If the surface is a stencil buffer (and thus has Tile Mode set
+       *    to TILEMODE_WMAJOR), the pitch must be set to 2x the value
+       *    computed based on width, as the stencil buffer is stored with two
+       *    rows interleaved."
+       *
+       * This, together with the fact that stencil buffers are referred to as
+       * being Y-tiled in the PRMs for older hardware implies that the
+       * physical size of a W-tile is actually the same as for a Y-tile.
+       */
+      phys_B = isl_extent2d(128, 32);
       break;
 
    case ISL_TILING_Yf:
@@ -147,10 +161,47 @@ isl_tiling_get_info(const struct isl_device *dev,
 
       bool is_Ys = tiling == ISL_TILING_Ys;
 
-      width = 1 << (6 + (ffs(bs) / 2) + (2 * is_Ys));
-      height = 1 << (6 - (ffs(bs) / 2) + (2 * is_Ys));
+      assert(bs > 0);
+      unsigned width = 1 << (6 + (ffs(bs) / 2) + (2 * is_Ys));
+      unsigned height = 1 << (6 - (ffs(bs) / 2) + (2 * is_Ys));
+
+      logical_el = isl_extent2d(width / bs, height);
+      phys_B = isl_extent2d(width, height);
       break;
    }
+
+   case ISL_TILING_HIZ:
+      /* HiZ buffers are required to have ISL_FORMAT_HIZ which is an 8x4
+       * 128bpb format.  The tiling has the same physical dimensions as
+       * Y-tiling but actually has two HiZ columns per Y-tiled column.
+       */
+      assert(bs == 16);
+      logical_el = isl_extent2d(16, 16);
+      phys_B = isl_extent2d(128, 32);
+      break;
+
+   case ISL_TILING_CCS:
+      /* CCS surfaces are required to have one of the GENX_CCS_* formats which
+       * have a block size of 1 or 2 bits per block and each CCS element
+       * corresponds to one cache-line pair in the main surface.  From the Sky
+       * Lake PRM Vol. 12 in the section on planes:
+       *
+       *    "The Color Control Surface (CCS) contains the compression status
+       *    of the cache-line pairs. The compression state of the cache-line
+       *    pair is specified by 2 bits in the CCS.  Each CCS cache-line
+       *    represents an area on the main surface of 16x16 sets of 128 byte
+       *    Y-tiled cache-line-pairs. CCS is always Y tiled."
+       *
+       * The CCS being Y-tiled implies that it's an 8x8 grid of cache-lines.
+       * Since each cache line corresponds to a 16x16 set of cache-line pairs,
+       * that yields total tile area of 128x128 cache-line pairs or CCS
+       * elements.  On older hardware, each CCS element is 1 bit and the tile
+       * is 128x256 elements.
+       */
+      assert(format_bpb == 1 || format_bpb == 2);
+      logical_el = isl_extent2d(128, 256 / format_bpb);
+      phys_B = isl_extent2d(128, 32);
+      break;
 
    default:
       unreachable("not reached");
@@ -158,23 +209,11 @@ isl_tiling_get_info(const struct isl_device *dev,
 
    *tile_info = (struct isl_tile_info) {
       .tiling = tiling,
-      .width = width,
-      .height = height,
-      .size = width * height,
+      .logical_extent_el = logical_el,
+      .phys_extent_B = phys_B,
    };
 
    return true;
-}
-
-void
-isl_tiling_get_extent(const struct isl_device *dev,
-                      enum isl_tiling tiling,
-                      uint32_t format_block_size,
-                      struct isl_extent2d *e)
-{
-   struct isl_tile_info tile_info;
-   isl_tiling_get_info(dev, tiling, format_block_size, &tile_info);
-   *e = isl_extent2d(tile_info.width, tile_info.height);
 }
 
 /**
@@ -187,14 +226,11 @@ isl_surf_choose_tiling(const struct isl_device *dev,
 {
    isl_tiling_flags_t tiling_flags = info->tiling_flags;
 
-   /* Filter if multiple tiling options are given */
-   if (!isl_is_pow2(tiling_flags)) {
-      if (ISL_DEV_GEN(dev) >= 7) {
-         gen7_filter_tiling(dev, info, &tiling_flags);
-      } else {
-         isl_finishme("%s: gen%u", __func__, ISL_DEV_GEN(dev));
-         gen7_filter_tiling(dev, info, &tiling_flags);
-      }
+   if (ISL_DEV_GEN(dev) >= 7) {
+      gen7_filter_tiling(dev, info, &tiling_flags);
+   } else {
+      isl_finishme("%s: gen%u", __func__, ISL_DEV_GEN(dev));
+      gen7_filter_tiling(dev, info, &tiling_flags);
    }
 
    #define CHOOSE(__tiling) \
@@ -218,6 +254,8 @@ isl_surf_choose_tiling(const struct isl_device *dev,
       CHOOSE(ISL_TILING_LINEAR);
    }
 
+   CHOOSE(ISL_TILING_CCS);
+   CHOOSE(ISL_TILING_HIZ);
    CHOOSE(ISL_TILING_Ys);
    CHOOSE(ISL_TILING_Yf);
    CHOOSE(ISL_TILING_Y0);
@@ -311,7 +349,8 @@ isl_choose_array_pitch_span(const struct isl_device *dev,
             return ISL_ARRAY_PITCH_SPAN_COMPACT;
          }
 
-         if (isl_surf_usage_is_depth_or_stencil(info->usage)) {
+         if (isl_surf_usage_is_depth_or_stencil(info->usage) ||
+             (info->usage & ISL_SURF_USAGE_HIZ_BIT)) {
             /* From the Ivybridge PRM >> Volume 1 Part 1: Graphics Core >>
              * Section 6.18.4.7: Surface Arrays (p112):
              *
@@ -319,7 +358,7 @@ isl_choose_array_pitch_span(const struct isl_device *dev,
              *    the depth buffer and stencil buffer have an implied value of
              *    ARYSPC_FULL):
              */
-            return ISL_ARRAY_PITCH_SPAN_COMPACT;
+            return ISL_ARRAY_PITCH_SPAN_FULL;
          }
 
          if (info->levels == 1) {
@@ -385,6 +424,15 @@ isl_choose_image_alignment_el(const struct isl_device *dev,
                               enum isl_msaa_layout msaa_layout,
                               struct isl_extent3d *image_align_el)
 {
+   if (info->format == ISL_FORMAT_HIZ) {
+      assert(ISL_DEV_GEN(dev) >= 6);
+      /* HiZ surfaces are always aligned to 16x8 pixels in the primary surface
+       * which works out to 2x2 HiZ elments.
+       */
+      *image_align_el = isl_extent3d(2, 2, 1);
+      return;
+   }
+
    if (ISL_DEV_GEN(dev) >= 9) {
       gen9_choose_image_alignment_el(dev, info, tiling, msaa_layout,
                                      image_align_el);
@@ -830,6 +878,29 @@ isl_calc_array_pitch_el_rows(const struct isl_device *dev,
    assert(pitch_sa_rows % fmtl->bh == 0);
    uint32_t pitch_el_rows = pitch_sa_rows / fmtl->bh;
 
+   if (ISL_DEV_GEN(dev) >= 9 && fmtl->txc == ISL_TXC_CCS) {
+      /*
+       * From the Sky Lake PRM Vol 7, "MCS Buffer for Render Target(s)" (p. 632):
+       *
+       *    "Mip-mapped and arrayed surfaces are supported with MCS buffer
+       *    layout with these alignments in the RT space: Horizontal
+       *    Alignment = 128 and Vertical Alignment = 64."
+       *
+       * From the Sky Lake PRM Vol. 2d, "RENDER_SURFACE_STATE" (p. 435):
+       *
+       *    "For non-multisampled render target's CCS auxiliary surface,
+       *    QPitch must be computed with Horizontal Alignment = 128 and
+       *    Surface Vertical Alignment = 256. These alignments are only for
+       *    CCS buffer and not for associated render target."
+       *
+       * The first restriction is already handled by isl_choose_image_alignment_el
+       * but the second restriction, which is an extension of the first, only
+       * applies to qpitch and must be applied here.
+       */
+      assert(fmtl->bh == 4);
+      pitch_el_rows = isl_align(pitch_el_rows, 256 / 4);
+   }
+
    if (ISL_DEV_GEN(dev) >= 9 &&
        info->dim == ISL_SURF_DIM_3D &&
        tile_info->tiling != ISL_TILING_LINEAR) {
@@ -838,7 +909,7 @@ isl_calc_array_pitch_el_rows(const struct isl_device *dev,
        *    Tile Mode != Linear: This field must be set to an integer multiple
        *    of the tile height
        */
-      pitch_el_rows = isl_align(pitch_el_rows, tile_info->height);
+      pitch_el_rows = isl_align(pitch_el_rows, tile_info->logical_extent_el.height);
    }
 
    return pitch_el_rows;
@@ -848,11 +919,9 @@ isl_calc_array_pitch_el_rows(const struct isl_device *dev,
  * Calculate the pitch of each surface row, in bytes.
  */
 static uint32_t
-isl_calc_row_pitch(const struct isl_device *dev,
-                   const struct isl_surf_init_info *restrict info,
-                   const struct isl_tile_info *tile_info,
-                   const struct isl_extent3d *image_align_sa,
-                   const struct isl_extent2d *phys_slice0_sa)
+isl_calc_linear_row_pitch(const struct isl_device *dev,
+                          const struct isl_surf_init_info *restrict info,
+                          const struct isl_extent2d *phys_slice0_sa)
 {
    const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
 
@@ -903,62 +972,50 @@ isl_calc_row_pitch(const struct isl_device *dev,
     *    being used to determine whether additional pages need to be defined.
     */
    assert(phys_slice0_sa->w % fmtl->bw == 0);
-   row_pitch = MAX(row_pitch, fmtl->bs * (phys_slice0_sa->w / fmtl->bw));
+   const uint32_t bs = fmtl->bpb / 8;
+   row_pitch = MAX(row_pitch, bs * (phys_slice0_sa->w / fmtl->bw));
 
-   switch (tile_info->tiling) {
-   case ISL_TILING_LINEAR:
-      /* From the Broadwel PRM >> Volume 2d: Command Reference: Structures >>
-       * RENDER_SURFACE_STATE Surface Pitch (p349):
-       *
-       *    - For linear render target surfaces and surfaces accessed with the
-       *      typed data port messages, the pitch must be a multiple of the
-       *      element size for non-YUV surface formats.  Pitch must be
-       *      a multiple of 2 * element size for YUV surface formats.
-       *
-       *    - [Requirements for SURFTYPE_BUFFER and SURFTYPE_STRBUF, which we
-       *      ignore because isl doesn't do buffers.]
-       *
-       *    - For other linear surfaces, the pitch can be any multiple of
-       *      bytes.
-       */
-      if (info->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) {
-         if (isl_format_is_yuv(info->format)) {
-            row_pitch = isl_align_npot(row_pitch, 2 * fmtl->bs);
-         } else  {
-            row_pitch = isl_align_npot(row_pitch, fmtl->bs);
-         }
+   /* From the Broadwel PRM >> Volume 2d: Command Reference: Structures >>
+    * RENDER_SURFACE_STATE Surface Pitch (p349):
+    *
+    *    - For linear render target surfaces and surfaces accessed with the
+    *      typed data port messages, the pitch must be a multiple of the
+    *      element size for non-YUV surface formats.  Pitch must be
+    *      a multiple of 2 * element size for YUV surface formats.
+    *
+    *    - [Requirements for SURFTYPE_BUFFER and SURFTYPE_STRBUF, which we
+    *      ignore because isl doesn't do buffers.]
+    *
+    *    - For other linear surfaces, the pitch can be any multiple of
+    *      bytes.
+    */
+   if (info->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) {
+      if (isl_format_is_yuv(info->format)) {
+         row_pitch = isl_align_npot(row_pitch, 2 * bs);
+      } else  {
+         row_pitch = isl_align_npot(row_pitch, bs);
       }
-      break;
-   default:
-      /* From the Broadwel PRM >> Volume 2d: Command Reference: Structures >>
-       * RENDER_SURFACE_STATE Surface Pitch (p349):
-       *
-       *    - For tiled surfaces, the pitch must be a multiple of the tile
-       *      width.
-       */
-      row_pitch = isl_align(row_pitch, tile_info->width);
-      break;
    }
 
    return row_pitch;
 }
 
 /**
- * Calculate the surface's total height, including padding, in units of
- * surface elements.
+ * Calculate and apply any padding required for the surface.
+ *
+ * @param[inout] total_h_el is updated with the new height
+ * @param[out] pad_bytes is overwritten with additional padding requirements.
  */
-static uint32_t
-isl_calc_total_height_el(const struct isl_device *dev,
-                         const struct isl_surf_init_info *restrict info,
-                         const struct isl_tile_info *tile_info,
-                         uint32_t phys_array_len,
-                         uint32_t row_pitch,
-                         uint32_t array_pitch_el_rows)
+static void
+isl_apply_surface_padding(const struct isl_device *dev,
+                          const struct isl_surf_init_info *restrict info,
+                          const struct isl_tile_info *tile_info,
+                          uint32_t *total_h_el,
+                          uint32_t *pad_bytes)
 {
    const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
 
-   uint32_t total_h_el = phys_array_len * array_pitch_el_rows;
-   uint32_t pad_bytes = 0;
+   *pad_bytes = 0;
 
    /* From the Broadwell PRM >> Volume 5: Memory Views >> Common Surface
     * Formats >> Surface Padding Requirements >> Render Target and Media
@@ -992,14 +1049,14 @@ isl_calc_total_height_el(const struct isl_device *dev,
     *      is to an even compressed row.
     */
    if (isl_format_is_compressed(info->format))
-      total_h_el = isl_align(total_h_el, 2);
+      *total_h_el = isl_align(*total_h_el, 2);
 
    /*
     *    - For cube surfaces, an additional two rows of padding are required
     *      at the bottom of the surface.
     */
    if (info->usage & ISL_SURF_USAGE_CUBE_BIT)
-      total_h_el += 2;
+      *total_h_el += 2;
 
    /*
     *    - For packed YUV, 96 bpt, 48 bpt, and 24 bpt surface formats,
@@ -1008,9 +1065,9 @@ isl_calc_total_height_el(const struct isl_device *dev,
     *      padding requirements.
     */
    if (isl_format_is_yuv(info->format) &&
-       (fmtl->bs == 96 || fmtl->bs == 48|| fmtl->bs == 24)) {
-      total_h_el += 1;
-      pad_bytes += 16;
+       (fmtl->bpb == 96 || fmtl->bpb == 48|| fmtl->bpb == 24)) {
+      *total_h_el += 1;
+      *pad_bytes += 16;
    }
 
    /*
@@ -1019,7 +1076,7 @@ isl_calc_total_height_el(const struct isl_device *dev,
     *      required above.
     */
    if (tile_info->tiling == ISL_TILING_LINEAR)
-      pad_bytes += 64;
+      *pad_bytes += 64;
 
    /* The below text weakens, not strengthens, the padding requirements for
     * linear surfaces. Therefore we can safely ignore it.
@@ -1039,7 +1096,7 @@ isl_calc_total_height_el(const struct isl_device *dev,
    if (ISL_DEV_GEN(dev) >= 9 &&
        tile_info->tiling == ISL_TILING_LINEAR &&
        (info->dim == ISL_SURF_DIM_2D || info->dim == ISL_SURF_DIM_3D)) {
-      total_h_el = isl_align(total_h_el, 4);
+      *total_h_el = isl_align(*total_h_el, 4);
    }
 
    /*
@@ -1049,13 +1106,8 @@ isl_calc_total_height_el(const struct isl_device *dev,
    if (ISL_DEV_GEN(dev) >= 9 &&
        tile_info->tiling == ISL_TILING_LINEAR &&
        info->dim == ISL_SURF_DIM_1D) {
-      total_h_el += 4;
+      *total_h_el += 4;
    }
-
-   /* Be sloppy. Align any leftover padding to a row boundary. */
-   total_h_el += isl_align_div_npot(pad_bytes, row_pitch);
-
-   return total_h_el;
 }
 
 bool
@@ -1080,7 +1132,7 @@ isl_surf_init_s(const struct isl_device *dev,
       return false;
 
    struct isl_tile_info tile_info;
-   if (!isl_tiling_get_info(dev, tiling, fmtl->bs, &tile_info))
+   if (!isl_tiling_get_info(dev, tiling, fmtl->bpb, &tile_info))
       return false;
 
    enum isl_msaa_layout msaa_layout;
@@ -1110,27 +1162,60 @@ isl_surf_init_s(const struct isl_device *dev,
    assert(phys_slice0_sa.w % fmtl->bw == 0);
    assert(phys_slice0_sa.h % fmtl->bh == 0);
 
-   const uint32_t row_pitch = isl_calc_row_pitch(dev, info, &tile_info,
-                                                 &image_align_sa,
-                                                 &phys_slice0_sa);
-
    const uint32_t array_pitch_el_rows =
       isl_calc_array_pitch_el_rows(dev, info, &tile_info, dim_layout,
                                    array_pitch_span, &image_align_sa,
                                    &phys_level0_sa, &phys_slice0_sa);
 
-   const uint32_t total_h_el =
-      isl_calc_total_height_el(dev, info, &tile_info,
-                               phys_level0_sa.array_len, row_pitch,
-                               array_pitch_el_rows);
+   uint32_t total_h_el = phys_level0_sa.array_len * array_pitch_el_rows;
 
-   const uint32_t total_h_sa = total_h_el * fmtl->bh;
-   const uint32_t size = row_pitch * isl_align(total_h_sa, tile_info.height);
+   uint32_t pad_bytes;
+   isl_apply_surface_padding(dev, info, &tile_info, &total_h_el, &pad_bytes);
 
-   /* Alignment of surface base address, in bytes */
-   uint32_t base_alignment = MAX(1, info->min_alignment);
-   assert(isl_is_pow2(base_alignment) && isl_is_pow2(tile_info.size));
-   base_alignment = MAX(base_alignment, tile_info.size);
+   uint32_t row_pitch, size, base_alignment;
+   if (tiling == ISL_TILING_LINEAR) {
+      row_pitch = isl_calc_linear_row_pitch(dev, info, &phys_slice0_sa);
+      size = row_pitch * total_h_el + pad_bytes;
+
+      /* From the Broadwell PRM Vol 2d, RENDER_SURFACE_STATE::SurfaceBaseAddress:
+       *
+       *    "The Base Address for linear render target surfaces and surfaces
+       *    accessed with the typed surface read/write data port messages must
+       *    be element-size aligned, for non-YUV surface formats, or a
+       *    multiple of 2 element-sizes for YUV surface formats. Other linear
+       *    surfaces have no alignment requirements (byte alignment is
+       *    sufficient.)"
+       */
+      base_alignment = MAX(1, info->min_alignment);
+      if (info->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) {
+         if (isl_format_is_yuv(info->format)) {
+            base_alignment = MAX(base_alignment, fmtl->bpb / 4);
+         } else {
+            base_alignment = MAX(base_alignment, fmtl->bpb / 8);
+         }
+      }
+   } else {
+      assert(phys_slice0_sa.w % fmtl->bw == 0);
+      const uint32_t total_w_el = phys_slice0_sa.width / fmtl->bw;
+      const uint32_t total_w_tl =
+         isl_align_div(total_w_el, tile_info.logical_extent_el.width);
+
+      row_pitch = total_w_tl * tile_info.phys_extent_B.width;
+      if (row_pitch < info->min_pitch) {
+         row_pitch = isl_align(info->min_pitch, tile_info.phys_extent_B.width);
+      }
+
+      total_h_el += isl_align_div_npot(pad_bytes, row_pitch);
+      const uint32_t total_h_tl =
+         isl_align_div(total_h_el, tile_info.logical_extent_el.height);
+
+      size = total_h_tl * tile_info.phys_extent_B.height * row_pitch;
+
+      const uint32_t tile_size = tile_info.phys_extent_B.width *
+                                 tile_info.phys_extent_B.height;
+      assert(isl_is_pow2(info->min_alignment) && isl_is_pow2(tile_size));
+      base_alignment = MAX(info->min_alignment, tile_size);
+   }
 
    *surf = (struct isl_surf) {
       .dim = info->dim,
@@ -1164,7 +1249,7 @@ isl_surf_get_tile_info(const struct isl_device *dev,
                        struct isl_tile_info *tile_info)
 {
    const struct isl_format_layout *fmtl = isl_format_get_layout(surf->format);
-   isl_tiling_get_info(dev, surf->tiling, fmtl->bs, tile_info);
+   isl_tiling_get_info(dev, surf->tiling, fmtl->bpb, tile_info);
 }
 
 void
@@ -1191,6 +1276,20 @@ isl_surf_fill_state_s(const struct isl_device *dev, void *state,
    }
 
    switch (ISL_DEV_GEN(dev)) {
+   case 4:
+      if (ISL_DEV_IS_G4X(dev)) {
+         /* G45 surface state is the same as gen5 */
+         isl_gen5_surf_fill_state_s(dev, state, info);
+      } else {
+         isl_gen4_surf_fill_state_s(dev, state, info);
+      }
+      break;
+   case 5:
+      isl_gen5_surf_fill_state_s(dev, state, info);
+      break;
+   case 6:
+      isl_gen6_surf_fill_state_s(dev, state, info);
+      break;
    case 7:
       if (ISL_DEV_IS_HASWELL(dev)) {
          isl_gen75_surf_fill_state_s(dev, state, info);
@@ -1214,6 +1313,14 @@ isl_buffer_fill_state_s(const struct isl_device *dev, void *state,
                         const struct isl_buffer_fill_state_info *restrict info)
 {
    switch (ISL_DEV_GEN(dev)) {
+   case 4:
+   case 5:
+      /* Gen 4-5 are all the same when it comes to buffer surfaces */
+      isl_gen5_buffer_fill_state_s(state, info);
+      break;
+   case 6:
+      isl_gen6_buffer_fill_state_s(state, info);
+      break;
    case 7:
       if (ISL_DEV_IS_HASWELL(dev)) {
          isl_gen75_buffer_fill_state_s(state, info);
@@ -1433,9 +1540,6 @@ isl_tiling_get_intratile_offset_el(const struct isl_device *dev,
                                    uint32_t *x_offset_el,
                                    uint32_t *y_offset_el)
 {
-   struct isl_tile_info tile_info;
-   isl_tiling_get_info(dev, tiling, bs, &tile_info);
-
    /* This function only really works for power-of-two surfaces.  In
     * theory, we could make it work for non-power-of-two surfaces by going
     * to the left until we find a block that is bs-aligned.  The Vulkan
@@ -1444,18 +1548,29 @@ isl_tiling_get_intratile_offset_el(const struct isl_device *dev,
     */
    assert(tiling == ISL_TILING_LINEAR || isl_is_pow2(bs));
 
-   uint32_t small_y_offset_el = total_y_offset_el % tile_info.height;
-   uint32_t big_y_offset_el = total_y_offset_el - small_y_offset_el;
-   uint32_t big_y_offset_B = big_y_offset_el * row_pitch;
+   if (tiling == ISL_TILING_LINEAR) {
+      *base_address_offset = total_y_offset_el * row_pitch +
+                             total_x_offset_el * bs;
+      *x_offset_el = 0;
+      *y_offset_el = 0;
+      return;
+   }
 
-   uint32_t total_x_offset_B = total_x_offset_el * bs;
-   uint32_t small_x_offset_B = total_x_offset_B % tile_info.width;
-   uint32_t small_x_offset_el = small_x_offset_B / bs;
-   uint32_t big_x_offset_B = (total_x_offset_B / tile_info.width) * tile_info.size;
+   struct isl_tile_info tile_info;
+   isl_tiling_get_info(dev, tiling, bs * 8, &tile_info);
 
-   *base_address_offset = big_y_offset_B + big_x_offset_B;
-   *x_offset_el = small_x_offset_el;
-   *y_offset_el = small_y_offset_el;
+   /* Compute the offset into the tile */
+   *x_offset_el = total_x_offset_el % tile_info.logical_extent_el.w;
+   *y_offset_el = total_y_offset_el % tile_info.logical_extent_el.h;
+
+   /* Compute the offset of the tile in units of whole tiles */
+   uint32_t x_offset_tl = total_x_offset_el / tile_info.logical_extent_el.w;
+   uint32_t y_offset_tl = total_y_offset_el / tile_info.logical_extent_el.h;
+
+   assert(row_pitch % tile_info.phys_extent_B.width == 0);
+   *base_address_offset =
+      y_offset_tl * tile_info.phys_extent_B.h * row_pitch +
+      x_offset_tl * tile_info.phys_extent_B.h * tile_info.phys_extent_B.w;
 }
 
 uint32_t

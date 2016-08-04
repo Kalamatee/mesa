@@ -489,6 +489,9 @@ static boolean virgl_drm_winsys_resource_get_handle(struct virgl_winsys *qws,
    } else if (whandle->type == DRM_API_HANDLE_TYPE_FD) {
       if (drmPrimeHandleToFD(qdws->fd, res->bo_handle, DRM_CLOEXEC, (int*)&whandle->handle))
             return FALSE;
+      pipe_mutex_lock(qdws->bo_handles_mutex);
+      util_hash_table_set(qdws->bo_handles, (void *)(uintptr_t)res->bo_handle, res);
+      pipe_mutex_unlock(qdws->bo_handles_mutex);
    }
    whandle->stride = stride;
    return TRUE;
@@ -734,7 +737,7 @@ static bool virgl_fence_wait(struct virgl_winsys *vws,
    struct virgl_hw_res *res = virgl_hw_res(fence);
 
    if (timeout == 0)
-      return virgl_drm_resource_is_busy(vdws, res);
+      return !virgl_drm_resource_is_busy(vdws, res);
 
    if (timeout != PIPE_TIMEOUT_INFINITE) {
       int64_t start_time = os_time_get();

@@ -67,16 +67,17 @@ brw_blorp_params_get_clear_kernel(struct brw_context *brw,
    nir_builder_init_simple_shader(&b, NULL, MESA_SHADER_FRAGMENT, NULL);
    b.shader->info.name = ralloc_strdup(b.shader, "BLORP-clear");
 
-   nir_variable *u_color = nir_variable_create(b.shader, nir_var_uniform,
-                                               glsl_vec4_type(), "u_color");
-   u_color->data.location = 0;
+   nir_variable *v_color = nir_variable_create(b.shader, nir_var_shader_in,
+                                               glsl_vec4_type(), "v_color");
+   v_color->data.location = VARYING_SLOT_VAR0;
+   v_color->data.interpolation = INTERP_MODE_FLAT;
 
    nir_variable *frag_color = nir_variable_create(b.shader, nir_var_shader_out,
                                                   glsl_vec4_type(),
                                                   "gl_FragColor");
    frag_color->data.location = FRAG_RESULT_COLOR;
 
-   nir_copy_var(&b, frag_color, u_color);
+   nir_copy_var(&b, frag_color, v_color);
 
    struct brw_wm_prog_key wm_key;
    brw_blorp_init_wm_prog_key(&wm_key);
@@ -150,8 +151,7 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
       params.y1 = rb->Height - fb->_Ymin;
    }
 
-   memcpy(&params.wm_push_consts.dst_x0,
-          ctx->Color.ClearColor.f, sizeof(float) * 4);
+   memcpy(&params.wm_inputs, ctx->Color.ClearColor.f, sizeof(float) * 4);
 
    bool use_simd16_replicated_data = true;
 
@@ -175,7 +175,7 @@ do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
        !partial_clear && use_simd16_replicated_data &&
        brw_is_color_fast_clear_compatible(brw, irb->mt,
                                           &ctx->Color.ClearColor)) {
-      memset(&params.wm_push_consts, 0xff, 4*sizeof(float));
+      memset(&params.wm_inputs, 0xff, 4*sizeof(float));
       params.fast_clear_op = GEN7_PS_RENDER_TARGET_FAST_CLEAR_ENABLE;
 
       brw_get_fast_clear_rect(brw, fb, irb->mt, &params.x0, &params.y0,

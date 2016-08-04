@@ -3,13 +3,13 @@
 #   Build Mesa3DGL private libmesautil.a
 #
 
-include $(TOP)/config/make.cfg
+include $(SRCDIR)/config/aros.cfg
 
 CUR_MESADIR := src/util
 include $(SRCDIR)/$(CURDIR)/../mesa.cfg
 include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
 
-#MM- mesa3dgl-linklibs : mesa3dgl-linklibs-mesautil
+#MM- mesa3dgl-linklibs : mesa3d-linklib-mesautil
 
 USER_INCLUDES := \
             $(USER_INCLUDES) \
@@ -37,10 +37,10 @@ MESA3DGL_MESAUTIL_C_SOURCES := \
 MESA3DGL_MESAUTIL_SOURCES_C := $(MESA3DGL_MESAUTIL_C_SOURCES:.c=)
 
 #MM
-mesa3dgl-linklibs-mesautil-generated : $(MESA3DGL_MESAUTIL_GENERATED_C_SOURCES)
+mesa3d-linklib-mesautil-generated : $(MESA3DGL_MESAUTIL_GENERATED_C_SOURCES)
 
-#MM mesa3dgl-linklibs-mesautil : mesa3dgl-linklibs-mesautil-generated
+#MM mesa3d-linklib-mesautil : mesa3d-linklib-mesautil-generated
 
-%build_linklib mmake=mesa3dgl-linklibs-mesautil libname=mesautil libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_MESAUTIL_SOURCES_C)"
+%build_linklib mmake=mesa3d-linklib-mesautil libname=mesautil libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_MESAUTIL_SOURCES_C)"
 
 %common

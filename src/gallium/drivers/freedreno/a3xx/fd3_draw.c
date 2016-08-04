@@ -84,8 +84,7 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			(info->mode == PIPE_PRIM_POINTS))
 		primtype = DI_PT_POINTLIST_PSIZE;
 
-	fd_draw_emit(ctx, ring,
-			primtype,
+	fd_draw_emit(ctx->batch, ring, primtype,
 			emit->key.binning_pass ? IGNORE_VISIBILITY : USE_VISIBILITY,
 			info);
 }
@@ -169,14 +168,14 @@ fd3_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info)
 
 	emit.key.binning_pass = false;
 	emit.dirty = dirty;
-	draw_impl(ctx, ctx->ring, &emit);
+	draw_impl(ctx, ctx->batch->draw, &emit);
 
 	/* and now binning pass: */
 	emit.key.binning_pass = true;
 	emit.dirty = dirty & ~(FD_DIRTY_BLEND);
 	emit.vp = NULL;   /* we changed key so need to refetch vp */
 	emit.fp = NULL;
-	draw_impl(ctx, ctx->binning_ring, &emit);
+	draw_impl(ctx, ctx->batch->binning, &emit);
 
 	return true;
 }
@@ -209,7 +208,7 @@ static void
 fd3_clear_binning(struct fd_context *ctx, unsigned dirty)
 {
 	struct fd3_context *fd3_ctx = fd3_context(ctx);
-	struct fd_ringbuffer *ring = ctx->binning_ring;
+	struct fd_ringbuffer *ring = ctx->batch->binning;
 	struct fd3_emit emit = {
 		.debug = &ctx->debug,
 		.vtx  = &fd3_ctx->solid_vbuf_state,
@@ -223,7 +222,7 @@ fd3_clear_binning(struct fd_context *ctx, unsigned dirty)
 
 	fd3_emit_state(ctx, ring, &emit);
 	fd3_emit_vertex_bufs(ring, &emit);
-	reset_viewport(ring, &ctx->framebuffer);
+	reset_viewport(ring, &ctx->batch->framebuffer);
 
 	OUT_PKT0(ring, REG_A3XX_PC_PRIM_VTX_CNTL, 1);
 	OUT_RING(ring, A3XX_PC_PRIM_VTX_CNTL_STRIDE_IN_VPC(0) |
@@ -238,9 +237,9 @@ fd3_clear_binning(struct fd_context *ctx, unsigned dirty)
 	OUT_PKT0(ring, REG_A3XX_PC_RESTART_INDEX, 1);
 	OUT_RING(ring, 0xffffffff);   /* PC_RESTART_INDEX */
 
-	fd_event_write(ctx, ring, PERFCOUNTER_STOP);
+	fd_event_write(ctx->batch, ring, PERFCOUNTER_STOP);
 
-	fd_draw(ctx, ring, DI_PT_RECTLIST, IGNORE_VISIBILITY,
+	fd_draw(ctx->batch, ring, DI_PT_RECTLIST, IGNORE_VISIBILITY,
 			DI_SRC_SEL_AUTO_INDEX, 2, 0, INDEX_SIZE_IGN, 0, 0, NULL);
 }
 
@@ -249,8 +248,8 @@ fd3_clear(struct fd_context *ctx, unsigned buffers,
 		const union pipe_color_union *color, double depth, unsigned stencil)
 {
 	struct fd3_context *fd3_ctx = fd3_context(ctx);
-	struct pipe_framebuffer_state *pfb = &ctx->framebuffer;
-	struct fd_ringbuffer *ring = ctx->ring;
+	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
+	struct fd_ringbuffer *ring = ctx->batch->draw;
 	unsigned dirty = ctx->dirty;
 	unsigned i;
 	struct fd3_emit emit = {
@@ -270,7 +269,7 @@ fd3_clear(struct fd_context *ctx, unsigned buffers,
 
 	/* emit generic state now: */
 	fd3_emit_state(ctx, ring, &emit);
-	reset_viewport(ring, &ctx->framebuffer);
+	reset_viewport(ring, &ctx->batch->framebuffer);
 
 	OUT_PKT0(ring, REG_A3XX_RB_BLEND_ALPHA, 1);
 	OUT_RING(ring, A3XX_RB_BLEND_ALPHA_UINT(0xff) |
@@ -278,7 +277,7 @@ fd3_clear(struct fd_context *ctx, unsigned buffers,
 
 	OUT_PKT0(ring, REG_A3XX_RB_RENDER_CONTROL, 1);
 	OUT_RINGP(ring, A3XX_RB_RENDER_CONTROL_ALPHA_TEST_FUNC(FUNC_NEVER),
-			&fd3_ctx->rbrc_patches);
+			&ctx->batch->rbrc_patches);
 
 	if (buffers & PIPE_CLEAR_DEPTH) {
 		OUT_PKT0(ring, REG_A3XX_RB_DEPTH_CONTROL, 1);
@@ -286,7 +285,7 @@ fd3_clear(struct fd_context *ctx, unsigned buffers,
 				A3XX_RB_DEPTH_CONTROL_Z_ENABLE |
 				A3XX_RB_DEPTH_CONTROL_ZFUNC(FUNC_ALWAYS));
 
-		fd_wfi(ctx, ring);
+		fd_wfi(ctx->batch, ring);
 		OUT_PKT0(ring, REG_A3XX_GRAS_CL_VPORT_ZOFFSET, 2);
 		OUT_RING(ring, A3XX_GRAS_CL_VPORT_ZOFFSET(0.0));
 		OUT_RING(ring, A3XX_GRAS_CL_VPORT_ZSCALE(depth));
@@ -372,9 +371,9 @@ fd3_clear(struct fd_context *ctx, unsigned buffers,
 	OUT_PKT0(ring, REG_A3XX_PC_RESTART_INDEX, 1);
 	OUT_RING(ring, 0xffffffff);   /* PC_RESTART_INDEX */
 
-	fd_event_write(ctx, ring, PERFCOUNTER_STOP);
+	fd_event_write(ctx->batch, ring, PERFCOUNTER_STOP);
 
-	fd_draw(ctx, ring, DI_PT_RECTLIST, USE_VISIBILITY,
+	fd_draw(ctx->batch, ring, DI_PT_RECTLIST, USE_VISIBILITY,
 			DI_SRC_SEL_AUTO_INDEX, 2, 0, INDEX_SIZE_IGN, 0, 0, NULL);
 }
 

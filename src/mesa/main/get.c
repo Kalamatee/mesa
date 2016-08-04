@@ -464,6 +464,7 @@ EXTRA_EXT(ARB_indirect_parameters);
 EXTRA_EXT(ATI_meminfo);
 EXTRA_EXT(NVX_gpu_memory_info);
 EXTRA_EXT(ARB_cull_distance);
+EXTRA_EXT(EXT_window_rectangles);
 
 static const int
 extra_ARB_color_buffer_float_or_glcore[] = {
@@ -552,71 +553,6 @@ static const int extra_core_ARB_color_buffer_float_and_new_buffers[] = {
  * for 80% of the enums, 1 collision for 10% and never more than 5
  * collisions for any enum (typical numbers).  And the code is very
  * simple, even though it feels a little magic. */
-
-#ifdef GET_DEBUG
-static void
-print_table_stats(int api)
-{
-   int i, j, collisions[11], count, hash, mask;
-   const struct value_desc *d;
-   const char *api_names[] = {
-      [API_OPENGL_COMPAT] = "GL",
-      [API_OPENGL_CORE] = "GL_CORE",
-      [API_OPENGLES] = "GLES",
-      [API_OPENGLES2] = "GLES2",
-   };
-   const char *api_name;
-
-   api_name = api < ARRAY_SIZE(api_names) ? api_names[api] : "N/A";
-   count = 0;
-   mask = ARRAY_SIZE(table(api)) - 1;
-   memset(collisions, 0, sizeof collisions);
-
-   for (i = 0; i < ARRAY_SIZE(table(api)); i++) {
-      if (!table(api)[i])
-         continue;
-      count++;
-      d = &values[table(api)[i]];
-      hash = (d->pname * prime_factor);
-      j = 0;
-      while (1) {
-         if (values[table(api)[hash & mask]].pname == d->pname)
-            break;
-         hash += prime_step;
-         j++;
-      }
-
-      if (j < 10)
-         collisions[j]++;
-      else
-         collisions[10]++;
-   }
-
-   printf("number of enums for %s: %d (total %ld)\n",
-         api_name, count, ARRAY_SIZE(values));
-   for (i = 0; i < ARRAY_SIZE(collisions) - 1; i++)
-      if (collisions[i] > 0)
-         printf("  %d enums with %d %scollisions\n",
-               collisions[i], i, i == 10 ? "or more " : "");
-}
-#endif
-
-/**
- * Initialize the enum hash for a given API 
- *
- * This is called from one_time_init() to insert the enum values that
- * are valid for the API in question into the enum hash table.
- *
- * \param the current context, for determining the API in question
- */
-void _mesa_init_get_hash(struct gl_context *ctx)
-{
-#ifdef GET_DEBUG
-   print_table_stats(ctx->API);
-#else
-   (void) ctx;
-#endif
-}
 
 /**
  * Handle irregular enums
@@ -2007,6 +1943,17 @@ find_value_indexed(const char *func, GLenum pname, GLuint index, union value *v)
       v->value_int_4[1] = ctx->Scissor.ScissorArray[index].Y;
       v->value_int_4[2] = ctx->Scissor.ScissorArray[index].Width;
       v->value_int_4[3] = ctx->Scissor.ScissorArray[index].Height;
+      return TYPE_INT_4;
+
+   case GL_WINDOW_RECTANGLE_EXT:
+      if (!ctx->Extensions.EXT_window_rectangles)
+         goto invalid_enum;
+      if (index >= ctx->Const.MaxWindowRectangles)
+         goto invalid_value;
+      v->value_int_4[0] = ctx->Scissor.WindowRects[index].X;
+      v->value_int_4[1] = ctx->Scissor.WindowRects[index].Y;
+      v->value_int_4[2] = ctx->Scissor.WindowRects[index].Width;
+      v->value_int_4[3] = ctx->Scissor.WindowRects[index].Height;
       return TYPE_INT_4;
 
    case GL_VIEWPORT:

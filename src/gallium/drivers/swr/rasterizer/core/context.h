@@ -83,6 +83,7 @@ struct SWR_TRIANGLE_DESC
     float *pUserClipBuffer;
 
     uint64_t coverageMask[SWR_MAX_NUM_MULTISAMPLES];
+    uint64_t innerCoverageMask; // Conservative rasterization inner coverage: marked covered if entire pixel is covered
     uint64_t anyCoveredSamples;
 
     TRI_FLAGS triFlags;
@@ -262,15 +263,8 @@ OSALIGNLINE(struct) API_STATE
     PFN_DS_FUNC             pfnDsFunc;
     SWR_TS_STATE            tsState;
 
-    // Specifies which VS outputs are sent to PS.
-    // Does not include position
-    uint32_t                linkageMask; 
-    uint32_t                linkageCount;
-    uint8_t                 linkageMap[MAX_ATTRIBUTES];
-
-    // attrib mask, specifies the total set of attributes used
-    // by the frontend (vs, so, gs)
-    uint32_t                feAttribMask;
+    // Number of attributes used by the frontend (vs, so, gs)
+    uint32_t                feNumAttributes;
 
     PRIMITIVE_TOPOLOGY      topology;
     bool                    forceFront;
@@ -379,16 +373,16 @@ struct DRAW_STATE
 struct DRAW_CONTEXT
 {
     SWR_CONTEXT*    pContext;
-    uint64_t        drawId;
     union
     {
         MacroTileMgr*   pTileMgr;
         DispatchQueue*  pDispatch;      // Queue for thread groups. (isCompute)
     };
-    uint64_t        dependency;
     DRAW_STATE*     pState;
     CachingArena*   pArena;
 
+    uint32_t        drawId;
+    bool            dependent;
     bool            isCompute;      // Is this DC a compute context?
     bool            cleanupState;   // True if this is the last draw using an entry in the state ring.
     volatile bool   doneFE;         // Is FE work done for this draw?
@@ -397,6 +391,8 @@ struct DRAW_CONTEXT
 
     volatile OSALIGNLINE(uint32_t)   FeLock;
     volatile int64_t    threadsDone;
+
+    SYNC_DESC       retireCallback; // Call this func when this DC is retired.
 };
 
 static_assert((sizeof(DRAW_CONTEXT) & 63) == 0, "Invalid size for DRAW_CONTEXT");

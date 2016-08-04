@@ -537,6 +537,10 @@ public:
       return this->interface_type;
    }
 
+   enum glsl_interface_packing get_interface_type_packing() const
+   {
+     return this->interface_type->get_interface_packing();
+   }
    /**
     * Get the max_ifc_array_access pointer
     *
@@ -584,6 +588,13 @@ public:
          this->data._num_state_slots = n;
 
       return this->u.state_slots;
+   }
+
+   inline bool is_interpolation_flat() const
+   {
+      return this->data.interpolation == INTERP_MODE_FLAT ||
+             this->type->contains_integer() ||
+             this->type->contains_double();
    }
 
    inline bool is_name_ralloced() const
@@ -675,7 +686,7 @@ public:
       /**
        * Interpolation mode for shader inputs / outputs
        *
-       * \sa ir_variable_interpolation
+       * \sa glsl_interp_mode
        */
       unsigned interpolation:2;
 
@@ -1478,9 +1489,16 @@ enum ir_expression_operation {
    ir_unop_ssbo_unsized_array_length,
 
    /**
+    * Vote among threads on the value of the boolean argument.
+    */
+   ir_unop_vote_any,
+   ir_unop_vote_all,
+   ir_unop_vote_eq,
+
+   /**
     * A sentinel marking the last of the unary operations.
     */
-   ir_last_unop = ir_unop_ssbo_unsized_array_length,
+   ir_last_unop = ir_unop_vote_eq,
 
    ir_binop_add,
    ir_binop_sub,
@@ -2562,7 +2580,8 @@ _mesa_glsl_initialize_variables(exec_list *instructions,
 				struct _mesa_glsl_parse_state *state);
 
 extern void
-_mesa_glsl_initialize_derived_variables(gl_shader *shader);
+_mesa_glsl_initialize_derived_variables(struct gl_context *ctx,
+                                        gl_shader *shader);
 
 extern void
 _mesa_glsl_initialize_functions(_mesa_glsl_parse_state *state);
@@ -2581,7 +2600,7 @@ extern gl_shader *
 _mesa_glsl_get_builtin_function_shader(void);
 
 extern ir_function_signature *
-_mesa_get_main_function_signature(gl_shader *sh);
+_mesa_get_main_function_signature(glsl_symbol_table *symbols);
 
 extern void
 _mesa_glsl_release_functions(void);
@@ -2620,9 +2639,6 @@ is_gl_identifier(const char *s)
 {
    return s && s[0] == 'g' && s[1] == 'l' && s[2] == '_';
 }
-
-const glsl_type *
-get_varying_type(const ir_variable *var, gl_shader_stage stage);
 
 extern "C" {
 #endif /* __cplusplus */

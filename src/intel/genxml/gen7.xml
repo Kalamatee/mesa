@@ -102,7 +102,7 @@
     </group>
   </struct>
 
-  <struct name="BLEND_STATE" length="2">
+  <struct name="BLEND_STATE_ENTRY" length="2">
     <field name="Color Buffer Blend Enable" start="31" end="31" type="bool"/>
     <field name="Independent Alpha Blend Enable" start="30" end="30" type="bool"/>
     <field name="Alpha Blend Function" start="26" end="28" type="uint">
@@ -192,6 +192,12 @@
     <field name="Post-Blend Color Clamp Enable" start="32" end="32" type="bool"/>
   </struct>
 
+  <struct name="BLEND_STATE" length="16">
+    <group count="8" start="0" size="64">
+      <field name="Entry" start="0" end="63" type="BLEND_STATE_ENTRY"/>
+    </group>
+  </struct>
+
   <struct name="CC_VIEWPORT" length="2">
     <field name="Minimum Depth" start="0" end="31" type="float"/>
     <field name="Maximum Depth" start="32" end="63" type="float"/>
@@ -199,7 +205,7 @@
 
   <struct name="COLOR_CALC_STATE" length="6">
     <field name="Stencil Reference Value" start="24" end="31" type="uint"/>
-    <field name="BackFace Stencil Reference Value" start="16" end="23" type="uint"/>
+    <field name="Backface Stencil Reference Value" start="16" end="23" type="uint"/>
     <field name="Round Disable Function Disable" start="15" end="15" type="bool"/>
     <field name="Alpha Test Format" start="0" end="0" type="uint">
       <value name="ALPHATEST_UNORM8" value="0"/>
@@ -239,7 +245,7 @@
     <field name="Stencil Pass Depth Pass Op" start="19" end="21" type="uint"/>
     <field name="Stencil Buffer Write Enable" start="18" end="18" type="bool"/>
     <field name="Double Sided Stencil Enable" start="15" end="15" type="bool"/>
-    <field name="BackFace Stencil Test Function" start="12" end="14" type="uint">
+    <field name="Backface Stencil Test Function" start="12" end="14" type="uint">
       <value name="COMPAREFUNCTION_ALWAYS" value="0"/>
       <value name="COMPAREFUNCTION_NEVER" value="1"/>
       <value name="COMPAREFUNCTION_LESS" value="2"/>
@@ -388,16 +394,16 @@
     </field>
     <field name="Multisample Position Palette Index" start="128" end="130" type="uint"/>
     <field name="Strbuf Minimum Array Element" start="128" end="154" type="uint"/>
-    <field name="X Offset" start="185" end="191" type="offset"/>
-    <field name="Y Offset" start="180" end="183" type="offset"/>
+    <field name="X Offset" start="185" end="191" type="uint"/>
+    <field name="Y Offset" start="180" end="183" type="uint"/>
     <field name="Surface Object Control State" start="176" end="179" type="MEMORY_OBJECT_CONTROL_STATE"/>
     <field name="MOCS" start="176" end="179" type="uint"/>
     <field name="Surface Min LOD" start="164" end="167" type="uint"/>
     <field name="MIP Count / LOD" start="160" end="163" type="uint"/>
-    <field name="MCS Base Address" start="204" end="223" type="address"/>
-    <field name="MCS Surface Pitch" start="195" end="203" type="uint"/>
     <field name="Append Counter Address" start="198" end="223" type="address"/>
     <field name="Append Counter Enable" start="193" end="193" type="bool"/>
+    <field name="MCS Base Address" start="204" end="223" type="address"/>
+    <field name="MCS Surface Pitch" start="195" end="203" type="uint"/>
     <field name="MCS Enable" start="192" end="192" type="bool"/>
     <field name="Reserved: MBZ" start="222" end="223" type="uint"/>
     <field name="X Offset for UV Plane" start="208" end="221" type="uint"/>
@@ -953,6 +959,7 @@
     <field name="Clip Enable" start="95" end="95" type="bool"/>
     <field name="API Mode" start="94" end="94" type="uint">
       <value name="APIMODE_OGL" value="0"/>
+      <value name="APIMODE_D3D" value="1"/>
     </field>
     <field name="Viewport XY ClipTest Enable" start="92" end="92" type="bool"/>
     <field name="Viewport Z ClipTest Enable" start="91" end="91" type="bool"/>
@@ -1113,7 +1120,7 @@
     </field>
     <field name="Illegal Opcode Exception Enable" start="77" end="77" type="bool"/>
     <field name="Software Exception Enable" start="71" end="71" type="bool"/>
-    <field name="Scratch Space Base Pointer" start="106" end="127" type="offset"/>
+    <field name="Scratch Space Base Pointer" start="106" end="127" type="address"/>
     <field name="Per-Thread Scratch Space" start="96" end="99" type="uint"/>
     <field name="Dispatch GRF Start Register For URB Data" start="148" end="152" type="uint"/>
     <field name="Patch URB Entry Read Length" start="139" end="145" type="uint"/>
@@ -1153,7 +1160,7 @@
     <field name="Illegal Opcode Exception Enable" start="77" end="77" type="bool"/>
     <field name="Mask Stack Exception Enable" start="75" end="75" type="bool"/>
     <field name="Software  Exception Enable" start="71" end="71" type="bool"/>
-    <field name="Scratch Space Base Pointer" start="106" end="127" type="offset"/>
+    <field name="Scratch Space Base Pointer" start="106" end="127" type="address"/>
     <field name="Per-Thread Scratch Space" start="96" end="99" type="uint"/>
     <field name="Output Vertex Size" start="151" end="156" type="uint"/>
     <field name="Output Topology" start="145" end="150" type="uint" prefix="OUTPUT"/>
@@ -1220,7 +1227,7 @@
     <field name="Statistics Enable" start="93" end="93" type="bool"/>
     <field name="Instance Count" start="64" end="67" type="uint"/>
     <field name="Kernel Start Pointer" start="102" end="127" type="offset"/>
-    <field name="Scratch Space Base Pointer" start="138" end="159" type="offset"/>
+    <field name="Scratch Space Base Pointer" start="138" end="159" type="address"/>
     <field name="Per-Thread Scratch Space" start="128" end="131" type="uint"/>
     <field name="Single Program Flow" start="187" end="187" type="uint"/>
     <field name="Vector Mask Enable" start="186" end="186" type="bool"/>
@@ -1354,7 +1361,7 @@
     <field name="Illegal Opcode Exception Enable" start="77" end="77" type="bool"/>
     <field name="Mask Stack Exception Enable" start="75" end="75" type="bool"/>
     <field name="Software  Exception Enable" start="71" end="71" type="bool"/>
-    <field name="Scratch Space Base Pointer" start="106" end="127" type="offset"/>
+    <field name="Scratch Space Base Pointer" start="106" end="127" type="address"/>
     <field name="Per Thread Scratch Space" start="96" end="99" type="uint"/>
     <field name="Maximum Number of Threads" start="152" end="159" type="uint"/>
     <field name="Push Constant Enable" start="139" end="139" type="bool"/>
@@ -1858,7 +1865,7 @@
     </field>
     <field name="Illegal Opcode Exception Enable" start="77" end="77" type="bool"/>
     <field name="Software  Exception Enable" start="71" end="71" type="bool"/>
-    <field name="Scratch Space Base Offset" start="106" end="127" type="offset"/>
+    <field name="Scratch Space Base Pointer" start="106" end="127" type="address"/>
     <field name="Per-Thread Scratch Space" start="96" end="99" type="uint"/>
     <field name="Dispatch GRF Start Register for URB Data" start="148" end="152" type="uint"/>
     <field name="Vertex URB Entry Read Length" start="139" end="144" type="uint"/>
@@ -2109,7 +2116,7 @@
     <field name="Media Command Opcode" start="24" end="26" type="uint" default="0"/>
     <field name="SubOpcode" start="16" end="23" type="uint" default="0"/>
     <field name="DWord Length" start="0" end="15" type="uint" default="6"/>
-    <field name="Scratch Space Base Pointer" start="42" end="63" type="offset"/>
+    <field name="Scratch Space Base Pointer" start="42" end="63" type="address"/>
     <field name="Per Thread Scratch Space" start="32" end="35" type="uint"/>
     <field name="Maximum Number of Threads" start="80" end="95" type="uint"/>
     <field name="Number of URB Entries" start="72" end="79" type="uint"/>

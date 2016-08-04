@@ -19,6 +19,32 @@
 # FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
 # IN THE SOFTWARE.
 
+.PHONY: git_sha1.h.tmp
+git_sha1.h.tmp:
+	@# Don't assume that $(top_srcdir)/.git is a directory. It may be
+	@# a gitlink file if $(top_srcdir) is a submodule checkout or a linked
+	@# worktree.
+	@# If we are building from a release tarball copy the bundled header.
+	@touch git_sha1.h.tmp
+	@if test -e $(top_srcdir)/.git; then \
+		if which git > /dev/null; then \
+		    git --git-dir=$(top_srcdir)/.git log -n 1 --oneline | \
+			sed 's/^\([^ ]*\) .*/#define MESA_GIT_SHA1 "git-\1"/' \
+			> git_sha1.h.tmp ; \
+		fi \
+	fi
+
+git_sha1.h: git_sha1.h.tmp
+	@echo "updating git_sha1.h"
+	@if ! cmp -s git_sha1.h.tmp git_sha1.h; then \
+		mv git_sha1.h.tmp git_sha1.h ;\
+	else \
+		rm git_sha1.h.tmp ;\
+	fi
+
+BUILT_SOURCES = git_sha1.h
+CLEANFILES = $(BUILT_SOURCES)
+
 SUBDIRS = . gtest util mapi/glapi/gen mapi
 
 # include only conditionally ?
@@ -81,6 +107,7 @@ AM_CPPFLAGS = \
 noinst_LTLIBRARIES = libglsl_util.la
 
 libglsl_util_la_SOURCES = \
+	mesa/main/extensions_table.c \
 	mesa/main/imports.c \
 	mesa/program/prog_hash_table.c \
 	mesa/program/symbol_table.c \

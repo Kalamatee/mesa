@@ -32,7 +32,6 @@ void
 gen8_upload_ps_extra(struct brw_context *brw,
                      const struct brw_wm_prog_data *prog_data)
 {
-   struct gl_context *ctx = &brw->ctx;
    uint32_t dw1 = 0;
 
    dw1 |= GEN8_PSX_PIXEL_SHADER_VALID;
@@ -95,8 +94,8 @@ gen8_upload_ps_extra(struct brw_context *brw,
     *
     * BRW_NEW_FS_PROG_DATA | BRW_NEW_FRAGMENT_PROGRAM | _NEW_BUFFERS | _NEW_COLOR
     */
-   if ((_mesa_active_fragment_shader_has_side_effects(ctx) ||
-        prog_data->uses_kill) && !brw_color_buffer_write_enabled(brw))
+   if ((prog_data->has_side_effects || prog_data->uses_kill) &&
+       !brw_color_buffer_write_enabled(brw))
       dw1 |= GEN8_PSX_SHADER_HAS_UAV;
 
    if (prog_data->computed_stencil) {
@@ -155,7 +154,7 @@ upload_wm_state(struct brw_context *brw)
    /* BRW_NEW_FS_PROG_DATA */
    if (brw->wm.prog_data->early_fragment_tests)
       dw1 |= GEN7_WM_EARLY_DS_CONTROL_PREPS;
-   else if (_mesa_active_fragment_shader_has_side_effects(&brw->ctx))
+   else if (brw->wm.prog_data->has_side_effects)
       dw1 |= GEN7_WM_EARLY_DS_CONTROL_PSEXEC;
 
    BEGIN_BATCH(2);
@@ -256,7 +255,7 @@ gen8_upload_ps_state(struct brw_context *brw,
    if (prog_data->base.total_scratch) {
       OUT_RELOC64(stage_state->scratch_bo,
                   I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER,
-                  ffs(prog_data->base.total_scratch) - 11);
+                  ffs(stage_state->per_thread_scratch) - 11);
    } else {
       OUT_BATCH(0);
       OUT_BATCH(0);

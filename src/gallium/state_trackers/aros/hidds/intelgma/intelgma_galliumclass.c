@@ -48,7 +48,7 @@ BOOL InitGalliumClass()
 {
     int i;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     if( sd->force_gallium
         || sd->ProductID == 0x2582 // GMA 900
@@ -78,17 +78,17 @@ BOOL InitGalliumClass()
                 { TAG_DONE, 0}
             };
 
-            D(bug("[IntelGMA:Gallium] %s: gallium.hidd attrbase obtained\n", __PRETTY_FUNCTION__));
+            D(bug("[IntelGMA:Gallium] %s: gallium.hidd attrbase obtained\n", __func__));
 
             sd->galliumclass = OOP_NewObject(NULL, CLID_HiddMeta, Gallium_tags);
             if (sd->galliumclass)
             {
-                D(bug("[IntelGMA:Gallium] %s: %s class @ 0x%p\n", __PRETTY_FUNCTION__, CLID_Hidd_Gallium_IntelGMA, sd->galliumclass));
+                D(bug("[IntelGMA:Gallium] %s: %s class @ 0x%p\n", __func__, CLID_Hidd_Gallium_IntelGMA, sd->galliumclass));
 
                 sd->galliumclass->UserData = sd;
                 OOP_AddClass(sd->galliumclass);
 
-                D(bug("[IntelGMA:Gallium] %s: class registered\n", __PRETTY_FUNCTION__));
+                D(bug("[IntelGMA:Gallium] %s: class registered\n", __func__));
 
                 sd->basegallium = OOP_FindClass(CLID_Hidd_Gallium);
                 bug("[IntelGMA] base Gallium class @ 0x%p\n", sd->basegallium);
@@ -119,7 +119,7 @@ BOOL InitGalliumClass()
 
 static void IntelGMA_BatchBufferReset(struct IntelGMABatchBuffer *batch)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     memset(batch->base.map, 0, batch->actual_size);
     batch->base.ptr = batch->base.map;
@@ -147,7 +147,7 @@ static VOID IntelGMA_StatusSet(ULONG i, ULONG v)
 
 static ULONG IntelGMA_StatusReserve()
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     for(;;){
         int i;
@@ -159,13 +159,13 @@ static ULONG IntelGMA_StatusReserve()
                 hw_status[i].reserved = TRUE;
                 hw_status[i].flush_num = flush_num;
 
-                D(bug("[IntelGMA:Gallium] %s: index #%d, flush_num #%d\n", __PRETTY_FUNCTION__, i, flush_num));
+                D(bug("[IntelGMA:Gallium] %s: index #%d, flush_num #%d\n", __func__, i, flush_num));
 
                 return i;
             }
         }
 
-        D(bug("[IntelGMA:Gallium] %s: not free index,wait a moment...\n",__PRETTY_FUNCTION__));
+        D(bug("[IntelGMA:Gallium] %s: not free index,wait a moment...\n",__func__));
 
         delay_ms(sd,1);
     }
@@ -182,7 +182,7 @@ static VOID IntelGMA_StatusFree(ULONG i)
 
 static VOID IntelGMA_GfxMemFree(APTR ptr, ULONG size)
 {
-    D(bug("[IntelGMA:Gallium] %s(%p, %d)\n", __PRETTY_FUNCTION__, ptr, size));
+    D(bug("[IntelGMA:Gallium] %s(%p, %d)\n", __func__, ptr, size));
 
 #ifdef GALLIUM_SIMULATION
     free(ptr);return;
@@ -191,12 +191,12 @@ static VOID IntelGMA_GfxMemFree(APTR ptr, ULONG size)
     FreeGfxMem(sd, ptr, size);
     allocated_mem -= size;
 
-    D(bug("[IntelGMA:Gallium] %s: allocated_mem %d\n", __PRETTY_FUNCTION__, allocated_mem));
+    D(bug("[IntelGMA:Gallium] %s: allocated_mem %d\n", __func__, allocated_mem));
 }
 
 static VOID IntelGMA_ReleaseBuffers(struct i915_winsys *iws)
 {
-    D(bug("[IntelGMA:Gallium] %s: allocated_mem %d\n", __PRETTY_FUNCTION__, allocated_mem));
+    D(bug("[IntelGMA:Gallium] %s: allocated_mem %d\n", __func__, allocated_mem));
 
     if( AttemptSemaphore(&UnusedBuffersListLock) )
     {
@@ -228,7 +228,7 @@ static APTR IntelGMA_GfxMemAlloc(struct i915_winsys *iws, ULONG size)
 {
     APTR result;
 
-    D(bug("[IntelGMA:Gallium] %s(%d)\n", __PRETTY_FUNCTION__, size));
+    D(bug("[IntelGMA:Gallium] %s(%d)\n", __func__, size));
 
 #ifdef GALLIUM_SIMULATION
     return malloc(size);
@@ -254,7 +254,7 @@ static APTR IntelGMA_GfxMemAlloc(struct i915_winsys *iws, ULONG size)
     {
         allocated_mem += size;
 
-        D(bug("[IntelGMA:Gallium] %: %p allocated_mem %d\n", __PRETTY_FUNCTION__, result, allocated_mem));
+        D(bug("[IntelGMA:Gallium] %: %p allocated_mem %d\n", __func__, result, allocated_mem));
     }
 
     return result;
@@ -264,7 +264,7 @@ static struct i915_winsys_batchbuffer *IntelGMA_WS_BatchbufferCreate(struct i915
 {
     struct IntelGMABatchBuffer *batch;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     batch = CALLOC_STRUCT(IntelGMABatchBuffer);
 
@@ -297,11 +297,11 @@ static  boolean IntelGMA_WS_ValidateBuffers(struct i915_winsys_batchbuffer *batc
 {
     int i;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     for(i=0;i<num_of_buffers;i++)
     {
-        D(bug("[IntelGMA:Gallium] %s:    buffer %p\n", __PRETTY_FUNCTION__, buffers[i]));
+        D(bug("[IntelGMA:Gallium] %s:    buffer %p\n", __func__, buffers[i]));
         MAGIC_WARNING(buffers[i]);
     }
 
@@ -315,7 +315,7 @@ static int IntelGMA_WS_BatchbufferReloc(struct i915_winsys_batchbuffer *batch,
 {
     struct reloc *rl;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     IF_BAD_MAGIC(reloc) return -1;
 
@@ -337,7 +337,7 @@ static int IntelGMA_WS_BatchbufferReloc(struct i915_winsys_batchbuffer *batch,
     *(uint32_t *)(batch->ptr) = RELOC_MAGIC;
     batch->ptr += 4;
 
-    D(bug("[IntelGMA:Gallium] %s: reloc %p offset %d fenced %s base=%p \n", __PRETTY_FUNCTION__, reloc, offset, fenced ? "true" : "false", *(uint32_t *)(batch->ptr)));
+    D(bug("[IntelGMA:Gallium] %s: reloc %p offset %d fenced %s base=%p \n", __func__, reloc, offset, fenced ? "true" : "false", *(uint32_t *)(batch->ptr)));
 
     return 0;
 }
@@ -348,7 +348,7 @@ static void IntelGMA_WS_BatchbufferFlush(struct i915_winsys_batchbuffer *batch,
 {
     struct IntelGMABatchBuffer *gmabatch;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     gmabatch = INTELGMA_BB(batch);
 
@@ -380,7 +380,7 @@ static void IntelGMA_WS_BatchbufferFlush(struct i915_winsys_batchbuffer *batch,
             {
                 struct reloc *rl = &gmabatch->relocs[ i ];
 
-                D(bug("[IntelGMA:Gallium] %s: reloc %p\n", __PRETTY_FUNCTION__, rl->buf));
+                D(bug("[IntelGMA:Gallium] %s: reloc %p\n", __func__, rl->buf));
                 
                 if( i >= MAX_RELOCS || 
                     rl->buf->map == 0 || 
@@ -454,7 +454,7 @@ static void IntelGMA_WS_BatchbufferDestroy(struct i915_winsys_batchbuffer *batch
 {
     struct IntelGMABatchBuffer *gmabatch;
 
-    bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__);
+    bug("[IntelGMA:Gallium] %s()\n", __func__);
 
     gmabatch = INTELGMA_BB(batch);
 
@@ -481,7 +481,7 @@ static struct i915_winsys_buffer * IntelGMA_WS_BufferCreate(struct i915_winsys *
 {
     struct i915_winsys_buffer *buf;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     buf = CALLOC_STRUCT(i915_winsys_buffer);
     if (!buf)
@@ -498,8 +498,8 @@ static struct i915_winsys_buffer * IntelGMA_WS_BufferCreate(struct i915_winsys *
     buf->size = size;
     buf->magic = MAGIC;
 
-    D(bug("[IntelGMA:Gallium] %s: size %d @ 0x%p (map 0x%p)\n", __PRETTY_FUNCTION__, size, buf, buf->map));
-//    D(bug("[IntelGMA:Gallium] %s: type %s\n", __PRETTY_FUNCTION__, i915_type_to_name(type)));
+    D(bug("[IntelGMA:Gallium] %s: size %d @ 0x%p (map 0x%p)\n", __func__, size, buf, buf->map));
+//    D(bug("[IntelGMA:Gallium] %s: type %s\n", __func__, i915_type_to_name(type)));
 
     return buf;
 }
@@ -509,7 +509,7 @@ static struct i915_winsys_buffer * IntelGMA_WS_BufferCreateTiled(struct i915_win
                          enum i915_winsys_buffer_tile *tiling,
                          enum i915_winsys_buffer_type type)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     *tiling = I915_TILE_NONE;
 
@@ -522,7 +522,7 @@ static struct i915_winsys_buffer * IntelGMA_WS_BufferFromHandle(struct i915_wins
                         enum i915_winsys_buffer_tile *tiling,
                         unsigned *stride)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     return NULL;
 }
@@ -532,7 +532,7 @@ static boolean IntelGMA_WS_BufferGetHandle(struct i915_winsys *iws,
                             struct winsys_handle *whandle,
                             unsigned stride)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     return FALSE;
 }
@@ -541,7 +541,7 @@ static void * IntelGMA_WS_BufferMap(struct i915_winsys *iws,
                    struct i915_winsys_buffer *buffer,
                    boolean write)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     IF_BAD_MAGIC(buffer)
     {
@@ -549,7 +549,7 @@ static void * IntelGMA_WS_BufferMap(struct i915_winsys *iws,
         return 0;
     }
 
-    D(bug("[IntelGMA:Gallium] %s: buffer @ 0x%p\n", __PRETTY_FUNCTION__, buffer));
+    D(bug("[IntelGMA:Gallium] %s: buffer @ 0x%p\n", __func__, buffer));
 
     while( iws->buffer_is_busy(iws, buffer )){};
 
@@ -560,7 +560,7 @@ static void * IntelGMA_WS_BufferMap(struct i915_winsys *iws,
 static void IntelGMA_WS_BufferUnmap(struct i915_winsys *iws,
                     struct i915_winsys_buffer *buffer)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 }
 
 static int IntelGMA_WS_BufferWrite(struct i915_winsys *iws,
@@ -569,7 +569,7 @@ static int IntelGMA_WS_BufferWrite(struct i915_winsys *iws,
                    size_t size,
                    const void *wdata)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     return 0;
 }
@@ -577,11 +577,11 @@ static int IntelGMA_WS_BufferWrite(struct i915_winsys *iws,
 static void IntelGMA_WS_BufferDestroy(struct i915_winsys *iws,
                       struct i915_winsys_buffer *buffer)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
     
     IF_BAD_MAGIC(buffer) return;
 
-    D(bug("[IntelGMA:Gallium] %s: buffer @ 0x%p\n", __PRETTY_FUNCTION__, buffer));
+    D(bug("[IntelGMA:Gallium] %s: buffer @ 0x%p\n", __func__, buffer));
 
     if (0)
     {
@@ -603,12 +603,12 @@ static boolean IntelGMA_WS_BufferIsBusy(struct i915_winsys *iws,
 {
     int i;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
     
     MAGIC_WARNING(buffer);
     i = buffer->status_index;
 
-    D(bug("[IntelGMA:Gallium] %s: %p index %d flush_num %d\n", __PRETTY_FUNCTION__, buffer, i, buffer->flush_num));
+    D(bug("[IntelGMA:Gallium] %s: %p index %d flush_num %d\n", __func__, buffer, i, buffer->flush_num));
 
     if (i)
     {
@@ -633,13 +633,13 @@ static void IntelGMA_WS_FenceReference(struct i915_winsys *iws,
                        struct pipe_fence_handle **ptr,
                        struct pipe_fence_handle *fence)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 }
 
 static int IntelGMA_WS_FenceSignalled(struct i915_winsys *iws,
                       struct pipe_fence_handle *fence)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     return 0;
 }
@@ -647,14 +647,14 @@ static int IntelGMA_WS_FenceSignalled(struct i915_winsys *iws,
 static int IntelGMA_WS_FenceFinish(struct i915_winsys *iws,
                    struct pipe_fence_handle *fence)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     return 0;
 }
 
 static int IntelGMA_WS_ApertureSize(struct i915_winsys *iws)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     return allocated_mem;
 }
@@ -667,7 +667,7 @@ OOP_Object *METHOD(GalliumIntelGMA, Root, New)
 {
     IPTR interfaceVers;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     interfaceVers = GetTagData(aHidd_Gallium_InterfaceVersion, -1, msg->attrList);
     if (interfaceVers != GALLIUM_INTERFACE_VERSION)
@@ -707,7 +707,7 @@ OOP_Object *METHOD(GalliumIntelGMA, Root, New)
 
 VOID METHOD(GalliumIntelGMA, Root, Dispose)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
     OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 }
@@ -716,7 +716,7 @@ VOID METHOD(GalliumIntelGMA, Root, Get)
 {
     ULONG idx;
 
-    D(bug("[IntelGMA:Gallium] %s\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s\n", __func__));
 
     if (IS_GALLIUM_ATTR(msg->attrID, idx))
     {
@@ -738,28 +738,28 @@ APTR METHOD(GalliumIntelGMA, Hidd_Gallium, CreatePipeScreen)
     struct HiddIntelGMAGalliumData * data = OOP_INST_DATA(cl, o);
     struct pipe_screen *screen = NULL;
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 #if (0)
-    D(bug("[IntelGMA:Gallium] %s: currently allocated_mem %d\n", __PRETTY_FUNCTION__, allocated_mem));
+    D(bug("[IntelGMA:Gallium] %s: currently allocated_mem %d\n", __func__, allocated_mem));
 #endif
 
     screen = i915_screen_create(&data->gma_winsys);
 
-    D(bug("[IntelGMA:Gallium] %s: screen @ 0x%p\n", __PRETTY_FUNCTION__, screen));
+    D(bug("[IntelGMA:Gallium] %s: screen @ 0x%p\n", __func__, screen));
 
     return screen;
 }
 
 VOID METHOD(GalliumIntelGMA, Hidd_Gallium, DestroyPipeScreen)
 {
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 }
 
 VOID METHOD(GalliumIntelGMA, Hidd_Gallium, DisplayResource)
 {
     struct HiddIntelGMAGalliumData * data = OOP_INST_DATA(cl, o);
 
-    D(bug("[IntelGMA:Gallium] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Gallium] %s()\n", __func__));
 
 #ifndef GALLIUM_SIMULATION
     OOP_Object *bm = HIDD_BM_OBJ(msg->bitmap);

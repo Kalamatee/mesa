@@ -105,7 +105,9 @@ create_iview(struct anv_cmd_buffer *cmd_buffer,
    const VkImageCreateInfo image_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .imageType = VK_IMAGE_TYPE_2D,
-      .format = vk_format_for_size(surf->bs),
+      /* W-tiled images must be stencil-formatted. */
+      .format = surf->tiling == ISL_TILING_W ?
+                VK_FORMAT_S8_UINT : vk_format_for_size(surf->bs),
       .extent = {
          .width = width,
          .height = height,
@@ -140,7 +142,7 @@ create_iview(struct anv_cmd_buffer *cmd_buffer,
                           .viewType = VK_IMAGE_VIEW_TYPE_2D,
                           .format = image_info.format,
                           .subresourceRange = {
-                             .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .aspectMask = anv_image_from_handle(*img)->aspects,
                              .baseMipLevel = 0,
                              .levelCount = 1,
                              .baseArrayLayer = 0,
@@ -177,7 +179,16 @@ blit2d_bind_src(struct anv_cmd_buffer *cmd_buffer,
                                          rect->src_x, rect->src_y,
                                          &offset, &rect->src_x, &rect->src_y);
 
-      create_iview(cmd_buffer, src, offset, VK_IMAGE_USAGE_SAMPLED_BIT,
+      VkImageUsageFlags usage = VK_IMAGE_USAGE_SAMPLED_BIT;	
+
+      /* W-tiled images must be stencil-formatted. Outside of meta,
+       * a stencil image has this usage bit set. Adding it here
+       * ensures the ISL surface is created correctly.
+       */
+      if (src->tiling == ISL_TILING_W)
+         usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+      create_iview(cmd_buffer, src, offset, usage,
                    rect->src_x + rect->width, rect->src_y + rect->height,
                    &tmp->image, &tmp->iview);
 
@@ -540,7 +551,7 @@ anv_meta_blit2d_w_tiled_dst(struct anv_cmd_buffer *cmd_buffer,
          .tiling = ISL_TILING_Y0,
          .base_offset = dst->base_offset,
          .bs = 1,
-         .pitch = dst->pitch * 2,
+         .pitch = dst->pitch,
       };
 
       struct blit2d_dst_temps dst_temps;
@@ -698,7 +709,7 @@ build_nir_vertex_shader(void)
    nir_variable *tex_pos_out = nir_variable_create(b.shader, nir_var_shader_out,
                                                    vec4, "v_tex_pos");
    tex_pos_out->data.location = VARYING_SLOT_VAR0;
-   tex_pos_out->data.interpolation = INTERP_QUALIFIER_SMOOTH;
+   tex_pos_out->data.interpolation = INTERP_MODE_SMOOTH;
    nir_copy_var(&b, tex_pos_out, tex_pos_in);
 
    nir_variable *other_in = nir_variable_create(b.shader, nir_var_shader_in,
@@ -707,7 +718,7 @@ build_nir_vertex_shader(void)
    nir_variable *other_out = nir_variable_create(b.shader, nir_var_shader_out,
                                                    vec4, "v_other");
    other_out->data.location = VARYING_SLOT_VAR1;
-   other_out->data.interpolation = INTERP_QUALIFIER_FLAT;
+   other_out->data.interpolation = INTERP_MODE_FLAT;
    nir_copy_var(&b, other_out, other_in);
 
    return b.shader;
@@ -965,7 +976,7 @@ build_nir_w_tiled_fragment_shader(struct anv_device *device,
    nir_variable *tex_off_in = nir_variable_create(b.shader, nir_var_shader_in,
                                                   ivec3, "v_tex_off");
    tex_off_in->data.location = VARYING_SLOT_VAR0;
-   tex_off_in->data.interpolation = INTERP_QUALIFIER_FLAT;
+   tex_off_in->data.interpolation = INTERP_MODE_FLAT;
 
    /* In location 1 we have a uvec4 that gives us the bounds of the
     * destination.  We need to discard if we get outside this boundary.
@@ -973,7 +984,7 @@ build_nir_w_tiled_fragment_shader(struct anv_device *device,
    nir_variable *bounds_in = nir_variable_create(b.shader, nir_var_shader_in,
                                                  uvec4, "v_bounds");
    bounds_in->data.location = VARYING_SLOT_VAR1;
-   bounds_in->data.interpolation = INTERP_QUALIFIER_FLAT;
+   bounds_in->data.interpolation = INTERP_MODE_FLAT;
 
    nir_variable *color_out = nir_variable_create(b.shader, nir_var_shader_out,
                                                  vec4, "f_color");

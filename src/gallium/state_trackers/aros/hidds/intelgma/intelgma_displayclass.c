@@ -3,7 +3,7 @@
     $Id$
 */
 
-#define DEBUG 1
+#define DEBUG 0
 #include <aros/debug.h>
 
 #include <proto/oop.h>
@@ -147,7 +147,7 @@ OOP_Object *METHOD(IntelGMADisplay, Root, New)
     OOP_Object *i2c;
     char *displayname = NULL;
 
-    D(bug("[IntelGMA:Display] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Display] %s()\n", __func__));
 
     modetags = tags = AllocVecPooled(sd->MemPool,
         sizeof (struct TagItem) * (3 + SYNC_LIST_COUNT + 1));
@@ -211,12 +211,12 @@ OOP_Object *METHOD(IntelGMADisplay, Root, New)
                 displayname = AllocVec(11, MEMF_ANY);
                 sprintf(displayname, "%s", "LVDS Panel");
                 
-                D(bug("[IntelGMA:Display] %s: native LVDS panel\n", __PRETTY_FUNCTION__));
+                D(bug("[IntelGMA:Display] %s: native LVDS panel\n", __func__));
             }
             else
             {
                 i2c = OOP_NewObject(sd->IntelI2C, NULL, i2c_attrs);
-                D(bug("[IntelGMA:Display] %s: i2c @ 0x%p\n", __PRETTY_FUNCTION__, i2c));
+                D(bug("[IntelGMA:Display] %s: i2c @ 0x%p\n", __func__, i2c));
 
                 if (i2c)
                 {
@@ -229,7 +229,7 @@ OOP_Object *METHOD(IntelGMADisplay, Root, New)
                             { TAG_DONE, 0UL }
                         };
 
-                        D(bug("[IntelGMA:Display] %s: I2C device found\n", __PRETTY_FUNCTION__));
+                        D(bug("[IntelGMA:Display] %s: I2C device found\n", __func__));
 
                         OOP_Object *obj = OOP_NewObject(NULL, CLID_Hidd_I2CDevice, attrs);
 
@@ -252,12 +252,12 @@ OOP_Object *METHOD(IntelGMADisplay, Root, New)
             newGfxMsg.mID = msg->mID;
             newGfxMsg.attrList = dmTags;
 
-            D(bug("[IntelGMA:Display] %s: calling super to create object ..\n", __PRETTY_FUNCTION__, o));
+            D(bug("[IntelGMA:Display] %s: calling super to create object ..\n", __func__, o));
             o = (OOP_Object *)OOP_DoSuperMethod(cl, o, (OOP_Msg)&newGfxMsg);
             if (o)
             {
                 struct HiddDisplayIntelGMAData *data = OOP_INST_DATA(cl, o);
-                D(bug("[IntelGMA:Display] %s: obj @ %p\n", __PRETTY_FUNCTION__, o));
+                D(bug("[IntelGMA:Display] %s: obj @ %p\n", __func__, o));
                 
                 data->name = displayname;
             }
@@ -269,14 +269,14 @@ OOP_Object *METHOD(IntelGMADisplay, Root, New)
         }
         else
         {
-            D(bug("[IntelGMA:Display] %s: failed to allocate tmp storage\n", __PRETTY_FUNCTION__));
+            D(bug("[IntelGMA:Display] %s: failed to allocate tmp storage\n", __func__));
             o = NULL;
         }
         FreeVecPooled(sd->MemPool, modetags);
     }
     else
     {
-        D(bug("[IntelGMA:Display] %s: failed to modetag storage\n", __PRETTY_FUNCTION__));
+        D(bug("[IntelGMA:Display] %s: failed to modetag storage\n", __func__));
         o = NULL;
     }
 
@@ -288,6 +288,12 @@ void METHOD(IntelGMADisplay, Root, Get)
     struct HiddDisplayIntelGMAData *data = OOP_INST_DATA(cl, o);
     ULONG idx;
 
+    Hidd_DisplayIntelGMA_Switch (msg->attrID, idx)
+    {
+    case aoHidd_DisplayIntelGMA_Overlay:
+        *msg->storage = (IPTR)data->overlay;
+        return;
+    }
     Hidd_Display_Switch (msg->attrID, idx)
     {
     case aoHidd_Display_DPMSLevel:
@@ -312,46 +318,55 @@ void METHOD(IntelGMADisplay, Root, Get)
 
 void METHOD(IntelGMADisplay, Root, Set)
 {
-    D(bug("[IntelGMA:Display] %s()\n", __PRETTY_FUNCTION__));;
+    struct HiddDisplayIntelGMAData *data = OOP_INST_DATA(cl, o);
+    struct TagItem *tags = msg->attrList;
+    struct TagItem *tag;
+    ULONG idx;
 
-	ULONG idx;
-	struct TagItem *tag;
-	struct TagItem *tags = msg->attrList;
+    D(bug("[IntelGMA:Display] %s()\n", __func__));
 
-	while ((tag = NextTagItem(&tags)))
-	{
-		if (IS_DISPLAY_ATTR(tag->ti_Tag, idx))
-		{
-			switch(idx)
-			{
-			case aoHidd_Display_DPMSLevel:
-				LOCK_HW
-				uint32_t adpa = readl(sd->Card.MMIO + G45_ADPA) & ~G45_ADPA_DPMS_MASK;
-				switch (tag->ti_Data)
-				{
-				case vHidd_Display_DPMSLevel_On:
-					adpa |= G45_ADPA_DPMS_ON;
-					break;
-				case vHidd_Display_DPMSLevel_Off:
-					adpa |= G45_ADPA_DPMS_OFF;
-					break;
-				case vHidd_Display_DPMSLevel_Standby:
-					adpa |= G45_ADPA_DPMS_STANDBY;
-					break;
-				case vHidd_Display_DPMSLevel_Suspend:
-					adpa |= G45_ADPA_DPMS_SUSPEND;
-					break;
-				}
-				writel(adpa, sd->Card.MMIO + G45_ADPA);
-				sd->dpms = tag->ti_Data;
+    while ((tag = NextTagItem(&tags)))
+    {
+        Hidd_DisplayIntelGMA_Switch (tag->ti_Tag, idx)
+        {
+        case aoHidd_DisplayIntelGMA_Overlay:
+            if (!(data->overlay))
+                data->overlay = (OOP_Object *)tag->ti_Data;
+            else
+            {
+                D(bug("[IntelGMA:Display] %s: display has existing overlay!!\n", __func__));
+            }
+            return;
+        }
+        Hidd_Display_Switch (tag->ti_Tag, idx)
+        {
+        case aoHidd_Display_DPMSLevel:
+                LOCK_HW
+                uint32_t adpa = readl(sd->Card.MMIO + G45_ADPA) & ~G45_ADPA_DPMS_MASK;
+                switch (tag->ti_Data)
+                {
+                case vHidd_Display_DPMSLevel_On:
+                        adpa |= G45_ADPA_DPMS_ON;
+                        break;
+                case vHidd_Display_DPMSLevel_Off:
+                        adpa |= G45_ADPA_DPMS_OFF;
+                        break;
+                case vHidd_Display_DPMSLevel_Standby:
+                        adpa |= G45_ADPA_DPMS_STANDBY;
+                        break;
+                case vHidd_Display_DPMSLevel_Suspend:
+                        adpa |= G45_ADPA_DPMS_SUSPEND;
+                        break;
+                }
+                writel(adpa, sd->Card.MMIO + G45_ADPA);
+                sd->dpms = tag->ti_Data;
 
-				UNLOCK_HW
-				break;
-			}
-		}
-	}
+                UNLOCK_HW
+                break;
+        }
+    }
 
-	OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+    OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 }
 
 OOP_Object * METHOD(IntelGMADisplay, Hidd_Display, CreateObject)
@@ -359,7 +374,7 @@ OOP_Object * METHOD(IntelGMADisplay, Hidd_Display, CreateObject)
     struct HiddDisplayIntelGMAData *data = OOP_INST_DATA(cl, o);
     OOP_Object      *object = NULL;
 
-    D(bug("[IntelGMA] %s(0x%p)\n", __PRETTY_FUNCTION__, msg->cl));
+    D(bug("[IntelGMA] %s(0x%p)\n", __func__, msg->cl));
 
     if (msg->cl == SD(cl)->basebm)
     {
@@ -417,7 +432,7 @@ OOP_Object * METHOD(IntelGMADisplay, Hidd_Display, CreateObject)
 
 void METHOD(IntelGMADisplay, Hidd_Display, SetCursorVisible)
 {
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     sd->CursorVisible = msg->visible;
     if (msg->visible)
@@ -442,7 +457,7 @@ void METHOD(IntelGMADisplay, Hidd_Display, SetCursorPos)
 
 BOOL METHOD(IntelGMADisplay, Hidd_Display, SetCursorShape)
 {
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     if (msg->shape == NULL)
     {
@@ -476,7 +491,7 @@ BOOL METHOD(IntelGMADisplay, Hidd_Display, SetCursorShape)
 
 VOID METHOD(IntelGMADisplay, Hidd_Display, NominalDimensions)
 {
-    D(bug("[IntelGMA:Display] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Display] %s()\n", __func__));
 
     if (msg->width)
         *(msg->width) = 1360;
@@ -497,7 +512,7 @@ ULONG METHOD(IntelGMADisplay, Hidd_Display, ShowViewPorts)
         data : msg->Data
     };
 
-    D(bug("[IntelGMA:Display] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Display] %s()\n", __func__));
 
     D(bug("[IntelGMA:Display] ShowViewPorts enter TopLevelBM %x\n", msg->Data->Bitmap));
 
@@ -524,7 +539,7 @@ ULONG METHOD(IntelGMADisplay, Hidd_Display, ModeProperties)
 {
     ULONG len = msg->propsLen;
 
-    D(bug("[IntelGMA:Display] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:Display] %s()\n", __func__));
 
     if (len > sizeof(modeprops))
         len = sizeof(modeprops);

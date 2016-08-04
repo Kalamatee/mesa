@@ -48,6 +48,11 @@
 
 void SetupDefaultState(SWR_CONTEXT *pContext);
 
+static INLINE SWR_CONTEXT* GetContext(HANDLE hContext)
+{
+    return (SWR_CONTEXT*)hContext;
+}
+
 //////////////////////////////////////////////////////////////////////////
 /// @brief Create SWR Context.
 /// @param pCreateInfo - pointer to creation info.
@@ -140,7 +145,7 @@ HANDLE SwrCreateContext(
 
 void SwrDestroyContext(HANDLE hContext)
 {
-    SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
+    SWR_CONTEXT *pContext = GetContext(hContext);
     DestroyThreadPool(pContext, &pContext->threadPool);
 
     // free the fifos
@@ -168,7 +173,7 @@ void SwrDestroyContext(HANDLE hContext)
     delete(pContext->pHotTileMgr);
 
     pContext->~SWR_CONTEXT();
-    AlignedFree((SWR_CONTEXT*)hContext);
+    AlignedFree(GetContext(hContext));
 }
 
 void CopyState(DRAW_STATE& dst, const DRAW_STATE& src)
@@ -180,6 +185,8 @@ void WakeAllThreads(SWR_CONTEXT *pContext)
 {
     pContext->FifosNotEmpty.notify_all();
 }
+
+static TileSet gSingleThreadLockedTiles;
 
 template<bool IsDraw>
 void QueueWork(SWR_CONTEXT *pContext)
@@ -213,14 +220,13 @@ void QueueWork(SWR_CONTEXT *pContext)
 
         if (IsDraw)
         {
-            static TileSet lockedTiles;
-            uint64_t curDraw[2] = { pContext->pCurDrawContext->drawId, pContext->pCurDrawContext->drawId };
+            uint32_t curDraw[2] = { pContext->pCurDrawContext->drawId, pContext->pCurDrawContext->drawId };
             WorkOnFifoFE(pContext, 0, curDraw[0]);
-            WorkOnFifoBE(pContext, 0, curDraw[1], lockedTiles, 0, 0);
+            WorkOnFifoBE(pContext, 0, curDraw[1], gSingleThreadLockedTiles, 0, 0);
         }
         else
         {
-            uint64_t curDispatch = pContext->pCurDrawContext->drawId;
+            uint32_t curDispatch = pContext->pCurDrawContext->drawId;
             WorkOnCompute(pContext, 0, curDispatch);
         }
 
@@ -321,13 +327,14 @@ DRAW_CONTEXT* GetDrawContext(SWR_CONTEXT *pContext, bool isSplitDraw = false)
 
         SWR_ASSERT(pCurDrawContext->pArena->IsEmpty() == true);
 
-        pCurDrawContext->dependency = 0;
+        pCurDrawContext->dependent = false;
         pCurDrawContext->pContext = pContext;
         pCurDrawContext->isCompute = false; // Dispatch has to set this to true.
 
         pCurDrawContext->doneFE = false;
         pCurDrawContext->FeLock = 0;
         pCurDrawContext->threadsDone = 0;
+        pCurDrawContext->retireCallback.pfnCallbackFunc = nullptr;
 
         // Assign unique drawId for this DC
         pCurDrawContext->drawId = pContext->dcRing.GetHead();
@@ -356,7 +363,7 @@ void SWR_API SwrSaveState(
     void* pOutputStateBlock,
     size_t memSize)
 {
-    SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
+    SWR_CONTEXT *pContext = GetContext(hContext);
     auto pSrc = GetDrawState(pContext);
     SWR_ASSERT(pOutputStateBlock && memSize >= sizeof(*pSrc));
 
@@ -368,7 +375,7 @@ void SWR_API SwrRestoreState(
     const void* pStateBlock,
     size_t memSize)
 {
-    SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
+    SWR_CONTEXT *pContext = GetContext(hContext);
     auto pDst = GetDrawState(pContext);
     SWR_ASSERT(pStateBlock && memSize >= sizeof(*pDst));
 
@@ -383,11 +390,6 @@ void SetupDefaultState(SWR_CONTEXT *pContext)
     pState->rastState.frontWinding = SWR_FRONTWINDING_CCW;
 }
 
-static INLINE SWR_CONTEXT* GetContext(HANDLE hContext)
-{
-    return (SWR_CONTEXT*)hContext;
-}
-
 void SwrSync(HANDLE hContext, PFN_CALLBACK_FUNC pfnFunc, uint64_t userData, uint64_t userData2, uint64_t userData3)
 {
     RDTSC_START(APISync);
@@ -399,13 +401,12 @@ void SwrSync(HANDLE hContext, PFN_CALLBACK_FUNC pfnFunc, uint64_t userData, uint
 
     pDC->FeWork.type = SYNC;
     pDC->FeWork.pfnWork = ProcessSync;
-    pDC->FeWork.desc.sync.pfnCallbackFunc = pfnFunc;
-    pDC->FeWork.desc.sync.userData = userData;
-    pDC->FeWork.desc.sync.userData2 = userData2;
-    pDC->FeWork.desc.sync.userData3 = userData3;
 
-    // cannot execute until all previous draws have completed
-    pDC->dependency = pDC->drawId - 1;
+    // Setup callback function
+    pDC->retireCallback.pfnCallbackFunc = pfnFunc;
+    pDC->retireCallback.userData = userData;
+    pDC->retireCallback.userData2 = userData2;
+    pDC->retireCallback.userData3 = userData3;
 
     //enqueue
     QueueDraw(pContext);
@@ -605,31 +606,6 @@ void SwrSetBlendFunc(
     pState->pfnBlendFunc[renderTarget] = pfnBlendFunc;
 }
 
-void SwrSetLinkage(
-    HANDLE hContext,
-    uint32_t mask,
-    const uint8_t* pMap)
-{
-    API_STATE* pState = GetDrawState(GetContext(hContext));
-
-    static const uint8_t IDENTITY_MAP[] =
-    {
-         0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15,
-        16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-    };
-    static_assert(sizeof(IDENTITY_MAP) == sizeof(pState->linkageMap),
-        "Update for new value of MAX_ATTRIBUTES");
-
-    pState->linkageMask = mask;
-    pState->linkageCount = _mm_popcnt_u32(mask);
-
-    if (!pMap)
-    {
-        pMap = IDENTITY_MAP;
-    }
-    memcpy(pState->linkageMap, pMap, pState->linkageCount);
-}
-
 // update guardband multipliers for the viewport
 void updateGuardband(API_STATE *pState)
 {
@@ -731,10 +707,12 @@ void SetupMacroTileScissors(DRAW_CONTEXT *pDC)
     }
     else
     {
+        // the vp width and height must be added to origin un-rounded then the result round to -inf.
+        // The cast to int works for rounding assuming all [left, right, top, bottom] are positive.
         left = (int32_t)pState->vp[0].x;
-        right = (int32_t)pState->vp[0].x + (int32_t)pState->vp[0].width;
+        right = (int32_t)(pState->vp[0].x + pState->vp[0].width);
         top = (int32_t)pState->vp[0].y;
-        bottom = (int32_t)pState->vp[0].y + (int32_t)pState->vp[0].height;
+        bottom = (int32_t)(pState->vp[0].y + pState->vp[0].height);
     }
 
     right = std::min<uint32_t>(right, KNOB_MAX_SCISSOR_X);
@@ -757,10 +735,10 @@ void SetupMacroTileScissors(DRAW_CONTEXT *pDC)
 }
 
 // templated backend function tables
-extern PFN_BACKEND_FUNC gBackendNullPs[SWR_MULTISAMPLE_TYPE_MAX];
-extern PFN_BACKEND_FUNC gBackendSingleSample[2][2][2];
-extern PFN_BACKEND_FUNC gBackendPixelRateTable[SWR_MULTISAMPLE_TYPE_MAX][SWR_MSAA_SAMPLE_PATTERN_MAX][SWR_INPUT_COVERAGE_MAX][2][2][2];
-extern PFN_BACKEND_FUNC gBackendSampleRateTable[SWR_MULTISAMPLE_TYPE_MAX][SWR_INPUT_COVERAGE_MAX][2][2];
+extern PFN_BACKEND_FUNC gBackendNullPs[SWR_MULTISAMPLE_TYPE_COUNT];
+extern PFN_BACKEND_FUNC gBackendSingleSample[SWR_INPUT_COVERAGE_COUNT][2][2];
+extern PFN_BACKEND_FUNC gBackendPixelRateTable[SWR_MULTISAMPLE_TYPE_COUNT][SWR_MSAA_SAMPLE_PATTERN_COUNT][SWR_INPUT_COVERAGE_COUNT][2][2][2];
+extern PFN_BACKEND_FUNC gBackendSampleRateTable[SWR_MULTISAMPLE_TYPE_COUNT][SWR_INPUT_COVERAGE_COUNT][2][2];
 void SetupPipeline(DRAW_CONTEXT *pDC)
 {
     DRAW_STATE* pState = pDC->pState;
@@ -779,10 +757,6 @@ void SetupPipeline(DRAW_CONTEXT *pDC)
         const bool bMultisampleEnable = ((rastState.sampleCount > SWR_MULTISAMPLE_1X) || rastState.forcedSampleCount) ? 1 : 0;
         const uint32_t centroid = ((psState.barycentricsMask & SWR_BARYCENTRIC_CENTROID_MASK) > 0) ? 1 : 0;
         const uint32_t canEarlyZ = (psState.forceEarlyZ || (!psState.writesODepth && !psState.usesSourceDepth && !psState.usesUAV)) ? 1 : 0;
-
-        // currently only support 'normal' input coverage
-        SWR_ASSERT(psState.inputCoverage == SWR_INPUT_COVERAGE_NORMAL ||
-                   psState.inputCoverage == SWR_INPUT_COVERAGE_NONE);
      
         SWR_BARYCENTRICS_MASK barycentricsMask = (SWR_BARYCENTRICS_MASK)psState.barycentricsMask;
         
@@ -832,7 +806,7 @@ void SetupPipeline(DRAW_CONTEXT *pDC)
         break;
     default:
         pState->pfnProcessPrims = ClipTriangles;
-        pfnBinner = BinTriangles;
+        pfnBinner = GetBinTrianglesFunc((rastState.conservativeRast > 0));
         break;
     };
 
@@ -847,25 +821,44 @@ void SetupPipeline(DRAW_CONTEXT *pDC)
         (pState->state.depthStencilState.depthWriteEnable == FALSE) &&
         (pState->state.depthStencilState.stencilTestEnable == FALSE) &&
         (pState->state.depthStencilState.stencilWriteEnable == FALSE) &&
-        (pState->state.linkageCount == 0))
+        (pState->state.backendState.numAttributes == 0))
     {
         pState->pfnProcessPrims = nullptr;
-        pState->state.linkageMask = 0;
     }
 
     if (pState->state.soState.rasterizerDisable == true)
     {
         pState->pfnProcessPrims = nullptr;
-        pState->state.linkageMask = 0;
     }
 
-    // set up the frontend attrib mask
-    pState->state.feAttribMask = pState->state.linkageMask;
+    // set up the frontend attribute count
+    pState->state.feNumAttributes = 0;
+    const SWR_BACKEND_STATE& backendState = pState->state.backendState;
+    if (backendState.swizzleEnable)
+    {
+        // attribute swizzling is enabled, iterate over the map and record the max attribute used
+        for (uint32_t i = 0; i < backendState.numAttributes; ++i)
+        {
+            pState->state.feNumAttributes = std::max(pState->state.feNumAttributes, (uint32_t)backendState.swizzleMap[i].sourceAttrib + 1);
+        }
+    }
+    else
+    {
+        pState->state.feNumAttributes = pState->state.backendState.numAttributes;
+    }
+
     if (pState->state.soState.soEnable)
     {
+        uint32_t streamMasks = 0;
         for (uint32_t i = 0; i < 4; ++i)
         {
-            pState->state.feAttribMask |= pState->state.soState.streamMasks[i];
+            streamMasks |= pState->state.soState.streamMasks[i];
+        }
+
+        DWORD maxAttrib;
+        if (_BitScanReverse(&maxAttrib, streamMasks))
+        {
+            pState->state.feNumAttributes = std::max(pState->state.feNumAttributes, (uint32_t)(maxAttrib + 1));
         }
     }
 
@@ -1288,7 +1281,7 @@ void SwrInvalidateTiles(
         return;
     }
 
-    SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
+    SWR_CONTEXT *pContext = GetContext(hContext);
     DRAW_CONTEXT* pDC = GetDrawContext(pContext);
 
     pDC->FeWork.type = DISCARDINVALIDATETILES;
@@ -1318,7 +1311,7 @@ void SwrDiscardRect(
         return;
     }
 
-    SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
+    SWR_CONTEXT *pContext = GetContext(hContext);
     DRAW_CONTEXT* pDC = GetDrawContext(pContext);
 
     // Queue a load to the hottile
@@ -1352,7 +1345,7 @@ void SwrDispatch(
     }
 
     RDTSC_START(APIDispatch);
-    SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
+    SWR_CONTEXT *pContext = GetContext(hContext);
     DRAW_CONTEXT* pDC = GetDrawContext(pContext);
 
     pDC->isCompute = true;      // This is a compute context.
@@ -1386,7 +1379,7 @@ void SwrStoreTiles(
 
     RDTSC_START(APIStoreTiles);
 
-    SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
+    SWR_CONTEXT *pContext = GetContext(hContext);
     DRAW_CONTEXT* pDC = GetDrawContext(pContext);
 
     SetupMacroTileScissors(pDC);
@@ -1416,7 +1409,7 @@ void SwrClearRenderTarget(
 
     RDTSC_START(APIClearRenderTarget);
 
-    SWR_CONTEXT *pContext = (SWR_CONTEXT*)hContext;
+    SWR_CONTEXT *pContext = GetContext(hContext);
 
     DRAW_CONTEXT* pDC = GetDrawContext(pContext);
 
@@ -1502,7 +1495,7 @@ void SwrGetStats(
     pDC->FeWork.desc.queryStats.pStats = pStats;
 
     // cannot execute until all previous draws have completed
-    pDC->dependency = pDC->drawId - 1;
+    pDC->dependent = true;
 
     //enqueue
     QueueDraw(pContext);

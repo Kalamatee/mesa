@@ -85,10 +85,13 @@ public:
    {
       ir_variable *var = ir->variable_referenced();
 
-      if (!var || var->data.mode != this->mode || !var->type->is_array())
+      if (!var || var->data.mode != this->mode || !var->type->is_array() ||
+          !is_gl_identifier(var->name))
          return visit_continue;
 
-      if (this->find_frag_outputs && var->data.location == FRAG_RESULT_DATA0) {
+      /* Only match gl_FragData[], not gl_SecondaryFragDataEXT[] */
+      if (this->find_frag_outputs && var->data.location == FRAG_RESULT_DATA0 &&
+          var->data.index == 0) {
          this->fragdata_array = var;
 
          ir_constant *index = ir->array_index->as_constant();
@@ -143,7 +146,8 @@ public:
       if (var->data.mode != this->mode || !var->type->is_array())
          return visit_continue;
 
-      if (this->find_frag_outputs && var->data.location == FRAG_RESULT_DATA0) {
+      if (this->find_frag_outputs && var->data.location == FRAG_RESULT_DATA0 &&
+          var->data.index == 0) {
          /* This is a whole array dereference. */
          this->fragdata_usage |= (1 << var->type->array_size()) - 1;
          this->lower_fragdata_array = false;
@@ -269,7 +273,7 @@ public:
  */
 class replace_varyings_visitor : public ir_rvalue_visitor {
 public:
-   replace_varyings_visitor(struct gl_shader *sha,
+   replace_varyings_visitor(struct gl_linked_shader *sha,
                             const varying_info_visitor *info,
                             unsigned external_texcoord_usage,
                             unsigned external_color_usage,
@@ -375,7 +379,7 @@ public:
                new_var[i]->data.explicit_index = 0;
             }
 
-            ir->head->insert_before(new_var[i]);
+            ir->get_head_raw()->insert_before(new_var[i]);
          }
       }
    }
@@ -496,7 +500,7 @@ public:
    }
 
 private:
-   struct gl_shader *shader;
+   struct gl_linked_shader *shader;
    const varying_info_visitor *info;
    ir_variable *new_fragdata[MAX_DRAW_BUFFERS];
    ir_variable *new_texcoord[MAX_TEXTURE_COORD_UNITS];
@@ -508,7 +512,7 @@ private:
 } /* anonymous namespace */
 
 static void
-lower_texcoord_array(struct gl_shader *shader, const varying_info_visitor *info)
+lower_texcoord_array(struct gl_linked_shader *shader, const varying_info_visitor *info)
 {
    replace_varyings_visitor(shader, info,
                             (1 << MAX_TEXTURE_COORD_UNITS) - 1,
@@ -516,7 +520,7 @@ lower_texcoord_array(struct gl_shader *shader, const varying_info_visitor *info)
 }
 
 static void
-lower_fragdata_array(struct gl_shader *shader)
+lower_fragdata_array(struct gl_linked_shader *shader)
 {
    varying_info_visitor info(ir_var_shader_out, true);
    info.get(shader->ir, 0, NULL);
@@ -527,7 +531,8 @@ lower_fragdata_array(struct gl_shader *shader)
 
 void
 do_dead_builtin_varyings(struct gl_context *ctx,
-                         gl_shader *producer, gl_shader *consumer,
+                         gl_linked_shader *producer,
+                         gl_linked_shader *consumer,
                          unsigned num_tfeedback_decls,
                          tfeedback_decl *tfeedback_decls)
 {

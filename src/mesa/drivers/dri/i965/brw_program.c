@@ -51,11 +51,11 @@ static void
 brw_nir_lower_uniforms(nir_shader *nir, bool is_scalar)
 {
    if (is_scalar) {
-      nir_assign_var_locations(&nir->uniforms, &nir->num_uniforms,
+      nir_assign_var_locations(&nir->uniforms, &nir->num_uniforms, 0,
                                type_size_scalar_bytes);
       nir_lower_io(nir, nir_var_uniform, type_size_scalar_bytes);
    } else {
-      nir_assign_var_locations(&nir->uniforms, &nir->num_uniforms,
+      nir_assign_var_locations(&nir->uniforms, &nir->num_uniforms, 0,
                                type_size_vec4_bytes);
       nir_lower_io(nir, nir_var_uniform, type_size_vec4_bytes);
    }
@@ -345,6 +345,28 @@ brw_get_scratch_bo(struct brw_context *brw,
    }
 }
 
+/**
+ * Reserve enough scratch space for the given stage to hold \p per_thread_size
+ * bytes times the given \p thread_count.
+ */
+void
+brw_alloc_stage_scratch(struct brw_context *brw,
+                        struct brw_stage_state *stage_state,
+                        unsigned per_thread_size,
+                        unsigned thread_count)
+{
+   if (stage_state->per_thread_scratch < per_thread_size) {
+      stage_state->per_thread_scratch = per_thread_size;
+
+      if (stage_state->scratch_bo)
+         drm_intel_bo_unreference(stage_state->scratch_bo);
+
+      stage_state->scratch_bo =
+         drm_intel_bo_alloc(brw->bufmgr, "shader scratch space",
+                            per_thread_size * thread_count, 4096);
+   }
+}
+
 void brwInitFragProgFuncs( struct dd_function_table *functions )
 {
    assert(functions->ProgramStringNotify == _tnl_program_string);
@@ -629,7 +651,7 @@ brw_stage_prog_data_free(const void *p)
 
 void
 brw_dump_ir(const char *stage, struct gl_shader_program *shader_prog,
-            struct gl_shader *shader, struct gl_program *prog)
+            struct gl_linked_shader *shader, struct gl_program *prog)
 {
    if (shader_prog) {
       if (shader->ir) {

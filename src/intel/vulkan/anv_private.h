@@ -83,6 +83,12 @@ extern "C" {
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 static inline uint32_t
+align_down_npot_u32(uint32_t v, uint32_t a)
+{
+   return v - (v % a);
+}
+
+static inline uint32_t
 align_u32(uint32_t v, uint32_t a)
 {
    assert(a != 0 && a == (a & -a));
@@ -475,6 +481,19 @@ VkResult anv_bo_pool_alloc(struct anv_bo_pool *pool, struct anv_bo *bo,
                            uint32_t size);
 void anv_bo_pool_free(struct anv_bo_pool *pool, const struct anv_bo *bo);
 
+struct anv_scratch_pool {
+   /* Indexed by Per-Thread Scratch Space number (the hardware value) and stage */
+   struct anv_bo bos[16][MESA_SHADER_STAGES];
+};
+
+void anv_scratch_pool_init(struct anv_device *device,
+                           struct anv_scratch_pool *pool);
+void anv_scratch_pool_finish(struct anv_device *device,
+                             struct anv_scratch_pool *pool);
+struct anv_bo *anv_scratch_pool_alloc(struct anv_device *device,
+                                      struct anv_scratch_pool *pool,
+                                      gl_shader_stage stage,
+                                      unsigned per_thread_scratch);
 
 void *anv_resolve_entrypoint(uint32_t index);
 
@@ -698,7 +717,7 @@ struct anv_device {
 
     struct anv_queue                            queue;
 
-    struct anv_block_pool                       scratch_block_pool;
+    struct anv_scratch_pool                     scratch_pool;
 
     uint32_t                                    default_mocs;
 
@@ -922,6 +941,11 @@ struct anv_vue_header {
 };
 
 struct anv_descriptor_set_binding_layout {
+#ifndef NDEBUG
+   /* The type of the descriptors in this binding */
+   VkDescriptorType type;
+#endif
+
    /* Number of array elements in this binding */
    uint16_t array_size;
 
@@ -1012,17 +1036,20 @@ anv_descriptor_set_destroy(struct anv_device *device,
                            struct anv_descriptor_pool *pool,
                            struct anv_descriptor_set *set);
 
-#define ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS UINT16_MAX
+#define ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS UINT8_MAX
 
 struct anv_pipeline_binding {
    /* The descriptor set this surface corresponds to.  The special value of
     * ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS indicates that the offset refers
     * to a color attachment and not a regular descriptor.
     */
-   uint16_t set;
+   uint8_t set;
 
-   /* Offset into the descriptor set or attachment list. */
-   uint16_t offset;
+   /* Binding in the descriptor set */
+   uint8_t binding;
+
+   /* Index in the binding */
+   uint8_t index;
 };
 
 struct anv_pipeline_layout {
@@ -1327,9 +1354,7 @@ VkResult anv_cmd_buffer_emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
                                            unsigned stage, struct anv_state *bt_state);
 VkResult anv_cmd_buffer_emit_samplers(struct anv_cmd_buffer *cmd_buffer,
                                       unsigned stage, struct anv_state *state);
-uint32_t gen7_cmd_buffer_flush_descriptor_sets(struct anv_cmd_buffer *cmd_buffer);
-void gen7_cmd_buffer_emit_descriptor_pointers(struct anv_cmd_buffer *cmd_buffer,
-                                              uint32_t stages);
+uint32_t anv_cmd_buffer_flush_descriptor_sets(struct anv_cmd_buffer *cmd_buffer);
 
 struct anv_state anv_cmd_buffer_emit_dynamic(struct anv_cmd_buffer *cmd_buffer,
                                              const void *data, uint32_t size, uint32_t alignment);
@@ -1352,6 +1377,8 @@ VkResult
 anv_cmd_buffer_new_binding_table_block(struct anv_cmd_buffer *cmd_buffer);
 
 void gen8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer);
+void gen8_cmd_buffer_emit_depth_viewport(struct anv_cmd_buffer *cmd_buffer,
+                                         bool depth_clamp_enable);
 void gen7_cmd_buffer_emit_scissor(struct anv_cmd_buffer *cmd_buffer);
 
 void anv_cmd_buffer_emit_state_base_address(struct anv_cmd_buffer *cmd_buffer);
@@ -1450,8 +1477,6 @@ struct anv_pipeline {
    bool                                         needs_data_cache;
 
    const struct brw_stage_prog_data *           prog_data[MESA_SHADER_STAGES];
-   uint32_t                                     scratch_start[MESA_SHADER_STAGES];
-   uint32_t                                     total_scratch;
    struct {
       uint32_t                                  start[MESA_SHADER_GEOMETRY + 1];
       uint32_t                                  size[MESA_SHADER_GEOMETRY + 1];
@@ -1474,8 +1499,9 @@ struct anv_pipeline {
    bool                                         primitive_restart;
    uint32_t                                     topology;
 
-   uint32_t                                     cs_thread_width_max;
    uint32_t                                     cs_right_mask;
+
+   bool                                         depth_clamp_enable;
 
    struct {
       uint32_t                                  sf[7];
@@ -1678,7 +1704,10 @@ struct anv_image_view {
 
 struct anv_image_create_info {
    const VkImageCreateInfo *vk_info;
+
+   /** An opt-in bitmask which filters an ISL-mapping of the Vulkan tiling. */
    isl_tiling_flags_t isl_tiling_flags;
+
    uint32_t stride;
 };
 
@@ -1792,6 +1821,7 @@ struct anv_render_pass_attachment {
    VkFormat                                     format;
    uint32_t                                     samples;
    VkAttachmentLoadOp                           load_op;
+   VkAttachmentStoreOp                          store_op;
    VkAttachmentLoadOp                           stencil_load_op;
 };
 
@@ -1824,7 +1854,18 @@ void *anv_lookup_entrypoint(const char *name);
 
 void anv_dump_image_to_ppm(struct anv_device *device,
                            struct anv_image *image, unsigned miplevel,
-                           unsigned array_layer, const char *filename);
+                           unsigned array_layer, VkImageAspectFlagBits aspect,
+                           const char *filename);
+
+enum anv_dump_action {
+   ANV_DUMP_FRAMEBUFFERS_BIT = 0x1,
+};
+
+void anv_dump_start(struct anv_device *device, enum anv_dump_action actions);
+void anv_dump_finish(void);
+
+void anv_dump_add_framebuffer(struct anv_cmd_buffer *cmd_buffer,
+                              struct anv_framebuffer *fb);
 
 #define ANV_DEFINE_HANDLE_CASTS(__anv_type, __VkType)                      \
                                                                            \

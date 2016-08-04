@@ -58,6 +58,7 @@
 #define NVC0_NEW_3D_TESSFACTOR   (1 << 25)
 #define NVC0_NEW_3D_BUFFERS      (1 << 26)
 #define NVC0_NEW_3D_DRIVERCONST  (1 << 27)
+#define NVC0_NEW_3D_WINDOW_RECTS (1 << 28)
 
 #define NVC0_NEW_CP_PROGRAM   (1 << 0)
 #define NVC0_NEW_CP_SURFACES  (1 << 1)
@@ -103,41 +104,41 @@
 #define NVC0_CB_USR_SIZE            (6 << 16)
 /* 6 driver constbuts, at 2K each */
 #define NVC0_CB_AUX_INFO(s)         NVC0_CB_USR_SIZE + (s << 11)
-#define NVC0_CB_AUX_SIZE            (6 << 11)
+#define NVC0_CB_AUX_SIZE            (1 << 11)
 /* XXX: Figure out what this UNK data is. */
 #define NVC0_CB_AUX_UNK_INFO        0x000
 #define NVC0_CB_AUX_UNK_SIZE        (8 * 4)
-/* 32 textures handles, at 1 32-bits integer each */
+/* 40 textures handles (8 for GM107+ images only), at 1 32-bits integer each */
 #define NVC0_CB_AUX_TEX_INFO(i)     0x020 + (i) * 4
-#define NVC0_CB_AUX_TEX_SIZE        (32 * 4)
+#define NVC0_CB_AUX_TEX_SIZE        (40 * 4)
 /* 8 sets of 32-bits coordinate offsets */
-#define NVC0_CB_AUX_MS_INFO         0x0a0 /* CP */
+#define NVC0_CB_AUX_MS_INFO         0x0c0
 #define NVC0_CB_AUX_MS_SIZE         (8 * 2 * 4)
-/* block/grid size, at 3 32-bits integers each and gridid */
-#define NVC0_CB_AUX_GRID_INFO       0x0e0 /* CP */
-#define NVC0_CB_AUX_GRID_SIZE       (7 * 4)
+/* block/grid size, at 3 32-bits integers each, gridid and work_dim */
+#define NVC0_CB_AUX_GRID_INFO(i)    0x100 + (i) * 4 /* CP */
+#define NVC0_CB_AUX_GRID_SIZE       (8 * 4)
 /* 8 user clip planes, at 4 32-bits floats each */
-#define NVC0_CB_AUX_UCP_INFO        0x100
+#define NVC0_CB_AUX_UCP_INFO        0x120
 #define NVC0_CB_AUX_UCP_SIZE        (PIPE_MAX_CLIP_PLANES * 4 * 4)
 /* 13 ubos, at 4 32-bits integer each */
-#define NVC0_CB_AUX_UBO_INFO(i)     0x100 + (i) * 4 * 4 /* CP */
+#define NVC0_CB_AUX_UBO_INFO(i)     0x120 + (i) * 4 * 4 /* CP */
 #define NVC0_CB_AUX_UBO_SIZE        ((NVC0_MAX_PIPE_CONSTBUFS - 1) * 4 * 4)
 /* 8 sets of 32-bits integer pairs sample offsets */
-#define NVC0_CB_AUX_SAMPLE_INFO     0x180 /* FP */
+#define NVC0_CB_AUX_SAMPLE_INFO     0x1a0 /* FP */
 #define NVC0_CB_AUX_SAMPLE_SIZE     (8 * 4 * 2)
 /* draw parameters (index bais, base instance, drawid) */
-#define NVC0_CB_AUX_DRAW_INFO       0x180 /* VP */
+#define NVC0_CB_AUX_DRAW_INFO       0x1a0 /* VP */
 /* 32 user buffers, at 4 32-bits integers each */
-#define NVC0_CB_AUX_BUF_INFO(i)     0x200 + (i) * 4 * 4
+#define NVC0_CB_AUX_BUF_INFO(i)     0x220 + (i) * 4 * 4
 #define NVC0_CB_AUX_BUF_SIZE        (NVC0_MAX_BUFFERS * 4 * 4)
 /* 8 surfaces, at 16 32-bits integers each */
-#define NVC0_CB_AUX_SU_INFO(i)      0x400 + (i) * 16 * 4
+#define NVC0_CB_AUX_SU_INFO(i)      0x420 + (i) * 16 * 4
 #define NVC0_CB_AUX_SU_SIZE         (NVC0_MAX_IMAGES * 16 * 4)
 /* 1 64-bits address and 1 32-bits sequence */
-#define NVC0_CB_AUX_MP_INFO         0x600
+#define NVC0_CB_AUX_MP_INFO         0x620
 #define NVC0_CB_AUX_MP_SIZE         3 * 4
 /* 4 32-bits floats for the vertex runout, put at the end */
-#define NVC0_CB_AUX_RUNOUT_INFO     NVC0_CB_USR_SIZE + NVC0_CB_AUX_SIZE
+#define NVC0_CB_AUX_RUNOUT_INFO     NVC0_CB_USR_SIZE + (NVC0_CB_AUX_SIZE * 6)
 
 struct nvc0_blitctx;
 
@@ -214,6 +215,7 @@ struct nvc0_context {
    struct pipe_viewport_state viewports[NVC0_MAX_VIEWPORTS];
    unsigned viewports_dirty;
    struct pipe_clip_state clip;
+   struct nvc0_window_rect_stateobj window_rect;
 
    unsigned sample_mask;
    unsigned min_samples;
@@ -244,6 +246,7 @@ struct nvc0_context {
    uint32_t buffers_valid[6];
 
    struct pipe_image_view images[6][NVC0_MAX_IMAGES];
+   struct pipe_sampler_view *images_tic[6][NVC0_MAX_IMAGES]; /* GM107+ */
    uint16_t images_dirty[6];
    uint16_t images_valid[6];
 
@@ -278,6 +281,7 @@ struct pipe_context *nvc0_create(struct pipe_screen *, void *, unsigned flags);
 void nvc0_bufctx_fence(struct nvc0_context *, struct nouveau_bufctx *,
                        bool on_flush);
 void nvc0_default_kick_notify(struct nouveau_pushbuf *);
+const void *nvc0_get_sample_locations(unsigned);
 
 /* nvc0_draw.c */
 extern struct draw_stage *nvc0_draw_render_stage(struct nvc0_context *);
@@ -333,6 +337,9 @@ void nve4_set_tex_handles(struct nvc0_context *);
 void nvc0_validate_surfaces(struct nvc0_context *);
 void nve4_set_surface_info(struct nouveau_pushbuf *, struct pipe_image_view *,
                            struct nvc0_context *);
+void nvc0_mark_image_range_valid(const struct pipe_image_view *);
+void nvc0_update_tic(struct nvc0_context *, struct nv50_tic_entry *,
+                     struct nv04_resource *);
 
 struct pipe_sampler_view *
 nvc0_create_texture_view(struct pipe_context *,
@@ -344,6 +351,9 @@ struct pipe_sampler_view *
 nvc0_create_sampler_view(struct pipe_context *,
                          struct pipe_resource *,
                          const struct pipe_sampler_view *);
+struct pipe_sampler_view *
+gm107_create_texture_view_from_image(struct pipe_context *,
+                                     const struct pipe_image_view *);
 
 /* nvc0_transfer.c */
 void

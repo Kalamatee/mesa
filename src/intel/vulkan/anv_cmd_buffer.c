@@ -359,7 +359,7 @@ anv_cmd_buffer_emit_state_base_address(struct anv_cmd_buffer *cmd_buffer)
    switch (cmd_buffer->device->info.gen) {
    case 7:
       if (cmd_buffer->device->info.is_haswell)
-         return gen7_cmd_buffer_emit_state_base_address(cmd_buffer);
+         return gen75_cmd_buffer_emit_state_base_address(cmd_buffer);
       else
          return gen7_cmd_buffer_emit_state_base_address(cmd_buffer);
    case 8:
@@ -620,7 +620,6 @@ void anv_CmdBindDescriptorSets(
 
    assert(firstSet + descriptorSetCount < MAX_SETS);
 
-   uint32_t dynamic_slot = 0;
    for (uint32_t i = 0; i < descriptorSetCount; i++) {
       ANV_FROM_HANDLE(anv_descriptor_set, set, pDescriptorSets[i]);
       set_layout = layout->set[firstSet + i].layout;
@@ -638,7 +637,7 @@ void anv_CmdBindDescriptorSets(
                cmd_buffer->state.push_constants[s];
 
             unsigned d = layout->set[firstSet + i].dynamic_offset_start;
-            const uint32_t *offsets = pDynamicOffsets + dynamic_slot;
+            const uint32_t *offsets = pDynamicOffsets;
             struct anv_descriptor *desc = set->descriptors;
 
             for (unsigned b = 0; b < set_layout->binding_count; b++) {
@@ -647,11 +646,9 @@ void anv_CmdBindDescriptorSets(
 
                unsigned array_size = set_layout->binding[b].array_size;
                for (unsigned j = 0; j < array_size; j++) {
-                  uint32_t range = 0;
-                  if (desc->buffer_view)
-                     range = desc->buffer_view->range;
                   push->dynamic[d].offset = *(offsets++);
-                  push->dynamic[d].range = range;
+                  push->dynamic[d].range = (desc->buffer_view) ?
+                                            desc->buffer_view->range : 0;
                   desc++;
                   d++;
                }
@@ -809,9 +806,10 @@ anv_cmd_buffer_emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
       if (binding->set == ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS) {
          /* Color attachment binding */
          assert(stage == MESA_SHADER_FRAGMENT);
-         if (binding->offset < subpass->color_count) {
+         assert(binding->binding == 0);
+         if (binding->index < subpass->color_count) {
             const struct anv_image_view *iview =
-               fb->attachments[subpass->color_attachments[binding->offset]];
+               fb->attachments[subpass->color_attachments[binding->index]];
 
             assert(iview->color_rt_surface_state.alloc_size);
             surface_state = iview->color_rt_surface_state;
@@ -830,7 +828,8 @@ anv_cmd_buffer_emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
 
       struct anv_descriptor_set *set =
          cmd_buffer->state.descriptors[binding->set];
-      struct anv_descriptor *desc = &set->descriptors[binding->offset];
+      uint32_t offset = set->layout->binding[binding->binding].descriptor_index;
+      struct anv_descriptor *desc = &set->descriptors[offset + binding->index];
 
       switch (desc->type) {
       case VK_DESCRIPTOR_TYPE_SAMPLER:
@@ -927,7 +926,8 @@ anv_cmd_buffer_emit_samplers(struct anv_cmd_buffer *cmd_buffer,
       struct anv_pipeline_binding *binding = &map->sampler_to_descriptor[s];
       struct anv_descriptor_set *set =
          cmd_buffer->state.descriptors[binding->set];
-      struct anv_descriptor *desc = &set->descriptors[binding->offset];
+      uint32_t offset = set->layout->binding[binding->binding].descriptor_index;
+      struct anv_descriptor *desc = &set->descriptors[offset + binding->index];
 
       if (desc->type != VK_DESCRIPTOR_TYPE_SAMPLER &&
           desc->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
@@ -949,6 +949,54 @@ anv_cmd_buffer_emit_samplers(struct anv_cmd_buffer *cmd_buffer,
       anv_state_clflush(*state);
 
    return VK_SUCCESS;
+}
+
+uint32_t
+anv_cmd_buffer_flush_descriptor_sets(struct anv_cmd_buffer *cmd_buffer)
+{
+   VkShaderStageFlags dirty = cmd_buffer->state.descriptors_dirty &
+                              cmd_buffer->state.pipeline->active_stages;
+
+   VkResult result = VK_SUCCESS;
+   anv_foreach_stage(s, dirty) {
+      result = anv_cmd_buffer_emit_samplers(cmd_buffer, s,
+                                            &cmd_buffer->state.samplers[s]);
+      if (result != VK_SUCCESS)
+         break;
+      result = anv_cmd_buffer_emit_binding_table(cmd_buffer, s,
+                                                 &cmd_buffer->state.binding_tables[s]);
+      if (result != VK_SUCCESS)
+         break;
+   }
+
+   if (result != VK_SUCCESS) {
+      assert(result == VK_ERROR_OUT_OF_DEVICE_MEMORY);
+
+      result = anv_cmd_buffer_new_binding_table_block(cmd_buffer);
+      assert(result == VK_SUCCESS);
+
+      /* Re-emit state base addresses so we get the new surface state base
+       * address before we start emitting binding tables etc.
+       */
+      anv_cmd_buffer_emit_state_base_address(cmd_buffer);
+
+      /* Re-emit all active binding tables */
+      dirty |= cmd_buffer->state.pipeline->active_stages;
+      anv_foreach_stage(s, dirty) {
+         result = anv_cmd_buffer_emit_samplers(cmd_buffer, s,
+                                               &cmd_buffer->state.samplers[s]);
+         if (result != VK_SUCCESS)
+            return result;
+         result = anv_cmd_buffer_emit_binding_table(cmd_buffer, s,
+                                                    &cmd_buffer->state.binding_tables[s]);
+         if (result != VK_SUCCESS)
+            return result;
+      }
+   }
+
+   cmd_buffer->state.descriptors_dirty &= ~dirty;
+
+   return dirty;
 }
 
 struct anv_state
@@ -1035,7 +1083,7 @@ anv_cmd_buffer_push_constants(struct anv_cmd_buffer *cmd_buffer,
       cmd_buffer->state.pipeline->prog_data[stage];
 
    /* If we don't actually have any push constants, bail. */
-   if (data == NULL || prog_data->nr_params == 0)
+   if (data == NULL || prog_data == NULL || prog_data->nr_params == 0)
       return (struct anv_state) { .offset = 0 };
 
    struct anv_state state =
@@ -1065,24 +1113,14 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
    const struct brw_stage_prog_data *prog_data = &cs_prog_data->base;
 
-   const unsigned local_id_dwords = cs_prog_data->local_invocation_id_regs * 8;
-   const unsigned push_constant_data_size =
-      (local_id_dwords + prog_data->nr_params) * 4;
-   const unsigned reg_aligned_constant_size = ALIGN(push_constant_data_size, 32);
-   const unsigned param_aligned_count =
-      reg_aligned_constant_size / sizeof(uint32_t);
-
    /* If we don't actually have any push constants, bail. */
-   if (reg_aligned_constant_size == 0)
+   if (cs_prog_data->push.total.size == 0)
       return (struct anv_state) { .offset = 0 };
 
-   const unsigned threads = pipeline->cs_thread_width_max;
-   const unsigned total_push_constants_size =
-      reg_aligned_constant_size * threads;
    const unsigned push_constant_alignment =
       cmd_buffer->device->info.gen < 8 ? 32 : 64;
    const unsigned aligned_total_push_constants_size =
-      ALIGN(total_push_constants_size, push_constant_alignment);
+      ALIGN(cs_prog_data->push.total.size, push_constant_alignment);
    struct anv_state state =
       anv_cmd_buffer_alloc_dynamic_state(cmd_buffer,
                                          aligned_total_push_constants_size,
@@ -1091,21 +1129,33 @@ anv_cmd_buffer_cs_push_constants(struct anv_cmd_buffer *cmd_buffer)
    /* Walk through the param array and fill the buffer with data */
    uint32_t *u32_map = state.map;
 
-   brw_cs_fill_local_id_payload(cs_prog_data, u32_map, threads,
-                                reg_aligned_constant_size);
-
-   /* Setup uniform data for the first thread */
-   for (unsigned i = 0; i < prog_data->nr_params; i++) {
-      uint32_t offset = (uintptr_t)prog_data->param[i];
-      u32_map[local_id_dwords + i] = *(uint32_t *)((uint8_t *)data + offset);
+   if (cs_prog_data->push.cross_thread.size > 0) {
+      assert(cs_prog_data->thread_local_id_index < 0 ||
+             cs_prog_data->thread_local_id_index >=
+                cs_prog_data->push.cross_thread.dwords);
+      for (unsigned i = 0;
+           i < cs_prog_data->push.cross_thread.dwords;
+           i++) {
+         uint32_t offset = (uintptr_t)prog_data->param[i];
+         u32_map[i] = *(uint32_t *)((uint8_t *)data + offset);
+      }
    }
 
-   /* Copy uniform data from the first thread to every other thread */
-   const size_t uniform_data_size = prog_data->nr_params * sizeof(uint32_t);
-   for (unsigned t = 1; t < threads; t++) {
-      memcpy(&u32_map[t * param_aligned_count + local_id_dwords],
-             &u32_map[local_id_dwords],
-             uniform_data_size);
+   if (cs_prog_data->push.per_thread.size > 0) {
+      for (unsigned t = 0; t < cs_prog_data->threads; t++) {
+         unsigned dst =
+            8 * (cs_prog_data->push.per_thread.regs * t +
+                 cs_prog_data->push.cross_thread.regs);
+         unsigned src = cs_prog_data->push.cross_thread.dwords;
+         for ( ; src < prog_data->nr_params; src++, dst++) {
+            if (src != cs_prog_data->thread_local_id_index) {
+               uint32_t offset = (uintptr_t)prog_data->param[src];
+               u32_map[dst] = *(uint32_t *)((uint8_t *)data + offset);
+            } else {
+               u32_map[dst] = t * cs_prog_data->simd_size;
+            }
+         }
+      }
    }
 
    if (!cmd_buffer->device->info.has_llc)

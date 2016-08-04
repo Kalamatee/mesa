@@ -538,7 +538,7 @@ intel_renderbuffer_update_wrapper(struct brw_context *brw,
 
    if (!layered) {
       irb->layer_count = 1;
-   } else if (image->TexObject->NumLayers > 0) {
+   } else if (mt->target != GL_TEXTURE_3D && image->TexObject->NumLayers > 0) {
       irb->layer_count = image->TexObject->NumLayers;
    } else {
       irb->layer_count = mt->level[level].depth / layer_multiplier;
@@ -1061,14 +1061,6 @@ brw_render_cache_set_check_flush(struct brw_context *brw, drm_intel_bo *bo)
       return;
 
    if (brw->gen >= 6) {
-      if (brw->gen == 6) {
-         /* [Dev-SNB{W/A}]: Before a PIPE_CONTROL with Write Cache
-          * Flush Enable = 1, a PIPE_CONTROL with any non-zero
-          * post-sync-op is required.
-          */
-         brw_emit_post_sync_nonzero_flush(brw);
-      }
-
       brw_emit_pipe_control_flush(brw,
                                   PIPE_CONTROL_DEPTH_CACHE_FLUSH |
                                   PIPE_CONTROL_RENDER_TARGET_FLUSH |

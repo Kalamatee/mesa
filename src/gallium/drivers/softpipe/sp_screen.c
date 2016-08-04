@@ -246,6 +246,8 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 0;
    case PIPE_CAP_POLYGON_OFFSET_CLAMP:
       return 0;
+   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
+      return 1;
    case PIPE_CAP_MULTISAMPLE_Z_RESOLVE:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
    case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
@@ -254,7 +256,6 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TXQS:
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_SHAREABLE_SHADERS:
-   case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
    case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
@@ -274,6 +275,10 @@ softpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_PCI_FUNCTION:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
    case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
+   case PIPE_CAP_TGSI_VOTE:
+   case PIPE_CAP_MAX_WINDOW_RECTANGLES:
+   case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
+   case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
       return 0;
    case PIPE_CAP_SHADER_BUFFER_OFFSET_ALIGNMENT:
       return 4;
@@ -394,6 +399,24 @@ softpipe_is_format_supported( struct pipe_screen *screen,
        format_desc->layout == UTIL_FORMAT_LAYOUT_ASTC) {
       /* Software decoding is not hooked up. */
       return FALSE;
+   }
+
+   if ((bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) &&
+       ((bind & PIPE_BIND_DISPLAY_TARGET) == 0) &&
+       target != PIPE_BUFFER) {
+      const struct util_format_description *desc =
+         util_format_description(format);
+      if (desc->nr_channels == 3 && desc->is_array) {
+         /* Don't support any 3-component formats for rendering/texturing
+          * since we don't support the corresponding 8-bit 3 channel UNORM
+          * formats.  This allows us to support GL_ARB_copy_image between
+          * GL_RGB8 and GL_RGB8UI, for example.  Otherwise, we may be asked to
+          * do a resource copy between PIPE_FORMAT_R8G8B8_UINT and
+          * PIPE_FORMAT_R8G8B8X8_UNORM, for example, which will not work
+          * (different bpp).
+          */
+         return FALSE;
+      }
    }
 
    if (format_desc->layout == UTIL_FORMAT_LAYOUT_ETC &&

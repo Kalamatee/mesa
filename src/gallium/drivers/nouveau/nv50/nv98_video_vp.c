@@ -20,6 +20,10 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#if defined(__AROS__)
+#define __BSD_VISIBLE
+#endif
+
 #include "nv50/nv98_video.h"
 #include <sys/mman.h>
 

@@ -242,11 +242,11 @@ static const struct vgpu10_format_entry format_conversion_table[] =
    { PIPE_FORMAT_R16G16B16A16_SINT,     SVGA3D_R16G16B16A16_SINT,   SVGA3D_R16G16B16A16_SINT,    0 },
    { PIPE_FORMAT_R32_UINT,              SVGA3D_R32_UINT,            SVGA3D_R32_UINT,             0 },
    { PIPE_FORMAT_R32G32_UINT,           SVGA3D_R32G32_UINT,         SVGA3D_R32G32_UINT,          0 },
-   { PIPE_FORMAT_R32G32B32_UINT,        SVGA3D_R32G32B32_UINT,      SVGA3D_R32G32B32_UINT,       0 },
+   { PIPE_FORMAT_R32G32B32_UINT,        SVGA3D_R32G32B32_UINT,      SVGA3D_FORMAT_INVALID,       0 },
    { PIPE_FORMAT_R32G32B32A32_UINT,     SVGA3D_R32G32B32A32_UINT,   SVGA3D_R32G32B32A32_UINT,    0 },
    { PIPE_FORMAT_R32_SINT,              SVGA3D_R32_SINT,            SVGA3D_R32_SINT,             0 },
    { PIPE_FORMAT_R32G32_SINT,           SVGA3D_R32G32_SINT,         SVGA3D_R32G32_SINT,          0 },
-   { PIPE_FORMAT_R32G32B32_SINT,        SVGA3D_R32G32B32_SINT,      SVGA3D_R32G32B32_SINT,       0 },
+   { PIPE_FORMAT_R32G32B32_SINT,        SVGA3D_R32G32B32_SINT,      SVGA3D_FORMAT_INVALID,       0 },
    { PIPE_FORMAT_R32G32B32A32_SINT,     SVGA3D_R32G32B32A32_SINT,   SVGA3D_R32G32B32A32_SINT,    0 },
    { PIPE_FORMAT_A8_UINT,               SVGA3D_FORMAT_INVALID,      SVGA3D_FORMAT_INVALID,       0 },
    { PIPE_FORMAT_I8_UINT,               SVGA3D_FORMAT_INVALID,      SVGA3D_FORMAT_INVALID,       0 },
@@ -1916,7 +1916,7 @@ svga_format_size(SVGA3dSurfaceFormat format,
    *block_width = format_cap_table[format].block_width;
    *block_height = format_cap_table[format].block_height;
    *bytes_per_block = format_cap_table[format].block_bytes;
-   /* Make sure the the table entry was valid */
+   /* Make sure the table entry was valid */
    if (*block_width == 0)
       debug_printf("Bad table entry for %s\n", svga_format_name(format));
    assert(*block_width);
@@ -2191,5 +2191,25 @@ svga_sampler_format(SVGA3dSurfaceFormat format)
       return SVGA3D_R32_FLOAT_X8X24_TYPELESS;
    default:
       return format;
+   }
+}
+
+
+/**
+ * Is the given format an uncompressed snorm format?
+ */
+bool
+svga_format_is_uncompressed_snorm(SVGA3dSurfaceFormat format)
+{
+   switch (format) {
+   case SVGA3D_R8G8B8A8_SNORM:
+   case SVGA3D_R8G8_SNORM:
+   case SVGA3D_R8_SNORM:
+   case SVGA3D_R16G16B16A16_SNORM:
+   case SVGA3D_R16G16_SNORM:
+   case SVGA3D_R16_SNORM:
+      return true;
+   default:
+      return false;
    }
 }

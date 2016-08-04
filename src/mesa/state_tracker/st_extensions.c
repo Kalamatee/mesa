@@ -105,6 +105,9 @@ void st_init_limits(struct pipe_screen *screen,
    c->MaxViewportHeight =
    c->MaxRenderbufferSize = c->MaxTextureRectSize;
 
+   c->ViewportSubpixelBits =
+      screen->get_param(screen, PIPE_CAP_VIEWPORT_SUBPIXEL_BITS);
+
    c->MaxDrawBuffers = c->MaxColorAttachments =
       _clamp(screen->get_param(screen, PIPE_CAP_MAX_RENDER_TARGETS),
              1, MAX_DRAW_BUFFERS);
@@ -314,6 +317,7 @@ void st_init_limits(struct pipe_screen *screen,
    }
 
    c->LowerTessLevel = true;
+   c->LowerCsDerivedVariables = true;
    c->PrimitiveRestartForPatches =
       screen->get_param(screen, PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES);
 
@@ -442,7 +446,6 @@ void st_init_limits(struct pipe_screen *screen,
          c->Program[MESA_SHADER_COMPUTE].MaxImageUniforms;
    c->MaxCombinedShaderOutputResources += c->MaxCombinedImageUniforms;
    c->MaxImageUnits = MAX_IMAGE_UNITS;
-   c->MaxImageSamples = 0; /* XXX */
    if (c->MaxCombinedImageUniforms) {
       extensions->ARB_shader_image_load_store = GL_TRUE;
       extensions->ARB_shader_image_size = GL_TRUE;
@@ -459,6 +462,9 @@ void st_init_limits(struct pipe_screen *screen,
     */
    c->MaxFramebufferLayers =
       screen->get_param(screen, PIPE_CAP_MAX_TEXTURE_ARRAY_LAYERS);
+
+   c->MaxWindowRectangles =
+      screen->get_param(screen, PIPE_CAP_MAX_WINDOW_RECTANGLES);
 }
 
 
@@ -596,6 +602,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_sample_shading),               PIPE_CAP_SAMPLE_SHADING                   },
       { o(ARB_seamless_cube_map),            PIPE_CAP_SEAMLESS_CUBE_MAP                },
       { o(ARB_shader_draw_parameters),       PIPE_CAP_DRAW_PARAMETERS                  },
+      { o(ARB_shader_group_vote),            PIPE_CAP_TGSI_VOTE                        },
       { o(ARB_shader_stencil_export),        PIPE_CAP_SHADER_STENCIL_EXPORT            },
       { o(ARB_shader_texture_image_samples), PIPE_CAP_TGSI_TXQS                        },
       { o(ARB_shader_texture_lod),           PIPE_CAP_SM3                              },
@@ -622,6 +629,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(EXT_texture_mirror_clamp),         PIPE_CAP_TEXTURE_MIRROR_CLAMP             },
       { o(EXT_texture_swizzle),              PIPE_CAP_TEXTURE_SWIZZLE                  },
       { o(EXT_transform_feedback),           PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS        },
+      { o(EXT_window_rectangles),            PIPE_CAP_MAX_WINDOW_RECTANGLES            },
 
       { o(AMD_pinned_memory),                PIPE_CAP_RESOURCE_FROM_USER_MEMORY        },
       { o(ATI_meminfo),                      PIPE_CAP_QUERY_MEMORY_INFO                },
@@ -772,6 +780,8 @@ void st_init_extensions(struct pipe_screen *screen,
 
    /* Required: vertex fetch support. */
    static const struct st_extension_format_mapping vertex_mapping[] = {
+      { { o(EXT_vertex_array_bgra) },
+        { PIPE_FORMAT_B8G8R8A8_UNORM } },
       { { o(ARB_vertex_type_2_10_10_10_rev) },
         { PIPE_FORMAT_R10G10B10A2_UNORM,
           PIPE_FORMAT_B10G10R10A2_UNORM,
@@ -824,7 +834,6 @@ void st_init_extensions(struct pipe_screen *screen,
    extensions->EXT_provoking_vertex = GL_TRUE;
 
    extensions->EXT_texture_env_dot3 = GL_TRUE;
-   extensions->EXT_vertex_array_bgra = GL_TRUE;
 
    extensions->ATI_fragment_shader = GL_TRUE;
    extensions->ATI_texture_env_combine3 = GL_TRUE;
@@ -904,6 +913,7 @@ void st_init_extensions(struct pipe_screen *screen,
 
       extensions->EXT_shader_integer_mix = GL_TRUE;
       extensions->ARB_arrays_of_arrays = GL_TRUE;
+      extensions->MESA_shader_integer_functions = GL_TRUE;
    } else {
       /* Optional integer support for GLSL 1.2. */
       if (screen->get_shader_param(screen, PIPE_SHADER_VERTEX,
@@ -918,6 +928,8 @@ void st_init_extensions(struct pipe_screen *screen,
       /* Integer textures make no sense before GLSL 1.30 */
       extensions->EXT_texture_integer = GL_FALSE;
    }
+
+   consts->GLSLZeroInit = options->glsl_zero_init;
 
    consts->UniformBooleanTrue = consts->NativeIntegers ? ~0U : fui(1.0f);
 
@@ -980,6 +992,11 @@ void st_init_extensions(struct pipe_screen *screen,
          get_max_samples_for_formats(screen, ARRAY_SIZE(color_formats),
                                      color_formats, 16,
                                      PIPE_BIND_RENDER_TARGET);
+
+      consts->MaxImageSamples =
+         get_max_samples_for_formats(screen, ARRAY_SIZE(color_formats),
+                                     color_formats, 16,
+                                     PIPE_BIND_SHADER_IMAGE);
 
       consts->MaxColorTextureSamples =
          get_max_samples_for_formats(screen, ARRAY_SIZE(color_formats),

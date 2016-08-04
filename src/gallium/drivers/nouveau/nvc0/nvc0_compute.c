@@ -113,6 +113,30 @@ nvc0_screen_compute_setup(struct nvc0_screen *screen,
    PUSH_DATA (push, screen->txc->offset + 65536);
    PUSH_DATA (push, NVC0_TSC_MAX_ENTRIES - 1);
 
+   /* MS sample coordinate offsets */
+   BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
+   PUSH_DATA (push, NVC0_CB_AUX_SIZE);
+   PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   BEGIN_1IC0(push, NVC0_CP(CB_POS), 1 + 2 * 8);
+   PUSH_DATA (push, NVC0_CB_AUX_MS_INFO);
+   PUSH_DATA (push, 0); /* 0 */
+   PUSH_DATA (push, 0);
+   PUSH_DATA (push, 1); /* 1 */
+   PUSH_DATA (push, 0);
+   PUSH_DATA (push, 0); /* 2 */
+   PUSH_DATA (push, 1);
+   PUSH_DATA (push, 1); /* 3 */
+   PUSH_DATA (push, 1);
+   PUSH_DATA (push, 2); /* 4 */
+   PUSH_DATA (push, 0);
+   PUSH_DATA (push, 3); /* 5 */
+   PUSH_DATA (push, 0);
+   PUSH_DATA (push, 2); /* 6 */
+   PUSH_DATA (push, 1);
+   PUSH_DATA (push, 3); /* 7 */
+   PUSH_DATA (push, 1);
+
    return 0;
 }
 
@@ -229,7 +253,7 @@ nvc0_compute_validate_driverconst(struct nvc0_context *nvc0)
    struct nvc0_screen *screen = nvc0->screen;
 
    BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
-   PUSH_DATA (push, 2048);
+   PUSH_DATA (push, NVC0_CB_AUX_SIZE);
    PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
    PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
    BEGIN_NVC0(push, NVC0_CP(CB_BIND), 1);
@@ -247,7 +271,7 @@ nvc0_compute_validate_buffers(struct nvc0_context *nvc0)
    int i;
 
    BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
-   PUSH_DATA (push, 2048);
+   PUSH_DATA (push, NVC0_CB_AUX_SIZE);
    PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
    PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(s));
    BEGIN_1IC0(push, NVC0_CP(CB_POS), 1 + 4 * NVC0_MAX_BUFFERS);
@@ -262,6 +286,9 @@ nvc0_compute_validate_buffers(struct nvc0_context *nvc0)
          PUSH_DATA (push, nvc0->buffers[s][i].buffer_size);
          PUSH_DATA (push, 0);
          BCTX_REFN(nvc0->bufctx_cp, CP_BUF, res, RDWR);
+         util_range_add(&res->valid_buffer_range,
+                        nvc0->buffers[s][i].buffer_offset,
+                        nvc0->buffers[s][i].buffer_size);
       } else {
          PUSH_DATA (push, 0);
          PUSH_DATA (push, 0);
@@ -321,6 +348,7 @@ nvc0_compute_validate_surfaces(struct nvc0_context *nvc0)
    nvc0_validate_suf(nvc0, 5);
 
    /* Invalidate all FRAGMENT images because they are aliased with COMPUTE. */
+   nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_SUF);
    nvc0->dirty_3d |= NVC0_NEW_3D_SURFACES;
    nvc0->images_dirty[4] |= nvc0->images_valid[4];
 }
@@ -352,7 +380,8 @@ nvc0_state_validate_cp(struct nvc0_context *nvc0, uint32_t mask)
 }
 
 static void
-nvc0_compute_upload_input(struct nvc0_context *nvc0, const void *input)
+nvc0_compute_upload_input(struct nvc0_context *nvc0,
+                          const struct pipe_grid_info *info)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
    struct nvc0_screen *screen = nvc0->screen;
@@ -371,13 +400,23 @@ nvc0_compute_upload_input(struct nvc0_context *nvc0, const void *input)
       /* NOTE: size is limited to 4 KiB, which is < NV04_PFIFO_MAX_PACKET_LEN */
       BEGIN_1IC0(push, NVC0_CP(CB_POS), 1 + cp->parm_size / 4);
       PUSH_DATA (push, 0);
-      PUSH_DATAp(push, input, cp->parm_size / 4);
+      PUSH_DATAp(push, info->input, cp->parm_size / 4);
 
       nvc0_compute_invalidate_constbufs(nvc0);
-
-      BEGIN_NVC0(push, NVC0_CP(FLUSH), 1);
-      PUSH_DATA (push, NVC0_COMPUTE_FLUSH_CB);
    }
+
+   BEGIN_NVC0(push, NVC0_CP(CB_SIZE), 3);
+   PUSH_DATA (push, NVC0_CB_AUX_SIZE);
+   PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+   PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(5));
+
+   BEGIN_1IC0(push, NVC0_CP(CB_POS), 1 + 1);
+   /* (7) as we only upload work_dim on nvc0, the rest uses special regs */
+   PUSH_DATA (push, NVC0_CB_AUX_GRID_INFO(7));
+   PUSH_DATA (push, info->work_dim);
+
+   BEGIN_NVC0(push, NVC0_CP(FLUSH), 1);
+   PUSH_DATA (push, NVC0_COMPUTE_FLUSH_CB);
 }
 
 void
@@ -394,7 +433,7 @@ nvc0_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
       return;
    }
 
-   nvc0_compute_upload_input(nvc0, info->input);
+   nvc0_compute_upload_input(nvc0, info);
 
    BEGIN_NVC0(push, NVC0_CP(CP_START_ID), 1);
    PUSH_DATA (push, nvc0_program_symbol_offset(cp, info->pc));
@@ -455,4 +494,7 @@ nvc0_launch_grid(struct pipe_context *pipe, const struct pipe_grid_info *info)
 
    /* TODO: Not sure if this is really necessary. */
    nvc0_compute_invalidate_surfaces(nvc0, 5);
+   nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_SUF);
+   nvc0->dirty_cp |= NVC0_NEW_CP_SURFACES;
+   nvc0->images_dirty[5] |= nvc0->images_valid[5];
 }

@@ -40,6 +40,8 @@
 #include "brw_compiler.h"
 #include "intel_aub.h"
 
+#include "isl/isl.h"
+
 #ifdef __cplusplus
 extern "C" {
 	/* Evil hack for using libdrm in a c++ compiler. */
@@ -366,7 +368,7 @@ struct brw_compute_program {
 
 
 struct brw_shader {
-   struct gl_shader base;
+   struct gl_linked_shader base;
 
    bool compiled_once;
 };
@@ -390,7 +392,7 @@ struct interpolation_mode_map {
 static inline bool brw_any_flat_varyings(struct interpolation_mode_map *map)
 {
    for (int i = 0; i < BRW_VARYING_SLOT_COUNT; i++)
-      if (map->mode[i] == INTERP_QUALIFIER_FLAT)
+      if (map->mode[i] == INTERP_MODE_FLAT)
          return true;
 
    return false;
@@ -399,7 +401,7 @@ static inline bool brw_any_flat_varyings(struct interpolation_mode_map *map)
 static inline bool brw_any_noperspective_varyings(struct interpolation_mode_map *map)
 {
    for (int i = 0; i < BRW_VARYING_SLOT_COUNT; i++)
-      if (map->mode[i] == INTERP_QUALIFIER_NOPERSPECTIVE)
+      if (map->mode[i] == INTERP_MODE_NOPERSPECTIVE)
          return true;
 
    return false;
@@ -674,8 +676,27 @@ struct brw_stage_state
    /**
     * Optional scratch buffer used to store spilled register values and
     * variably-indexed GRF arrays.
+    *
+    * The contents of this buffer are short-lived so the same memory can be
+    * re-used at will for multiple shader programs (executed by the same fixed
+    * function).  However reusing a scratch BO for which shader invocations
+    * are still in flight with a per-thread scratch slot size other than the
+    * original can cause threads with different scratch slot size and FFTID
+    * (which may be executed in parallel depending on the shader stage and
+    * hardware generation) to map to an overlapping region of the scratch
+    * space, which can potentially lead to mutual scratch space corruption.
+    * For that reason if you borrow this scratch buffer you should only be
+    * using the slot size given by the \c per_thread_scratch member below,
+    * unless you're taking additional measures to synchronize thread execution
+    * across slot size changes.
     */
    drm_intel_bo *scratch_bo;
+
+   /**
+    * Scratch slot size allocated for each thread in the buffer object given
+    * by \c scratch_bo.
+    */
+   uint32_t per_thread_scratch;
 
    /** Offset in the program cache to the program */
    uint32_t prog_offset;
@@ -723,35 +744,10 @@ struct brw_context
 
    struct
    {
-      void (*update_texture_surface)(struct gl_context *ctx,
-                                     unsigned unit,
-                                     uint32_t *surf_offset,
-                                     bool for_gather, uint32_t plane);
       uint32_t (*update_renderbuffer_surface)(struct brw_context *brw,
                                               struct gl_renderbuffer *rb,
                                               bool layered, unsigned unit,
                                               uint32_t surf_index);
-
-      void (*emit_texture_surface_state)(struct brw_context *brw,
-                                         struct intel_mipmap_tree *mt,
-                                         GLenum target,
-                                         unsigned min_layer,
-                                         unsigned max_layer,
-                                         unsigned min_level,
-                                         unsigned max_level,
-                                         unsigned format,
-                                         unsigned swizzle,
-                                         uint32_t *surf_offset,
-                                         int surf_index,
-                                         bool rw, bool for_gather);
-      void (*emit_buffer_surface_state)(struct brw_context *brw,
-                                        uint32_t *out_offset,
-                                        drm_intel_bo *bo,
-                                        unsigned buffer_offset,
-                                        unsigned surface_format,
-                                        unsigned buffer_size,
-                                        unsigned pitch,
-                                        bool rw);
       void (*emit_null_surface_state)(struct brw_context *brw,
                                       unsigned width,
                                       unsigned height,
@@ -894,6 +890,8 @@ struct brw_context
     * fragment shader instructions.
     */
    bool needs_unlit_centroid_workaround;
+
+   struct isl_device isl_dev;
 
    GLuint NewGLState;
    struct {
@@ -1453,7 +1451,7 @@ void brw_debug_batch(struct brw_context *brw);
 void brw_annotate_aub(struct brw_context *brw);
 
 /*======================================================================
- * brw_tex.c
+ * intel_tex_validate.c
  */
 void brw_validate_textures( struct brw_context *brw );
 
@@ -1477,10 +1475,14 @@ void brwInitFragProgFuncs( struct dd_function_table *functions );
 static inline int
 brw_get_scratch_size(int size)
 {
-   return util_next_power_of_two(size | 1023);
+   return MAX2(1024, util_next_power_of_two(size));
 }
 void brw_get_scratch_bo(struct brw_context *brw,
 			drm_intel_bo **scratch_bo, int size);
+void brw_alloc_stage_scratch(struct brw_context *brw,
+                             struct brw_stage_state *stage_state,
+                             unsigned per_thread_size,
+                             unsigned thread_count);
 void brw_init_shader_time(struct brw_context *brw);
 int brw_get_shader_time_index(struct brw_context *brw,
                               struct gl_shader_program *shader_prog,
@@ -1558,15 +1560,15 @@ brw_update_sol_surface(struct brw_context *brw,
                        uint32_t *out_offset, unsigned num_vector_components,
                        unsigned stride_dwords, unsigned offset_dwords);
 void brw_upload_ubo_surfaces(struct brw_context *brw,
-			     struct gl_shader *shader,
+			     struct gl_linked_shader *shader,
                              struct brw_stage_state *stage_state,
                              struct brw_stage_prog_data *prog_data);
 void brw_upload_abo_surfaces(struct brw_context *brw,
-                             struct gl_shader *shader,
+                             struct gl_linked_shader *shader,
                              struct brw_stage_state *stage_state,
                              struct brw_stage_prog_data *prog_data);
 void brw_upload_image_surfaces(struct brw_context *brw,
-                               struct gl_shader *shader,
+                               struct gl_linked_shader *shader,
                                struct brw_stage_state *stage_state,
                                struct brw_stage_prog_data *prog_data);
 
@@ -1690,16 +1692,8 @@ gen7_emit_push_constant_state(struct brw_context *brw, unsigned vs_size,
                               unsigned gs_size, unsigned fs_size);
 
 void
-gen7_emit_urb_state(struct brw_context *brw,
-                    unsigned nr_vs_entries,
-                    unsigned vs_size, unsigned vs_start,
-                    unsigned nr_hs_entries,
-                    unsigned hs_size, unsigned hs_start,
-                    unsigned nr_ds_entries,
-                    unsigned ds_size, unsigned ds_start,
-                    unsigned nr_gs_entries,
-                    unsigned gs_size, unsigned gs_start);
-
+gen7_upload_urb(struct brw_context *brw, unsigned vs_size,
+                bool gs_present, bool tess_present);
 
 /* brw_reset.c */
 extern GLenum
@@ -1801,7 +1795,6 @@ brw_program_reloc(struct brw_context *brw, uint32_t state_offset,
 bool brw_do_cubemap_normalize(struct exec_list *instructions);
 bool brw_lower_texture_gradients(struct brw_context *brw,
                                  struct exec_list *instructions);
-bool brw_do_lower_unnormalized_offset(struct exec_list *instructions);
 
 extern const char * const conditional_modifier[16];
 extern const char *const pred_ctrl_align16[16];

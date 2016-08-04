@@ -84,7 +84,8 @@ gen8_choose_msaa_layout(const struct isl_device *dev,
    if (isl_format_is_yuv(info->format))
       return false;
 
-   if (isl_surf_usage_is_depth_or_stencil(info->usage))
+   if (isl_surf_usage_is_depth_or_stencil(info->usage) ||
+       (info->usage & ISL_SURF_USAGE_HIZ_BIT))
       require_interleaved = true;
 
    if (require_array && require_interleaved)
@@ -198,7 +199,23 @@ gen8_choose_image_alignment_el(const struct isl_device *dev,
                                enum isl_msaa_layout msaa_layout,
                                struct isl_extent3d *image_align_el)
 {
+   /* Handled by isl_choose_image_alignment_el */
+   assert(info->format != ISL_FORMAT_HIZ);
+
    assert(!isl_tiling_is_std_y(tiling));
+
+   const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
+   if (fmtl->txc == ISL_TXC_CCS) {
+      /*
+       * Broadwell PRM Vol 7, "MCS Buffer for Render Target(s)" (p. 676):
+       *
+       *    "Mip-mapped and arrayed surfaces are supported with MCS buffer
+       *    layout with these alignments in the RT space: Horizontal
+       *    Alignment = 256 and Vertical Alignment = 128.
+       */
+      *image_align_el = isl_extent3d(256 / fmtl->bw, 128 / fmtl->bh, 1);
+      return;
+   }
 
    /* The below text from the Broadwell PRM provides some insight into the
     * hardware's requirements for LOD alignment.  From the Broadwell PRM >>

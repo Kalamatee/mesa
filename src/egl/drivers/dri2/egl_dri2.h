@@ -177,8 +177,11 @@ struct dri2_egl_display
    const __DRI2interopExtension *interop;
    int                       fd;
 
+   /* dri2_initialize/dri2_terminate increment/decrement this count, so does
+    * dri2_make_current (tracks if there are active contexts/surfaces). */
+   int                       ref_count;
+
    int                       own_device;
-   int                       swap_available;
    int                       invalidate_available;
    int                       min_swap_interval;
    int                       max_swap_interval;
@@ -198,6 +201,7 @@ struct dri2_egl_display
 #ifdef HAVE_X11_PLATFORM
    xcb_connection_t         *conn;
    int                      screen;
+   int                      swap_available;
 #ifdef HAVE_DRI3
    struct loader_dri3_extensions loader_dri3_ext;
 #endif
@@ -291,8 +295,13 @@ struct dri2_egl_surface
    /* EGL-owned buffers */
    __DRIbuffer           *local_buffers[__DRI_BUFFER_COUNT];
 #endif
-};
 
+#if defined(HAVE_SURFACELESS_PLATFORM)
+      __DRIimage           *front;
+      unsigned int         visual;
+#endif
+
+};
 
 struct dri2_egl_config
 {

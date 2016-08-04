@@ -65,6 +65,7 @@ prepare_target(struct gl_context *ctx, GLuint name, GLenum target,
                GLenum *internalFormat,
                GLuint *width,
                GLuint *height,
+               GLuint *num_samples,
                const char *dbg_prefix)
 {
    if (name == 0) {
@@ -131,11 +132,18 @@ prepare_target(struct gl_context *ctx, GLuint name, GLenum target,
       *internalFormat = rb->InternalFormat;
       *width = rb->Width;
       *height = rb->Height;
+      *num_samples = rb->NumSamples;
       *tex_image = NULL;
    } else {
       struct gl_texture_object *texObj = _mesa_lookup_texture(ctx, name);
 
       if (!texObj) {
+         /*
+          * From GL_ARB_copy_image specification:
+          * "INVALID_VALUE is generated if either <srcName> or <dstName> does
+          * not correspond to a valid renderbuffer or texture object according
+          * to the corresponding target parameter."
+          */
          _mesa_error(ctx, GL_INVALID_VALUE,
                      "glCopyImageSubData(%sName = %u)", dbg_prefix, name);
          return false;
@@ -152,12 +160,11 @@ prepare_target(struct gl_context *ctx, GLuint name, GLenum target,
       /* Note that target will not be a cube face name */
       if (texObj->Target != target) {
          /*
-          * From GL_ARB_copy_image specification:
-          * "INVALID_VALUE is generated if either <srcName> or <dstName> does
-          * not correspond to a valid renderbuffer or texture object according
-          * to the corresponding target parameter."
+          * From GL_ARB_copy_image_specification:
+          * "INVALID_ENUM is generated if the target does not match the type
+          * of the object."
           */
-         _mesa_error(ctx, GL_INVALID_VALUE,
+         _mesa_error(ctx, GL_INVALID_ENUM,
                      "glCopyImageSubData(%sTarget = %s)", dbg_prefix,
                      _mesa_enum_to_string(target));
          return false;
@@ -178,7 +185,7 @@ prepare_target(struct gl_context *ctx, GLuint name, GLenum target,
          for (i = 0; i < depth; i++) {
             if (!texObj->Image[z+i][level]) {
                /* missing cube face */
-               _mesa_error(ctx, GL_INVALID_OPERATION,
+               _mesa_error(ctx, GL_INVALID_VALUE,
                            "glCopyImageSubData(missing cube face)");
                return false;
             }
@@ -201,6 +208,7 @@ prepare_target(struct gl_context *ctx, GLuint name, GLenum target,
       *internalFormat = (*tex_image)->InternalFormat;
       *width = (*tex_image)->Width;
       *height = (*tex_image)->Height;
+      *num_samples = (*tex_image)->NumSamples;
    }
 
    return true;
@@ -456,6 +464,7 @@ _mesa_CopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLevel,
    GLenum srcIntFormat, dstIntFormat;
    GLuint src_w, src_h, dst_w, dst_h;
    GLuint src_bw, src_bh, dst_bw, dst_bh;
+   GLuint src_num_samples, dst_num_samples;
    int dstWidth, dstHeight, dstDepth;
    int i;
 
@@ -477,12 +486,12 @@ _mesa_CopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLevel,
 
    if (!prepare_target(ctx, srcName, srcTarget, srcLevel, srcZ, srcDepth,
                        &srcTexImage, &srcRenderbuffer, &srcFormat,
-                       &srcIntFormat, &src_w, &src_h, "src"))
+                       &srcIntFormat, &src_w, &src_h, &src_num_samples, "src"))
       return;
 
    if (!prepare_target(ctx, dstName, dstTarget, dstLevel, dstZ, srcDepth,
                        &dstTexImage, &dstRenderbuffer, &dstFormat,
-                       &dstIntFormat, &dst_w, &dst_h, "dst"))
+                       &dstIntFormat, &dst_w, &dst_h, &dst_num_samples, "dst"))
       return;
 
    _mesa_get_format_block_size(srcFormat, &src_bw, &src_bh);
@@ -565,8 +574,7 @@ _mesa_CopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLevel,
       return;
    }
 
-   if (srcTexImage && dstTexImage &&
-       srcTexImage->NumSamples != dstTexImage->NumSamples) {
+   if (src_num_samples != dst_num_samples) {
       _mesa_error(ctx, GL_INVALID_OPERATION,
                   "glCopyImageSubData(number of samples mismatch)");
       return;

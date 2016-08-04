@@ -104,7 +104,7 @@ debug_backtrace_capture(struct debug_stack_frame *backtrace,
    }
 #endif
 
-#if defined(PIPE_CC_GCC)
+#if defined(PIPE_CC_GCC) && (__GNUC__ < 6)
    frame_pointer = ((const void **)__builtin_frame_address(1));
 #elif defined(PIPE_CC_MSVC) && defined(PIPE_ARCH_X86)
    __asm {

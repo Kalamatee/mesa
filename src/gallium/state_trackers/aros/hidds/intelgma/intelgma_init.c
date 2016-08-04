@@ -3,7 +3,7 @@
     $Id: intelG45_init.c 50703 2015-05-18 00:54:09Z neil $
 */
 
-#define DEBUG 1
+#define DEBUG 0
 #include <aros/debug.h>
 
 #include <proto/exec.h>
@@ -457,7 +457,7 @@ const struct TagItem Requirements[] =
 
 int G45_Init(struct g45staticdata *sd)
 {
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     sd->MemPool = CreatePool(MEMF_CLEAR | MEMF_PUBLIC | MEMF_SEM_PROTECTED | MEMF_31BIT, 8192, 4096);
     if (!sd->MemPool)

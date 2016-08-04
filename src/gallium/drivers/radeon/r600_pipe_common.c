@@ -67,6 +67,7 @@ void radeon_shader_binary_clean(struct radeon_shader_binary *b)
 	FREE(b->global_symbol_offsets);
 	FREE(b->relocs);
 	FREE(b->disasm_string);
+	FREE(b->llvm_ir_string);
 }
 
 /*
@@ -168,10 +169,10 @@ void r600_need_dma_space(struct r600_common_context *ctx, unsigned num_dw,
 	/* Flush if there's not enough space, or if the memory usage per IB
 	 * is too large.
 	 */
-	if ((num_dw + ctx->dma.cs->cdw) > ctx->dma.cs->max_dw ||
+	if (!ctx->ws->cs_check_space(ctx->dma.cs, num_dw) ||
 	    !ctx->ws->cs_memory_below_limit(ctx->dma.cs, vram, gtt)) {
 		ctx->dma.flush(ctx, RADEON_FLUSH_ASYNC, NULL);
-		assert((num_dw + ctx->dma.cs->cdw) <= ctx->dma.cs->max_dw);
+		assert((num_dw + ctx->dma.cs->current.cdw) <= ctx->dma.cs->current.max_dw);
 	}
 
 	/* If GPUVM is not supported, the CS checker needs 2 entries
@@ -268,6 +269,8 @@ static void r600_flush_from_st(struct pipe_context *ctx,
 
 	if (flags & PIPE_FLUSH_END_OF_FRAME)
 		rflags |= RADEON_FLUSH_END_OF_FRAME;
+	if (flags & PIPE_FLUSH_DEFERRED)
+		rflags |= RADEON_FLUSH_ASYNC;
 
 	if (rctx->dma.cs) {
 		rctx->dma.flush(rctx, rflags, fence ? &sdma_fence : NULL);
@@ -295,11 +298,81 @@ static void r600_flush_dma_ring(void *ctx, unsigned flags,
 {
 	struct r600_common_context *rctx = (struct r600_common_context *)ctx;
 	struct radeon_winsys_cs *cs = rctx->dma.cs;
+	struct radeon_saved_cs saved;
+	bool check_vm =
+		(rctx->screen->debug_flags & DBG_CHECK_VM) &&
+		rctx->check_vm_faults;
 
-	if (radeon_emitted(cs, 0))
-		rctx->ws->cs_flush(cs, flags, &rctx->last_sdma_fence);
+	if (!radeon_emitted(cs, 0)) {
+		if (fence)
+			rctx->ws->fence_reference(fence, rctx->last_sdma_fence);
+		return;
+	}
+
+	if (check_vm)
+		radeon_save_cs(rctx->ws, cs, &saved);
+
+	rctx->ws->cs_flush(cs, flags, &rctx->last_sdma_fence);
 	if (fence)
 		rctx->ws->fence_reference(fence, rctx->last_sdma_fence);
+
+	if (check_vm) {
+		/* Use conservative timeout 800ms, after which we won't wait any
+		 * longer and assume the GPU is hung.
+		 */
+		rctx->ws->fence_wait(rctx->ws, rctx->last_sdma_fence, 800*1000*1000);
+
+		rctx->check_vm_faults(rctx, &saved, RING_DMA);
+		radeon_clear_saved_cs(&saved);
+	}
+}
+
+/**
+ * Store a linearized copy of all chunks of \p cs together with the buffer
+ * list in \p saved.
+ */
+void radeon_save_cs(struct radeon_winsys *ws, struct radeon_winsys_cs *cs,
+		    struct radeon_saved_cs *saved)
+{
+	void *buf;
+	unsigned i;
+
+	/* Save the IB chunks. */
+	saved->num_dw = cs->prev_dw + cs->current.cdw;
+	saved->ib = MALLOC(4 * saved->num_dw);
+	if (!saved->ib)
+		goto oom;
+
+	buf = saved->ib;
+	for (i = 0; i < cs->num_prev; ++i) {
+		memcpy(buf, cs->prev[i].buf, cs->prev[i].cdw * 4);
+		buf += cs->prev[i].cdw;
+	}
+	memcpy(buf, cs->current.buf, cs->current.cdw * 4);
+
+	/* Save the buffer list. */
+	saved->bo_count = ws->cs_get_buffer_list(cs, NULL);
+	saved->bo_list = CALLOC(saved->bo_count,
+				sizeof(saved->bo_list[0]));
+	if (!saved->bo_list) {
+		FREE(saved->ib);
+		goto oom;
+	}
+	ws->cs_get_buffer_list(cs, saved->bo_list);
+
+	return;
+
+oom:
+	fprintf(stderr, "%s: out of memory\n", __func__);
+	memset(saved, 0, sizeof(*saved));
+}
+
+void radeon_clear_saved_cs(struct radeon_saved_cs *saved)
+{
+	FREE(saved->ib);
+	FREE(saved->bo_list);
+
+	memset(saved, 0, sizeof(*saved));
 }
 
 static enum pipe_reset_status r600_get_reset_status(struct pipe_context *ctx)
@@ -327,7 +400,8 @@ static void r600_set_debug_callback(struct pipe_context *ctx,
 }
 
 bool r600_common_context_init(struct r600_common_context *rctx,
-			      struct r600_common_screen *rscreen)
+			      struct r600_common_screen *rscreen,
+			      unsigned context_flags)
 {
 	util_slab_create(&rctx->pool_transfers,
 			 sizeof(struct r600_transfer), 64,
@@ -349,10 +423,19 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	rctx->b.transfer_map = u_transfer_map_vtbl;
 	rctx->b.transfer_flush_region = u_transfer_flush_region_vtbl;
 	rctx->b.transfer_unmap = u_transfer_unmap_vtbl;
-	rctx->b.transfer_inline_write = u_default_transfer_inline_write;
-        rctx->b.memory_barrier = r600_memory_barrier;
+	rctx->b.texture_subdata = u_default_texture_subdata;
+	rctx->b.memory_barrier = r600_memory_barrier;
 	rctx->b.flush = r600_flush_from_st;
 	rctx->b.set_debug_callback = r600_set_debug_callback;
+
+	/* evergreen_compute.c has a special codepath for global buffers.
+	 * Everything else can use the direct path.
+	 */
+	if ((rscreen->chip_class == EVERGREEN || rscreen->chip_class == CAYMAN) &&
+	    (context_flags & PIPE_CONTEXT_COMPUTE_ONLY))
+		rctx->b.buffer_subdata = u_default_buffer_subdata;
+	else
+		rctx->b.buffer_subdata = r600_buffer_subdata;
 
 	if (rscreen->info.drm_major == 2 && rscreen->info.drm_minor >= 43) {
 		rctx->b.get_device_reset_status = r600_get_reset_status;
@@ -369,10 +452,10 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 	r600_query_init(rctx);
 	cayman_init_msaa(&rctx->b);
 
-	rctx->allocator_so_filled_size =
+	rctx->allocator_zeroed_memory =
 		u_suballocator_create(&rctx->b, rscreen->info.gart_page_size,
-				      4, 0, PIPE_USAGE_DEFAULT, TRUE);
-	if (!rctx->allocator_so_filled_size)
+				      0, PIPE_USAGE_DEFAULT, true);
+	if (!rctx->allocator_zeroed_memory)
 		return false;
 
 	rctx->uploader = u_upload_create(&rctx->b, 1024 * 1024,
@@ -397,6 +480,20 @@ bool r600_common_context_init(struct r600_common_context *rctx,
 
 void r600_common_context_cleanup(struct r600_common_context *rctx)
 {
+	unsigned i,j;
+
+	/* Release DCC stats. */
+	for (i = 0; i < ARRAY_SIZE(rctx->dcc_stats); i++) {
+		assert(!rctx->dcc_stats[i].query_active);
+
+		for (j = 0; j < ARRAY_SIZE(rctx->dcc_stats[i].ps_stats); j++)
+			if (rctx->dcc_stats[i].ps_stats[j])
+				rctx->b.destroy_query(&rctx->b,
+						      rctx->dcc_stats[i].ps_stats[j]);
+
+		r600_texture_reference(&rctx->dcc_stats[i].tex, NULL);
+	}
+
 	if (rctx->gfx.cs)
 		rctx->ws->cs_destroy(rctx->gfx.cs);
 	if (rctx->dma.cs)
@@ -410,9 +507,10 @@ void r600_common_context_cleanup(struct r600_common_context *rctx)
 
 	util_slab_destroy(&rctx->pool_transfers);
 
-	if (rctx->allocator_so_filled_size) {
-		u_suballocator_destroy(rctx->allocator_so_filled_size);
+	if (rctx->allocator_zeroed_memory) {
+		u_suballocator_destroy(rctx->allocator_zeroed_memory);
 	}
+	rctx->ws->fence_reference(&rctx->last_gfx_fence, NULL);
 	rctx->ws->fence_reference(&rctx->last_sdma_fence, NULL);
 }
 
@@ -482,6 +580,8 @@ static const struct debug_named_value common_debug_options[] = {
 	{ "sisched", DBG_SI_SCHED, "Enable LLVM SI Machine Instruction Scheduler." },
 	{ "mono", DBG_MONOLITHIC_SHADERS, "Use old-style monolithic shaders compiled on demand" },
 	{ "noce", DBG_NO_CE, "Disable the constant engine"},
+	{ "unsafemath", DBG_UNSAFE_MATH, "Enable unsafe math shader optimizations" },
+	{ "nodccfb", DBG_NO_DCC_FB, "Disable separate DCC on the main framebuffer" },
 
 	DEBUG_NAMED_VALUE_END /* must be last */
 };
@@ -772,8 +872,8 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 			 * 4 * MAX_MEM_ALLOC_SIZE.
 			 */
 			*max_global_size = MIN2(4 * max_mem_alloc_size,
-				rscreen->info.gart_size +
-				rscreen->info.vram_size);
+						MAX2(rscreen->info.gart_size,
+						     rscreen->info.vram_size));
 		}
 		return sizeof(uint64_t);
 
@@ -797,10 +897,7 @@ static int r600_get_compute_param(struct pipe_screen *screen,
 		if (ret) {
 			uint64_t *max_mem_alloc_size = ret;
 
-			/* XXX: The limit in older kernels is 256 MB.  We
-			 * should add a query here for newer kernels.
-			 */
-			*max_mem_alloc_size = 256 * 1024 * 1024;
+			*max_mem_alloc_size = rscreen->info.max_alloc_size;
 		}
 		return sizeof(uint64_t);
 
@@ -1006,6 +1103,8 @@ bool r600_common_screen_init(struct r600_common_screen *rscreen,
 		printf("chip_class = %i\n", rscreen->info.chip_class);
 		printf("gart_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.gart_size, 1024*1024));
 		printf("vram_size = %i MB\n", (int)DIV_ROUND_UP(rscreen->info.vram_size, 1024*1024));
+		printf("max_alloc_size = %i MB\n",
+		       (int)DIV_ROUND_UP(rscreen->info.max_alloc_size, 1024*1024));
 		printf("has_virtual_memory = %i\n", rscreen->info.has_virtual_memory);
 		printf("gfx_ib_pad_with_type2 = %i\n", rscreen->info.gfx_ib_pad_with_type2);
 		printf("has_sdma = %i\n", rscreen->info.has_sdma);

@@ -105,6 +105,7 @@ EXT(ARB_shader_atomic_counters              , ARB_shader_atomic_counters        
 EXT(ARB_shader_bit_encoding                 , ARB_shader_bit_encoding                , GLL, GLC,  x ,  x , 2010)
 EXT(ARB_shader_clock                        , ARB_shader_clock                       , GLL, GLC,  x ,  x , 2015)
 EXT(ARB_shader_draw_parameters              , ARB_shader_draw_parameters             , GLL, GLC,  x ,  x , 2013)
+EXT(ARB_shader_group_vote                   , ARB_shader_group_vote                  , GLL, GLC,  x ,  x , 2013)
 EXT(ARB_shader_image_load_store             , ARB_shader_image_load_store            , GLL, GLC,  x ,  x , 2011)
 EXT(ARB_shader_image_size                   , ARB_shader_image_size                  , GLL, GLC,  x ,  x , 2012)
 EXT(ARB_shader_objects                      , dummy_true                             , GLL, GLC,  x ,  x , 2002)
@@ -190,7 +191,7 @@ EXT(EXT_blend_minmax                        , EXT_blend_minmax                  
 EXT(EXT_blend_subtract                      , dummy_true                             , GLL,  x ,  x ,  x , 1995)
 EXT(EXT_buffer_storage                      , ARB_buffer_storage                     ,  x ,  x ,  x ,  31, 2015)
 EXT(EXT_clip_cull_distance                  , ARB_cull_distance                      ,  x ,  x ,  x ,  30, 2016)
-EXT(EXT_color_buffer_float                  , dummy_true                             ,  x ,  x , ES1,  30, 2013)
+EXT(EXT_color_buffer_float                  , dummy_true                             ,  x ,  x ,  x ,  30, 2013)
 EXT(EXT_compiled_vertex_array               , dummy_true                             , GLL,  x ,  x ,  x , 1996)
 EXT(EXT_copy_image                          , OES_copy_image                         ,  x ,  x ,  x ,  30, 2014)
 EXT(EXT_copy_texture                        , dummy_true                             , GLL,  x ,  x ,  x , 1995)
@@ -266,6 +267,7 @@ EXT(EXT_transform_feedback                  , EXT_transform_feedback            
 EXT(EXT_unpack_subimage                     , dummy_true                             ,  x ,  x ,  x , ES2, 2011)
 EXT(EXT_vertex_array                        , dummy_true                             , GLL,  x ,  x ,  x , 1995)
 EXT(EXT_vertex_array_bgra                   , EXT_vertex_array_bgra                  , GLL, GLC,  x ,  x , 2008)
+EXT(EXT_window_rectangles                   , EXT_window_rectangles                  , GLL, GLC,  x ,  30, 2016)
 
 EXT(GREMEDY_string_marker                   , GREMEDY_string_marker                  , GLL, GLC,  x ,  x , 2007)
 
@@ -283,8 +285,10 @@ EXT(KHR_robust_buffer_access_behavior       , ARB_robust_buffer_access_behavior 
 EXT(KHR_robustness                          , KHR_robustness                         , GLL, GLC,  x , ES2, 2012)
 EXT(KHR_texture_compression_astc_hdr        , KHR_texture_compression_astc_hdr       , GLL, GLC,  x , ES2, 2012)
 EXT(KHR_texture_compression_astc_ldr        , KHR_texture_compression_astc_ldr       , GLL, GLC,  x , ES2, 2012)
+EXT(KHR_texture_compression_astc_sliced_3d  , KHR_texture_compression_astc_sliced_3d , GLL, GLC,  x , ES2, 2015)
 
 EXT(MESA_pack_invert                        , MESA_pack_invert                       , GLL, GLC,  x ,  x , 2002)
+EXT(MESA_shader_integer_functions           , MESA_shader_integer_functions          , GLL, GLC,  x ,  30, 2016)
 EXT(MESA_texture_signed_rgba                , EXT_texture_snorm                      , GLL, GLC,  x ,  x , 2009)
 EXT(MESA_window_pos                         , dummy_true                             , GLL,  x ,  x ,  x , 2000)
 EXT(MESA_ycbcr_texture                      , MESA_ycbcr_texture                     , GLL, GLC,  x ,  x , 2002)
@@ -368,7 +372,7 @@ EXT(OES_texture_half_float_linear           , OES_texture_half_float_linear     
 EXT(OES_texture_mirrored_repeat             , dummy_true                             ,  x ,  x , ES1,  x , 2005)
 EXT(OES_texture_npot                        , ARB_texture_non_power_of_two           ,  x ,  x , ES1, ES2, 2005)
 EXT(OES_texture_stencil8                    , ARB_texture_stencil8                   ,  x ,  x ,  x ,  30, 2014)
-EXT(OES_texture_storage_multisample_2d_array, ARB_texture_multisample                ,  x ,  x , ES1,  31, 2014)
+EXT(OES_texture_storage_multisample_2d_array, ARB_texture_multisample                ,  x ,  x ,  x ,  31, 2014)
 EXT(OES_vertex_array_object                 , dummy_true                             ,  x ,  x , ES1, ES2, 2010)
 
 EXT(S3_s3tc                                 , ANGLE_texture_compression_dxt          , GLL, GLC,  x ,  x , 1999)

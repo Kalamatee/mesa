@@ -85,11 +85,11 @@ emit_rs_state(struct anv_pipeline *pipeline,
       .BackFaceFillMode = vk_to_gen_fillmode[info->polygonMode],
       .ScissorRectangleEnable = !(extra && extra->use_rectlist),
 #if GEN_GEN == 8
-      .ViewportZClipTestEnable = true,
+      .ViewportZClipTestEnable = !pipeline->depth_clamp_enable,
 #else
       /* GEN9+ splits ViewportZClipTestEnable into near and far enable bits */
-      .ViewportZFarClipTestEnable = true,
-      .ViewportZNearClipTestEnable = true,
+      .ViewportZFarClipTestEnable = !pipeline->depth_clamp_enable,
+      .ViewportZNearClipTestEnable = !pipeline->depth_clamp_enable,
 #endif
       .GlobalDepthOffsetEnableSolid = info->depthBiasEnable,
       .GlobalDepthOffsetEnableWireframe = info->depthBiasEnable,
@@ -97,171 +97,6 @@ emit_rs_state(struct anv_pipeline *pipeline,
    };
 
    GENX(3DSTATE_RASTER_pack)(NULL, pipeline->gen8.raster, &raster);
-}
-
-static void
-emit_cb_state(struct anv_pipeline *pipeline,
-              const VkPipelineColorBlendStateCreateInfo *info,
-              const VkPipelineMultisampleStateCreateInfo *ms_info)
-{
-   struct anv_device *device = pipeline->device;
-
-   uint32_t num_dwords = GENX(BLEND_STATE_length);
-   pipeline->blend_state =
-      anv_state_pool_alloc(&device->dynamic_state_pool, num_dwords * 4, 64);
-
-   struct GENX(BLEND_STATE) blend_state = {
-      .AlphaToCoverageEnable = ms_info && ms_info->alphaToCoverageEnable,
-      .AlphaToOneEnable = ms_info && ms_info->alphaToOneEnable,
-   };
-
-   /* Default everything to disabled */
-   for (uint32_t i = 0; i < 8; i++) {
-      blend_state.Entry[i].WriteDisableAlpha = true;
-      blend_state.Entry[i].WriteDisableRed = true;
-      blend_state.Entry[i].WriteDisableGreen = true;
-      blend_state.Entry[i].WriteDisableBlue = true;
-   }
-
-   struct anv_pipeline_bind_map *map =
-      &pipeline->bindings[MESA_SHADER_FRAGMENT];
-
-   bool has_writeable_rt = false;
-   for (unsigned i = 0; i < map->surface_count; i++) {
-      struct anv_pipeline_binding *binding = &map->surface_to_descriptor[i];
-
-      /* All color attachments are at the beginning of the binding table */
-      if (binding->set != ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS)
-         break;
-
-      /* We can have at most 8 attachments */
-      assert(i < 8);
-
-      if (binding->offset >= info->attachmentCount)
-         continue;
-
-      const VkPipelineColorBlendAttachmentState *a =
-         &info->pAttachments[binding->offset];
-
-      if (a->srcColorBlendFactor != a->srcAlphaBlendFactor ||
-          a->dstColorBlendFactor != a->dstAlphaBlendFactor ||
-          a->colorBlendOp != a->alphaBlendOp) {
-         blend_state.IndependentAlphaBlendEnable = true;
-      }
-
-      blend_state.Entry[i] = (struct GENX(BLEND_STATE_ENTRY)) {
-         .LogicOpEnable = info->logicOpEnable,
-         .LogicOpFunction = vk_to_gen_logic_op[info->logicOp],
-         .ColorBufferBlendEnable = a->blendEnable,
-         .PreBlendSourceOnlyClampEnable = false,
-         .ColorClampRange = COLORCLAMP_RTFORMAT,
-         .PreBlendColorClampEnable = true,
-         .PostBlendColorClampEnable = true,
-         .SourceBlendFactor = vk_to_gen_blend[a->srcColorBlendFactor],
-         .DestinationBlendFactor = vk_to_gen_blend[a->dstColorBlendFactor],
-         .ColorBlendFunction = vk_to_gen_blend_op[a->colorBlendOp],
-         .SourceAlphaBlendFactor = vk_to_gen_blend[a->srcAlphaBlendFactor],
-         .DestinationAlphaBlendFactor = vk_to_gen_blend[a->dstAlphaBlendFactor],
-         .AlphaBlendFunction = vk_to_gen_blend_op[a->alphaBlendOp],
-         .WriteDisableAlpha = !(a->colorWriteMask & VK_COLOR_COMPONENT_A_BIT),
-         .WriteDisableRed = !(a->colorWriteMask & VK_COLOR_COMPONENT_R_BIT),
-         .WriteDisableGreen = !(a->colorWriteMask & VK_COLOR_COMPONENT_G_BIT),
-         .WriteDisableBlue = !(a->colorWriteMask & VK_COLOR_COMPONENT_B_BIT),
-      };
-
-      if (a->colorWriteMask != 0)
-         has_writeable_rt = true;
-
-      /* Our hardware applies the blend factor prior to the blend function
-       * regardless of what function is used.  Technically, this means the
-       * hardware can do MORE than GL or Vulkan specify.  However, it also
-       * means that, for MIN and MAX, we have to stomp the blend factor to
-       * ONE to make it a no-op.
-       */
-      if (a->colorBlendOp == VK_BLEND_OP_MIN ||
-          a->colorBlendOp == VK_BLEND_OP_MAX) {
-         blend_state.Entry[i].SourceBlendFactor = BLENDFACTOR_ONE;
-         blend_state.Entry[i].DestinationBlendFactor = BLENDFACTOR_ONE;
-      }
-      if (a->alphaBlendOp == VK_BLEND_OP_MIN ||
-          a->alphaBlendOp == VK_BLEND_OP_MAX) {
-         blend_state.Entry[i].SourceAlphaBlendFactor = BLENDFACTOR_ONE;
-         blend_state.Entry[i].DestinationAlphaBlendFactor = BLENDFACTOR_ONE;
-      }
-   }
-
-   struct GENX(BLEND_STATE_ENTRY) *bs0 = &blend_state.Entry[0];
-
-   anv_batch_emit(&pipeline->batch, GENX(3DSTATE_PS_BLEND), blend) {
-      blend.AlphaToCoverageEnable         = blend_state.AlphaToCoverageEnable;
-      blend.HasWriteableRT                = has_writeable_rt;
-      blend.ColorBufferBlendEnable        = bs0->ColorBufferBlendEnable;
-      blend.SourceAlphaBlendFactor        = bs0->SourceAlphaBlendFactor;
-      blend.DestinationAlphaBlendFactor   = bs0->DestinationAlphaBlendFactor;
-      blend.SourceBlendFactor             = bs0->SourceBlendFactor;
-      blend.DestinationBlendFactor        = bs0->DestinationBlendFactor;
-      blend.AlphaTestEnable               = false;
-      blend.IndependentAlphaBlendEnable   =
-         blend_state.IndependentAlphaBlendEnable;
-   }
-
-   GENX(BLEND_STATE_pack)(NULL, pipeline->blend_state.map, &blend_state);
-   if (!device->info.has_llc)
-      anv_state_clflush(pipeline->blend_state);
-
-   anv_batch_emit(&pipeline->batch, GENX(3DSTATE_BLEND_STATE_POINTERS), bsp) {
-      bsp.BlendStatePointer      = pipeline->blend_state.offset;
-      bsp.BlendStatePointerValid = true;
-   }
-}
-
-static void
-emit_ds_state(struct anv_pipeline *pipeline,
-              const VkPipelineDepthStencilStateCreateInfo *info)
-{
-   uint32_t *dw = GEN_GEN == 8 ?
-      pipeline->gen8.wm_depth_stencil : pipeline->gen9.wm_depth_stencil;
-
-   if (info == NULL) {
-      /* We're going to OR this together with the dynamic state.  We need
-       * to make sure it's initialized to something useful.
-       */
-      memset(pipeline->gen8.wm_depth_stencil, 0,
-             sizeof(pipeline->gen8.wm_depth_stencil));
-      memset(pipeline->gen9.wm_depth_stencil, 0,
-             sizeof(pipeline->gen9.wm_depth_stencil));
-      return;
-   }
-
-   /* VkBool32 depthBoundsTestEnable; // optional (depth_bounds_test) */
-
-   struct GENX(3DSTATE_WM_DEPTH_STENCIL) wm_depth_stencil = {
-      .DepthTestEnable = info->depthTestEnable,
-      .DepthBufferWriteEnable = info->depthWriteEnable,
-      .DepthTestFunction = vk_to_gen_compare_op[info->depthCompareOp],
-      .DoubleSidedStencilEnable = true,
-
-      .StencilTestEnable = info->stencilTestEnable,
-      .StencilBufferWriteEnable = info->stencilTestEnable,
-      .StencilFailOp = vk_to_gen_stencil_op[info->front.failOp],
-      .StencilPassDepthPassOp = vk_to_gen_stencil_op[info->front.passOp],
-      .StencilPassDepthFailOp = vk_to_gen_stencil_op[info->front.depthFailOp],
-      .StencilTestFunction = vk_to_gen_compare_op[info->front.compareOp],
-      .BackfaceStencilFailOp = vk_to_gen_stencil_op[info->back.failOp],
-      .BackfaceStencilPassDepthPassOp = vk_to_gen_stencil_op[info->back.passOp],
-      .BackfaceStencilPassDepthFailOp =vk_to_gen_stencil_op[info->back.depthFailOp],
-      .BackfaceStencilTestFunction = vk_to_gen_compare_op[info->back.compareOp],
-   };
-
-   /* From the Broadwell PRM:
-    *
-    *    "If Depth_Test_Enable = 1 AND Depth_Test_func = EQUAL, the
-    *    Depth_Write_Enable must be set to 0."
-    */
-   if (info->depthTestEnable && info->depthCompareOp == VK_COMPARE_OP_EQUAL)
-      wm_depth_stencil.DepthBufferWriteEnable = false;
-
-   GENX(3DSTATE_WM_DEPTH_STENCIL_pack)(NULL, dw, &wm_depth_stencil);
 }
 
 static void
@@ -286,9 +121,6 @@ emit_ms_state(struct anv_pipeline *pipeline,
 
    if (info && info->pSampleMask)
       sample_mask &= info->pSampleMask[0];
-
-   if (info && info->sampleShadingEnable)
-      anv_finishme("VkPipelineMultisampleStateCreateInfo::sampleShadingEnable");
 
    anv_batch_emit(&pipeline->batch, GENX(3DSTATE_MULTISAMPLE), ms) {
       /* The PRM says that this bit is valid only for DX9:
@@ -317,6 +149,8 @@ genX(graphics_pipeline_create)(
     VkPipeline*                                 pPipeline)
 {
    ANV_FROM_HANDLE(anv_device, device, _device);
+   ANV_FROM_HANDLE(anv_render_pass, pass, pCreateInfo->renderPass);
+   struct anv_subpass *subpass = &pass->subpasses[pCreateInfo->subpass];
    struct anv_pipeline *pipeline;
    VkResult result;
    uint32_t offset, length;
@@ -343,42 +177,31 @@ genX(graphics_pipeline_create)(
    emit_rs_state(pipeline, pCreateInfo->pRasterizationState,
                  pCreateInfo->pMultisampleState, extra);
    emit_ms_state(pipeline, pCreateInfo->pMultisampleState);
-   emit_ds_state(pipeline, pCreateInfo->pDepthStencilState);
+   emit_ds_state(pipeline, pCreateInfo->pDepthStencilState, pass, subpass);
    emit_cb_state(pipeline, pCreateInfo->pColorBlendState,
                            pCreateInfo->pMultisampleState);
 
    emit_urb_setup(pipeline);
 
+   emit_3dstate_clip(pipeline, pCreateInfo->pViewportState,
+                     pCreateInfo->pRasterizationState, extra);
+   emit_3dstate_streamout(pipeline, pCreateInfo->pRasterizationState);
+
    const struct brw_wm_prog_data *wm_prog_data = get_wm_prog_data(pipeline);
-   anv_batch_emit(&pipeline->batch, GENX(3DSTATE_CLIP), clip) {
-      clip.ClipEnable               = !(extra && extra->use_rectlist);
-      clip.EarlyCullEnable          = true;
-      clip.APIMode                  = 1; /* D3D */
-      clip.ViewportXYClipTestEnable = true;
-
-      clip.ClipMode =
-         pCreateInfo->pRasterizationState->rasterizerDiscardEnable ?
-         REJECT_ALL : NORMAL;
-
-      clip.NonPerspectiveBarycentricEnable = wm_prog_data ?
-         (wm_prog_data->barycentric_interp_modes & 0x38) != 0 : 0;
-
-      clip.TriangleStripListProvokingVertexSelect  = 0;
-      clip.LineStripListProvokingVertexSelect      = 0;
-      clip.TriangleFanProvokingVertexSelect        = 1;
-
-      clip.MinimumPointWidth  = 0.125;
-      clip.MaximumPointWidth  = 255.875;
-      clip.MaximumVPIndex     = pCreateInfo->pViewportState->viewportCount - 1;
-   }
-
    anv_batch_emit(&pipeline->batch, GENX(3DSTATE_WM), wm) {
       wm.StatisticsEnable                    = true;
       wm.LineEndCapAntialiasingRegionWidth   = _05pixels;
       wm.LineAntialiasingRegionWidth         = _10pixels;
-      wm.EarlyDepthStencilControl            = NORMAL;
       wm.ForceThreadDispatchEnable           = NORMAL;
       wm.PointRasterizationRule              = RASTRULE_UPPER_RIGHT;
+
+      if (wm_prog_data && wm_prog_data->early_fragment_tests) {
+         wm.EarlyDepthStencilControl         = PREPS;
+      } else if (wm_prog_data && wm_prog_data->has_side_effects) {
+         wm.EarlyDepthStencilControl         = PSEXEC;
+      } else {
+         wm.EarlyDepthStencilControl         = NORMAL;
+      }
 
       wm.BarycentricInterpolationMode = pipeline->ps_ksp0 == NO_KERNEL ?
          0 : wm_prog_data->barycentric_interp_modes;
@@ -399,7 +222,12 @@ genX(graphics_pipeline_create)(
          gs.BindingTableEntryCount  = 0;
          gs.ExpectedVertexCount     = gs_prog_data->vertices_in;
 
-         gs.ScratchSpaceBasePointer = pipeline->scratch_start[MESA_SHADER_GEOMETRY];
+         gs.ScratchSpaceBasePointer = (struct anv_address) {
+            .bo = anv_scratch_pool_alloc(device, &device->scratch_pool,
+                                         MESA_SHADER_GEOMETRY,
+                                         gs_prog_data->base.base.total_scratch),
+            .offset = 0,
+         };
          gs.PerThreadScratchSpace   = scratch_space(&gs_prog_data->base.base);
          gs.OutputVertexSize        = gs_prog_data->output_vertex_size_hwords * 2 - 1;
          gs.OutputTopology          = gs_prog_data->output_topology;
@@ -466,7 +294,12 @@ genX(graphics_pipeline_create)(
          vs.AccessesUAV                   = false;
          vs.SoftwareExceptionEnable       = false;
 
-         vs.ScratchSpaceBasePointer = pipeline->scratch_start[MESA_SHADER_VERTEX],
+         vs.ScratchSpaceBasePointer = (struct anv_address) {
+            .bo = anv_scratch_pool_alloc(device, &device->scratch_pool,
+                                         MESA_SHADER_VERTEX,
+                                         vs_prog_data->base.base.total_scratch),
+            .offset = 0,
+         };
          vs.PerThreadScratchSpace   = scratch_space(&vs_prog_data->base.base);
 
          vs.DispatchGRFStartRegisterForURBData =
@@ -515,7 +348,12 @@ genX(graphics_pipeline_create)(
 
          ps.MaximumNumberofThreadsPerPSD = 64 - num_thread_bias;
 
-         ps.ScratchSpaceBasePointer = pipeline->scratch_start[MESA_SHADER_FRAGMENT];
+         ps.ScratchSpaceBasePointer = (struct anv_address) {
+            .bo = anv_scratch_pool_alloc(device, &device->scratch_pool,
+                                         MESA_SHADER_FRAGMENT,
+                                         wm_prog_data->base.total_scratch),
+            .offset = 0,
+         };
          ps.PerThreadScratchSpace   = scratch_space(&wm_prog_data->base);
 
          ps.DispatchGRFStartRegisterForConstantSetupData0 =
@@ -525,16 +363,13 @@ genX(graphics_pipeline_create)(
             wm_prog_data->dispatch_grf_start_reg_2;
       }
 
-      bool per_sample_ps = pCreateInfo->pMultisampleState &&
-                           pCreateInfo->pMultisampleState->sampleShadingEnable;
-
       anv_batch_emit(&pipeline->batch, GENX(3DSTATE_PS_EXTRA), ps) {
          ps.PixelShaderValid              = true;
          ps.PixelShaderKillsPixel         = wm_prog_data->uses_kill;
          ps.PixelShaderComputedDepthMode  = wm_prog_data->computed_depth_mode;
          ps.AttributeEnable               = wm_prog_data->num_varying_inputs > 0;
          ps.oMaskPresenttoRenderTarget    = wm_prog_data->uses_omask;
-         ps.PixelShaderIsPerSample        = per_sample_ps;
+         ps.PixelShaderIsPerSample        = wm_prog_data->persample_dispatch;
          ps.PixelShaderUsesSourceDepth    = wm_prog_data->uses_src_depth;
          ps.PixelShaderUsesSourceW        = wm_prog_data->uses_src_w;
 #if GEN_GEN >= 9

@@ -54,7 +54,7 @@ check_valid_to_render(struct gl_context *ctx, const char *function)
       /* For OpenGL ES, only draw if we have vertex positions
        */
       if (!ctx->Array.VAO->VertexAttrib[VERT_ATTRIB_POS].Enabled)
-	 return false;
+         return false;
       break;
 
    case API_OPENGL_CORE:
@@ -200,15 +200,18 @@ _mesa_valid_prim_mode(struct gl_context *ctx, GLenum mode, const char *name)
    */
    if (ctx->_Shader->CurrentProgram[MESA_SHADER_GEOMETRY]) {
       const GLenum geom_mode =
-         ctx->_Shader->CurrentProgram[MESA_SHADER_GEOMETRY]->Geom.InputType;
+         ctx->_Shader->CurrentProgram[MESA_SHADER_GEOMETRY]->
+            _LinkedShaders[MESA_SHADER_GEOMETRY]->info.Geom.InputType;
       struct gl_shader_program *tes =
          ctx->_Shader->CurrentProgram[MESA_SHADER_TESS_EVAL];
       GLenum mode_before_gs = mode;
 
       if (tes) {
-         if (tes->TessEval.PointMode)
+         struct gl_linked_shader *tes_sh =
+            tes->_LinkedShaders[MESA_SHADER_TESS_EVAL];
+         if (tes_sh->info.TessEval.PointMode)
             mode_before_gs = GL_POINTS;
-         else if (tes->TessEval.PrimitiveMode == GL_ISOLINES)
+         else if (tes_sh->info.TessEval.PrimitiveMode == GL_ISOLINES)
             mode_before_gs = GL_LINES;
          else
             /* the GL_QUADS mode generates triangles too */
@@ -304,7 +307,9 @@ _mesa_valid_prim_mode(struct gl_context *ctx, GLenum mode, const char *name)
       GLboolean pass = GL_TRUE;
 
       if(ctx->_Shader->CurrentProgram[MESA_SHADER_GEOMETRY]) {
-         switch (ctx->_Shader->CurrentProgram[MESA_SHADER_GEOMETRY]->Geom.OutputType) {
+         switch (ctx->_Shader->CurrentProgram[MESA_SHADER_GEOMETRY]->
+                    _LinkedShaders[MESA_SHADER_GEOMETRY]->
+                    info.Geom.OutputType) {
          case GL_POINTS:
             pass = ctx->TransformFeedback.Mode == GL_POINTS;
             break;
@@ -321,10 +326,11 @@ _mesa_valid_prim_mode(struct gl_context *ctx, GLenum mode, const char *name)
       else if (ctx->_Shader->CurrentProgram[MESA_SHADER_TESS_EVAL]) {
          struct gl_shader_program *tes =
             ctx->_Shader->CurrentProgram[MESA_SHADER_TESS_EVAL];
-
-         if (tes->TessEval.PointMode)
+         struct gl_linked_shader *tes_sh =
+            tes->_LinkedShaders[MESA_SHADER_TESS_EVAL];
+         if (tes_sh->info.TessEval.PointMode)
             pass = ctx->TransformFeedback.Mode == GL_POINTS;
-         else if (tes->TessEval.PrimitiveMode == GL_ISOLINES)
+         else if (tes_sh->info.TessEval.PrimitiveMode == GL_ISOLINES)
             pass = ctx->TransformFeedback.Mode == GL_LINES;
          else
             pass = ctx->TransformFeedback.Mode == GL_TRIANGLES;
@@ -346,10 +352,10 @@ _mesa_valid_prim_mode(struct gl_context *ctx, GLenum mode, const char *name)
       }
       if (!pass) {
          _mesa_error(ctx, GL_INVALID_OPERATION,
-	                 "%s(mode=%s vs transform feedback %s)",
-	                 name,
-	                 _mesa_lookup_prim_by_nr(mode),
-	                 _mesa_lookup_prim_by_nr(ctx->TransformFeedback.Mode));
+                         "%s(mode=%s vs transform feedback %s)",
+                         name,
+                         _mesa_lookup_prim_by_nr(mode),
+                         _mesa_lookup_prim_by_nr(ctx->TransformFeedback.Mode));
          return GL_FALSE;
       }
    }
@@ -431,8 +437,8 @@ validate_DrawElements_common(struct gl_context *ctx,
  */
 GLboolean
 _mesa_validate_DrawElements(struct gl_context *ctx,
-			    GLenum mode, GLsizei count, GLenum type,
-			    const GLvoid *indices)
+                            GLenum mode, GLsizei count, GLenum type,
+                            const GLvoid *indices)
 {
    FLUSH_CURRENT(ctx, 0);
 
@@ -494,9 +500,9 @@ _mesa_validate_MultiDrawElements(struct gl_context *ctx,
  */
 GLboolean
 _mesa_validate_DrawRangeElements(struct gl_context *ctx, GLenum mode,
-				 GLuint start, GLuint end,
-				 GLsizei count, GLenum type,
-				 const GLvoid *indices)
+                                 GLuint start, GLuint end,
+                                 GLsizei count, GLenum type,
+                                 const GLvoid *indices)
 {
    FLUSH_CURRENT(ctx, 0);
 
@@ -580,7 +586,7 @@ _mesa_validate_DrawArraysInstanced(struct gl_context *ctx, GLenum mode, GLint fi
 
    if (first < 0) {
       _mesa_error(ctx, GL_INVALID_VALUE,
-		  "glDrawArraysInstanced(start=%d)", first);
+                  "glDrawArraysInstanced(start=%d)", first);
       return GL_FALSE;
    }
 

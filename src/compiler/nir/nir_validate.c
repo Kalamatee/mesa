@@ -331,7 +331,9 @@ validate_alu_dest(nir_alu_instr *instr, validate_state *state)
     * destinations of type float
     */
    nir_alu_instr *alu = nir_instr_as_alu(state->instr);
-   validate_assert(state, nir_op_infos[alu->op].output_type == nir_type_float ||
+   validate_assert(state,
+          (nir_alu_type_get_base_type(nir_op_infos[alu->op].output_type) ==
+           nir_type_float) ||
           !dest->saturate);
 
    unsigned bit_size = dest->dest.is_ssa ? dest->dest.ssa.bit_size
@@ -968,7 +970,7 @@ postvalidate_ssa_def(nir_ssa_def *def, void *void_state)
    }
 
    if (def_state->uses->entries != 0) {
-      printf("extra entries in register uses:\n");
+      printf("extra entries in SSA def uses:\n");
       struct set_entry *entry;
       set_foreach(def_state->uses, entry)
          printf("%p\n", entry->key);
@@ -983,7 +985,7 @@ postvalidate_ssa_def(nir_ssa_def *def, void *void_state)
    }
 
    if (def_state->if_uses->entries != 0) {
-      printf("extra entries in register uses:\n");
+      printf("extra entries in SSA def uses:\n");
       struct set_entry *entry;
       set_foreach(def_state->if_uses, entry)
          printf("%p\n", entry->key);
@@ -1122,6 +1124,12 @@ dump_errors(validate_state *state)
 void
 nir_validate_shader(nir_shader *shader)
 {
+   static int should_validate = -1;
+   if (should_validate < 0)
+      should_validate = env_var_as_boolean("NIR_VALIDATE", true);
+   if (!should_validate)
+      return;
+
    validate_state state;
    init_validate_state(&state);
 

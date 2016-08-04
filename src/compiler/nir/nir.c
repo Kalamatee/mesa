@@ -161,7 +161,7 @@ nir_variable_create(nir_shader *shader, nir_variable_mode mode,
 
    if ((mode == nir_var_shader_in && shader->stage != MESA_SHADER_VERTEX) ||
        (mode == nir_var_shader_out && shader->stage != MESA_SHADER_FRAGMENT))
-      var->data.interpolation = INTERP_QUALIFIER_SMOOTH;
+      var->data.interpolation = INTERP_MODE_SMOOTH;
 
    if (mode == nir_var_shader_in || mode == nir_var_uniform)
       var->data.read_only = true;
@@ -657,6 +657,122 @@ nir_copy_deref(void *mem_ctx, nir_deref *deref)
    }
 
    return NULL;
+}
+
+/* This is the second step in the recursion.  We've found the tail and made a
+ * copy.  Now we need to iterate over all possible leaves and call the
+ * callback on each one.
+ */
+static bool
+deref_foreach_leaf_build_recur(nir_deref_var *deref, nir_deref *tail,
+                               nir_deref_foreach_leaf_cb cb, void *state)
+{
+   unsigned length;
+   union {
+      nir_deref_array arr;
+      nir_deref_struct str;
+   } tmp;
+
+   assert(tail->child == NULL);
+   switch (glsl_get_base_type(tail->type)) {
+   case GLSL_TYPE_UINT:
+   case GLSL_TYPE_INT:
+   case GLSL_TYPE_FLOAT:
+   case GLSL_TYPE_DOUBLE:
+   case GLSL_TYPE_BOOL:
+      if (glsl_type_is_vector_or_scalar(tail->type))
+         return cb(deref, state);
+      /* Fall Through */
+
+   case GLSL_TYPE_ARRAY:
+      tmp.arr.deref.deref_type = nir_deref_type_array;
+      tmp.arr.deref.type = glsl_get_array_element(tail->type);
+      tmp.arr.deref_array_type = nir_deref_array_type_direct;
+      tmp.arr.indirect = NIR_SRC_INIT;
+      tail->child = &tmp.arr.deref;
+
+      length = glsl_get_length(tail->type);
+      for (unsigned i = 0; i < length; i++) {
+         tmp.arr.deref.child = NULL;
+         tmp.arr.base_offset = i;
+         if (!deref_foreach_leaf_build_recur(deref, &tmp.arr.deref, cb, state))
+            return false;
+      }
+      return true;
+
+   case GLSL_TYPE_STRUCT:
+      tmp.str.deref.deref_type = nir_deref_type_struct;
+      tail->child = &tmp.str.deref;
+
+      length = glsl_get_length(tail->type);
+      for (unsigned i = 0; i < length; i++) {
+         tmp.arr.deref.child = NULL;
+         tmp.str.deref.type = glsl_get_struct_field(tail->type, i);
+         tmp.str.index = i;
+         if (!deref_foreach_leaf_build_recur(deref, &tmp.arr.deref, cb, state))
+            return false;
+      }
+      return true;
+
+   default:
+      unreachable("Invalid type for dereference");
+   }
+}
+
+/* This is the first step of the foreach_leaf recursion.  In this step we are
+ * walking to the end of the deref chain and making a copy in the stack as we
+ * go.  This is because we don't want to mutate the deref chain that was
+ * passed in by the caller.  The downside is that this deref chain is on the
+ * stack and , if the caller wants to do anything with it, they will have to
+ * make their own copy because this one will go away.
+ */
+static bool
+deref_foreach_leaf_copy_recur(nir_deref_var *deref, nir_deref *tail,
+                              nir_deref_foreach_leaf_cb cb, void *state)
+{
+   union {
+      nir_deref_array arr;
+      nir_deref_struct str;
+   } c;
+
+   if (tail->child) {
+      switch (tail->child->deref_type) {
+      case nir_deref_type_array:
+         c.arr = *nir_deref_as_array(tail->child);
+         tail->child = &c.arr.deref;
+         return deref_foreach_leaf_copy_recur(deref, &c.arr.deref, cb, state);
+
+      case nir_deref_type_struct:
+         c.str = *nir_deref_as_struct(tail->child);
+         tail->child = &c.str.deref;
+         return deref_foreach_leaf_copy_recur(deref, &c.str.deref, cb, state);
+
+      case nir_deref_type_var:
+      default:
+         unreachable("Invalid deref type for a child");
+      }
+   } else {
+      /* We've gotten to the end of the original deref.  Time to start
+       * building our own derefs.
+       */
+      return deref_foreach_leaf_build_recur(deref, tail, cb, state);
+   }
+}
+
+/**
+ * This function iterates over all of the possible derefs that can be created
+ * with the given deref as the head.  It then calls the provided callback with
+ * a full deref for each one.
+ *
+ * The deref passed to the callback will be allocated on the stack.  You will
+ * need to make a copy if you want it to hang around.
+ */
+bool
+nir_deref_foreach_leaf(nir_deref_var *deref,
+                       nir_deref_foreach_leaf_cb cb, void *state)
+{
+   nir_deref_var copy = *deref;
+   return deref_foreach_leaf_copy_recur(&copy, &copy.deref, cb, state);
 }
 
 /* Returns a load_const instruction that represents the constant
@@ -1752,6 +1868,8 @@ nir_intrinsic_from_system_value(gl_system_value val)
       return nir_intrinsic_load_sample_mask_in;
    case SYSTEM_VALUE_LOCAL_INVOCATION_ID:
       return nir_intrinsic_load_local_invocation_id;
+   case SYSTEM_VALUE_LOCAL_INVOCATION_INDEX:
+      return nir_intrinsic_load_local_invocation_index;
    case SYSTEM_VALUE_WORK_GROUP_ID:
       return nir_intrinsic_load_work_group_id;
    case SYSTEM_VALUE_NUM_WORK_GROUPS:
@@ -1801,6 +1919,8 @@ nir_system_value_from_intrinsic(nir_intrinsic_op intrin)
       return SYSTEM_VALUE_SAMPLE_MASK_IN;
    case nir_intrinsic_load_local_invocation_id:
       return SYSTEM_VALUE_LOCAL_INVOCATION_ID;
+   case nir_intrinsic_load_local_invocation_index:
+      return SYSTEM_VALUE_LOCAL_INVOCATION_INDEX;
    case nir_intrinsic_load_num_work_groups:
       return SYSTEM_VALUE_NUM_WORK_GROUPS;
    case nir_intrinsic_load_work_group_id:

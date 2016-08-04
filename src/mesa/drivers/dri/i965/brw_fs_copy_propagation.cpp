@@ -578,11 +578,9 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
             break;
          /* fallthrough */
       case SHADER_OPCODE_POW:
-         /* Allow constant propagation into src1 (except on Gen 6), and let
-          * constant combining promote the constant on Gen < 8.
-          *
-          * While Gen 6 MATH can take a scalar source, its source and
-          * destination offsets must be equal and we cannot ensure that.
+         /* Allow constant propagation into src1 (except on Gen 6 which
+          * doesn't support scalar source math), and let constant combining
+          * promote the constant on Gen < 8.
           */
          if (devinfo->gen == 6)
             break;

@@ -192,9 +192,13 @@ LoadPropagation::checkSwapSrc01(Instruction *insn)
 {
    const Target *targ = prog->getTarget();
    if (!targ->getOpInfo(insn).commutative)
-      if (insn->op != OP_SET && insn->op != OP_SLCT)
+      if (insn->op != OP_SET && insn->op != OP_SLCT && insn->op != OP_SUB)
          return;
    if (insn->src(1).getFile() != FILE_GPR)
+      return;
+   // This is the special OP_SET used for alphatesting, we can't reverse its
+   // arguments as that will confuse the fixup code.
+   if (insn->op == OP_SET && insn->subOp)
       return;
 
    Instruction *i0 = insn->getSrc(0)->getInsn();
@@ -228,6 +232,11 @@ LoadPropagation::checkSwapSrc01(Instruction *insn)
    else
    if (insn->op == OP_SLCT)
       insn->asCmp()->setCond = inverseCondCode(insn->asCmp()->setCond);
+   else
+   if (insn->op == OP_SUB) {
+      insn->src(0).mod = insn->src(0).mod ^ Modifier(NV50_IR_MOD_NEG);
+      insn->src(1).mod = insn->src(1).mod ^ Modifier(NV50_IR_MOD_NEG);
+   }
 }
 
 bool

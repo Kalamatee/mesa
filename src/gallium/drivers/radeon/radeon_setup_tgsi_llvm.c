@@ -41,13 +41,43 @@
 #include <llvm-c/Core.h>
 #include <llvm-c/Transforms/Scalar.h>
 
-static struct radeon_llvm_loop * get_current_loop(struct radeon_llvm_context * ctx)
+LLVMTypeRef tgsi2llvmtype(struct lp_build_tgsi_context *bld_base,
+			  enum tgsi_opcode_type type)
+{
+	LLVMContextRef ctx = bld_base->base.gallivm->context;
+
+	switch (type) {
+	case TGSI_TYPE_UNSIGNED:
+	case TGSI_TYPE_SIGNED:
+		return LLVMInt32TypeInContext(ctx);
+	case TGSI_TYPE_DOUBLE:
+		return LLVMDoubleTypeInContext(ctx);
+	case TGSI_TYPE_UNTYPED:
+	case TGSI_TYPE_FLOAT:
+		return LLVMFloatTypeInContext(ctx);
+	default: break;
+	}
+	return 0;
+}
+
+LLVMValueRef bitcast(struct lp_build_tgsi_context *bld_base,
+		     enum tgsi_opcode_type type, LLVMValueRef value)
+{
+	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
+	LLVMTypeRef dst_type = tgsi2llvmtype(bld_base, type);
+
+	if (dst_type)
+		return LLVMBuildBitCast(builder, value, dst_type, "");
+	else
+		return value;
+}
+
+static struct radeon_llvm_loop *get_current_loop(struct radeon_llvm_context *ctx)
 {
 	return ctx->loop_depth > 0 ? ctx->loop + (ctx->loop_depth - 1) : NULL;
 }
 
-static struct radeon_llvm_branch * get_current_branch(
-	struct radeon_llvm_context * ctx)
+static struct radeon_llvm_branch *get_current_branch(struct radeon_llvm_context *ctx)
 {
 	return ctx->branch_depth > 0 ?
 			ctx->branch + (ctx->branch_depth - 1) : NULL;
@@ -55,16 +85,15 @@ static struct radeon_llvm_branch * get_current_branch(
 
 unsigned radeon_llvm_reg_index_soa(unsigned index, unsigned chan)
 {
- return (index * 4) + chan;
+	return (index * 4) + chan;
 }
 
-static LLVMValueRef emit_swizzle(
-	struct lp_build_tgsi_context * bld_base,
-        LLVMValueRef value,
-	unsigned swizzle_x,
-	unsigned swizzle_y,
-	unsigned swizzle_z,
-	unsigned swizzle_w)
+static LLVMValueRef emit_swizzle(struct lp_build_tgsi_context *bld_base,
+				 LLVMValueRef value,
+				 unsigned swizzle_x,
+				 unsigned swizzle_y,
+				 unsigned swizzle_z,
+				 unsigned swizzle_w)
 {
 	LLVMValueRef swizzles[4];
 	LLVMTypeRef i32t =
@@ -76,18 +105,32 @@ static LLVMValueRef emit_swizzle(
 	swizzles[3] = LLVMConstInt(i32t, swizzle_w, 0);
 
 	return LLVMBuildShuffleVector(bld_base->base.gallivm->builder,
-		value,
-		LLVMGetUndef(LLVMTypeOf(value)),
-		LLVMConstVector(swizzles, 4), "");
+				      value,
+				      LLVMGetUndef(LLVMTypeOf(value)),
+				      LLVMConstVector(swizzles, 4), "");
 }
 
 static struct tgsi_declaration_range
 get_array_range(struct lp_build_tgsi_context *bld_base,
-		unsigned File, const struct tgsi_ind_register *reg)
+		unsigned File, unsigned reg_index,
+		const struct tgsi_ind_register *reg)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
 
-	if (File != TGSI_FILE_TEMPORARY || reg->ArrayID == 0 ||
+	if (!reg) {
+		unsigned i;
+		unsigned num_arrays = bld_base->info->array_max[TGSI_FILE_TEMPORARY];
+		for (i = 0; i < num_arrays; i++) {
+			const struct tgsi_declaration_range *range =
+						&ctx->arrays[i].range;
+
+			if (reg_index >= range->First && reg_index <= range->Last) {
+				return ctx->arrays[i].range;
+			}
+		}
+	}
+
+	if (File != TGSI_FILE_TEMPORARY || !reg || reg->ArrayID == 0 ||
 	    reg->ArrayID > bld_base->info->array_max[TGSI_FILE_TEMPORARY]) {
 		struct tgsi_declaration_range range;
 		range.First = 0;
@@ -95,26 +138,51 @@ get_array_range(struct lp_build_tgsi_context *bld_base,
 		return range;
 	}
 
-	return ctx->arrays[reg->ArrayID - 1];
+	return ctx->arrays[reg->ArrayID - 1].range;
+}
+
+static LLVMValueRef get_alloca_for_array(struct lp_build_tgsi_context *bld_base,
+					 unsigned file,
+					 unsigned index)
+{
+	unsigned i;
+	unsigned num_arrays;
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+
+	if (file != TGSI_FILE_TEMPORARY)
+		return NULL;
+
+	num_arrays = bld_base->info->array_max[TGSI_FILE_TEMPORARY];
+	for (i = 0; i < num_arrays; i++) {
+		const struct tgsi_declaration_range *range =
+						&ctx->arrays[i].range;
+
+		if (index >= range->First && index <= range->Last) {
+			return ctx->arrays[i].alloca;
+		}
+	}
+	return NULL;
 }
 
 static LLVMValueRef
-emit_array_index(
-	struct lp_build_tgsi_soa_context *bld,
-	const struct tgsi_ind_register *reg,
-	unsigned offset)
+emit_array_index(struct lp_build_tgsi_soa_context *bld,
+		 const struct tgsi_ind_register *reg,
+		 unsigned offset)
 {
-	struct gallivm_state * gallivm = bld->bld_base.base.gallivm;
+	struct gallivm_state *gallivm = bld->bld_base.base.gallivm;
 
+	if (!reg) {
+		return lp_build_const_int32(gallivm, offset);
+	}
 	LLVMValueRef addr = LLVMBuildLoad(gallivm->builder, bld->addr[reg->Index][reg->Swizzle], "");
 	return LLVMBuildAdd(gallivm->builder, addr, lp_build_const_int32(gallivm, offset), "");
 }
 
 LLVMValueRef
-radeon_llvm_emit_fetch_double(
-	struct lp_build_tgsi_context *bld_base,
-	LLVMValueRef ptr,
-	LLVMValueRef ptr2)
+radeon_llvm_emit_fetch_64bit(struct lp_build_tgsi_context *bld_base,
+			     enum tgsi_opcode_type type,
+			     LLVMValueRef ptr,
+			     LLVMValueRef ptr2)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	LLVMValueRef result;
@@ -129,18 +197,17 @@ radeon_llvm_emit_fetch_double(
 					result,
 					bitcast(bld_base, TGSI_TYPE_UNSIGNED, ptr2),
 					bld_base->int_bld.one, "");
-	return bitcast(bld_base, TGSI_TYPE_DOUBLE, result);
+	return bitcast(bld_base, type, result);
 }
 
 static LLVMValueRef
-emit_array_fetch(
-	struct lp_build_tgsi_context *bld_base,
-	unsigned File, enum tgsi_opcode_type type,
-	struct tgsi_declaration_range range,
-	unsigned swizzle)
+emit_array_fetch(struct lp_build_tgsi_context *bld_base,
+		 unsigned File, enum tgsi_opcode_type type,
+		 struct tgsi_declaration_range range,
+		 unsigned swizzle)
 {
 	struct lp_build_tgsi_soa_context *bld = lp_soa_context(bld_base);
-	struct gallivm_state * gallivm = bld->bld_base.base.gallivm;
+	struct gallivm_state *gallivm = bld->bld_base.base.gallivm;
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 
 	unsigned i, size = range.Last - range.First + 1;
@@ -154,16 +221,80 @@ emit_array_fetch(
 		tmp_reg.Register.Index = i + range.First;
 		LLVMValueRef temp = radeon_llvm_emit_fetch(bld_base, &tmp_reg, type, swizzle);
 		result = LLVMBuildInsertElement(builder, result, temp,
-			lp_build_const_int32(gallivm, i), "");
+			lp_build_const_int32(gallivm, i), "array_vector");
 	}
 	return result;
 }
 
-static bool uses_temp_indirect_addressing(
-	struct lp_build_tgsi_context *bld_base)
+static LLVMValueRef
+load_value_from_array(struct lp_build_tgsi_context *bld_base,
+		      unsigned file,
+		      enum tgsi_opcode_type type,
+		      unsigned swizzle,
+		      unsigned reg_index,
+		      const struct tgsi_ind_register *reg_indirect)
 {
 	struct lp_build_tgsi_soa_context *bld = lp_soa_context(bld_base);
-	return (bld->indirect_files & (1 << TGSI_FILE_TEMPORARY));
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
+	LLVMBuilderRef builder = gallivm->builder;
+	struct tgsi_declaration_range range = get_array_range(bld_base, file, reg_index, reg_indirect);
+	LLVMValueRef index = emit_array_index(bld, reg_indirect, reg_index - range.First);
+	LLVMValueRef array = get_alloca_for_array(bld_base, file, reg_index);
+	LLVMValueRef ptr, val, indices[2];
+
+	if (!array) {
+		/* Handle the case where the array is stored as a vector. */
+		return LLVMBuildExtractElement(builder,
+				emit_array_fetch(bld_base, file, type, range, swizzle),
+				index, "");
+	}
+
+	index = LLVMBuildMul(builder, index, lp_build_const_int32(gallivm, TGSI_NUM_CHANNELS), "");
+	index = LLVMBuildAdd(builder, index, lp_build_const_int32(gallivm, swizzle), "");
+	indices[0] = bld_base->uint_bld.zero;
+	indices[1] = index;
+	ptr = LLVMBuildGEP(builder, array, indices, 2, "");
+	val = LLVMBuildLoad(builder, ptr, "");
+	if (tgsi_type_is_64bit(type)) {
+		LLVMValueRef ptr_hi, val_hi;
+		indices[0] = lp_build_const_int32(gallivm, 1);
+		ptr_hi = LLVMBuildGEP(builder, ptr, indices, 1, "");
+		val_hi = LLVMBuildLoad(builder, ptr_hi, "");
+		val = radeon_llvm_emit_fetch_64bit(bld_base, type, val, val_hi);
+
+	}
+	return val;
+}
+
+static LLVMValueRef
+store_value_to_array(struct lp_build_tgsi_context *bld_base,
+		     LLVMValueRef value,
+		     unsigned file,
+		     unsigned chan_index,
+		     unsigned reg_index,
+		     const struct tgsi_ind_register *reg_indirect)
+{
+	struct lp_build_tgsi_soa_context *bld = lp_soa_context(bld_base);
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
+	LLVMBuilderRef builder = gallivm->builder;
+	struct tgsi_declaration_range range = get_array_range(bld_base, file, reg_index, reg_indirect);
+	LLVMValueRef index = emit_array_index(bld, reg_indirect, reg_index - range.First);
+	LLVMValueRef array = get_alloca_for_array(bld_base, file, reg_index);
+
+	if (array) {
+		LLVMValueRef indices[2];
+		index = LLVMBuildMul(builder, index, lp_build_const_int32(gallivm, TGSI_NUM_CHANNELS), "");
+		index = LLVMBuildAdd(builder, index, lp_build_const_int32(gallivm, chan_index), "");
+		indices[0] = bld_base->uint_bld.zero;
+		indices[1] = index;
+		LLVMValueRef pointer = LLVMBuildGEP(builder, array, indices, 2, "");
+		LLVMBuildStore(builder, value, pointer);
+		return NULL;
+	} else {
+		return LLVMBuildInsertElement(builder,
+				emit_array_fetch(bld_base, file, TGSI_TYPE_FLOAT, range, chan_index),
+				value, index, "");
+	}
 }
 
 LLVMValueRef radeon_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
@@ -171,7 +302,7 @@ LLVMValueRef radeon_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
 				    enum tgsi_opcode_type type,
 				    unsigned swizzle)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
 	struct lp_build_tgsi_soa_context *bld = lp_soa_context(bld_base);
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	LLVMValueRef result = NULL, ptr, ptr2;
@@ -187,18 +318,15 @@ LLVMValueRef radeon_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
 	}
 
 	if (reg->Register.Indirect) {
-		struct tgsi_declaration_range range = get_array_range(bld_base,
-			reg->Register.File, &reg->Indirect);
-		return LLVMBuildExtractElement(builder,
-			emit_array_fetch(bld_base, reg->Register.File, type, range, swizzle),
-			emit_array_index(bld, &reg->Indirect, reg->Register.Index - range.First),
-			"");
+		LLVMValueRef load = load_value_from_array(bld_base, reg->Register.File, type,
+				swizzle, reg->Register.Index, &reg->Indirect);
+		return bitcast(bld_base, type, load);
 	}
 
 	switch(reg->Register.File) {
 	case TGSI_FILE_IMMEDIATE: {
 		LLVMTypeRef ctype = tgsi2llvmtype(bld_base, type);
-		if (type == TGSI_TYPE_DOUBLE) {
+		if (tgsi_type_is_64bit(type)) {
 			result = LLVMGetUndef(LLVMVectorType(LLVMIntTypeInContext(bld_base->base.gallivm->context, 32), bld_base->base.type.length * 2));
 			result = LLVMConstInsertElement(result,
 							bld->immediates[reg->Register.Index][swizzle],
@@ -214,35 +342,36 @@ LLVMValueRef radeon_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
 
 	case TGSI_FILE_INPUT:
 		result = ctx->inputs[radeon_llvm_reg_index_soa(reg->Register.Index, swizzle)];
-		if (type == TGSI_TYPE_DOUBLE) {
+		if (tgsi_type_is_64bit(type)) {
 			ptr = result;
 			ptr2 = ctx->inputs[radeon_llvm_reg_index_soa(reg->Register.Index, swizzle + 1)];
-			return radeon_llvm_emit_fetch_double(bld_base, ptr, ptr2);
+			return radeon_llvm_emit_fetch_64bit(bld_base, type, ptr, ptr2);
 		}
 		break;
 
 	case TGSI_FILE_TEMPORARY:
 		if (reg->Register.Index >= ctx->temps_count)
 			return LLVMGetUndef(tgsi2llvmtype(bld_base, type));
-		if (uses_temp_indirect_addressing(bld_base)) {
-			ptr = lp_get_temp_ptr_soa(bld, reg->Register.Index, swizzle);
-			break;
-		}
 		ptr = ctx->temps[reg->Register.Index * TGSI_NUM_CHANNELS + swizzle];
-		if (type == TGSI_TYPE_DOUBLE) {
+		if (tgsi_type_is_64bit(type)) {
 			ptr2 = ctx->temps[reg->Register.Index * TGSI_NUM_CHANNELS + swizzle + 1];
-			return radeon_llvm_emit_fetch_double(bld_base,
+			return radeon_llvm_emit_fetch_64bit(bld_base, type,
 						 LLVMBuildLoad(builder, ptr, ""),
 						 LLVMBuildLoad(builder, ptr2, ""));
+		}
+		LLVMValueRef array = get_alloca_for_array(bld_base, reg->Register.File, reg->Register.Index);
+		if (array) {
+			return bitcast(bld_base, type, load_value_from_array(bld_base, reg->Register.File, type,
+					swizzle, reg->Register.Index, NULL));
 		}
 		result = LLVMBuildLoad(builder, ptr, "");
 		break;
 
 	case TGSI_FILE_OUTPUT:
 		ptr = lp_get_output_ptr(bld, reg->Register.Index, swizzle);
-		if (type == TGSI_TYPE_DOUBLE) {
+		if (tgsi_type_is_64bit(type)) {
 			ptr2 = lp_get_output_ptr(bld, reg->Register.Index, swizzle + 1);
-			return radeon_llvm_emit_fetch_double(bld_base,
+			return radeon_llvm_emit_fetch_64bit(bld_base, type,
 						 LLVMBuildLoad(builder, ptr, ""),
 						 LLVMBuildLoad(builder, ptr2, ""));
 		}
@@ -256,13 +385,12 @@ LLVMValueRef radeon_llvm_emit_fetch(struct lp_build_tgsi_context *bld_base,
 	return bitcast(bld_base, type, result);
 }
 
-static LLVMValueRef fetch_system_value(
-	struct lp_build_tgsi_context * bld_base,
-	const struct tgsi_full_src_register *reg,
-	enum tgsi_opcode_type type,
-	unsigned swizzle)
+static LLVMValueRef fetch_system_value(struct lp_build_tgsi_context *bld_base,
+				       const struct tgsi_full_src_register *reg,
+				       enum tgsi_opcode_type type,
+				       unsigned swizzle)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
 	struct gallivm_state *gallivm = bld_base->base.gallivm;
 
 	LLVMValueRef cval = ctx->system_values[reg->Register.Index];
@@ -282,11 +410,11 @@ static LLVMValueRef si_build_alloca_undef(struct gallivm_state *gallivm,
 	return ptr;
 }
 
-static void emit_declaration(
-	struct lp_build_tgsi_context * bld_base,
-	const struct tgsi_full_declaration *decl)
+static void emit_declaration(struct lp_build_tgsi_context *bld_base,
+			     const struct tgsi_full_declaration *decl)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	unsigned first, last, i, idx;
 	switch(decl->Declaration.File) {
 	case TGSI_FILE_ADDRESS:
@@ -304,17 +432,36 @@ static void emit_declaration(
 	}
 
 	case TGSI_FILE_TEMPORARY:
+	{
+		unsigned decl_size;
+		first = decl->Range.First;
+		last = decl->Range.Last;
+		decl_size = 4 * ((last - first) + 1);
 		if (decl->Declaration.Array) {
+			unsigned id = decl->Array.ArrayID - 1;
 			if (!ctx->arrays) {
 				int size = bld_base->info->array_max[TGSI_FILE_TEMPORARY];
-				ctx->arrays = MALLOC(sizeof(ctx->arrays[0]) * size);
+				ctx->arrays = CALLOC(size, sizeof(ctx->arrays[0]));
+			for (i = 0; i < size; ++i) {
+				assert(!ctx->arrays[i].alloca);}
 			}
 
-			ctx->arrays[decl->Array.ArrayID - 1] = decl->Range;
-		}
-		if (uses_temp_indirect_addressing(bld_base)) {
-			lp_emit_declaration_soa(bld_base, decl);
-			break;
+			ctx->arrays[id].range = decl->Range;
+
+			/* If the array is more than 16 elements (each element
+			 * is 32-bits), then store it in a vector.  Storing the
+			 * array in a vector will causes the compiler to store
+			 * the array in registers and access it using indirect
+			 * addressing.  16 is number of vector elements that
+			 * LLVM will store in a register.
+			 * FIXME: We shouldn't need to do this.  LLVM should be
+			 * smart enough to promote allocas int registers when
+			 * profitable.
+			 */
+			if (decl_size > 16) {
+				ctx->arrays[id].alloca = LLVMBuildAlloca(builder,
+					LLVMArrayType(bld_base->base.vec_type, decl_size),"array");
+			}
 		}
 		first = decl->Range.First;
 		last = decl->Range.Last;
@@ -331,7 +478,7 @@ static void emit_declaration(
 			}
 		}
 		break;
-
+	}
 	case TGSI_FILE_INPUT:
 	{
 		unsigned idx;
@@ -390,20 +537,19 @@ LLVMValueRef radeon_llvm_saturate(struct lp_build_tgsi_context *bld_base,
 				  &clamp_emit_data);
 }
 
-void radeon_llvm_emit_store(
-	struct lp_build_tgsi_context * bld_base,
-	const struct tgsi_full_instruction * inst,
-	const struct tgsi_opcode_info * info,
-	LLVMValueRef dst[4])
+void radeon_llvm_emit_store(struct lp_build_tgsi_context *bld_base,
+			    const struct tgsi_full_instruction *inst,
+			    const struct tgsi_opcode_info *info,
+			    LLVMValueRef dst[4])
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
 	struct lp_build_tgsi_soa_context *bld = lp_soa_context(bld_base);
 	struct gallivm_state *gallivm = bld->bld_base.base.gallivm;
 	const struct tgsi_full_dst_register *reg = &inst->Dst[0];
 	LLVMBuilderRef builder = bld->bld_base.base.gallivm->builder;
 	LLVMValueRef temp_ptr, temp_ptr2 = NULL;
 	unsigned chan, chan_index;
-	boolean is_vec_store = FALSE;
+	bool is_vec_store = false;
 	enum tgsi_opcode_type dtype = tgsi_opcode_infer_dst_type(inst->Instruction.Opcode);
 
 	if (dst[0]) {
@@ -425,7 +571,7 @@ void radeon_llvm_emit_store(
 	TGSI_FOR_EACH_DST0_ENABLED_CHANNEL( inst, chan_index ) {
 		LLVMValueRef value = dst[chan_index];
 
-		if (dtype == TGSI_TYPE_DOUBLE && (chan_index == 1 || chan_index == 3))
+		if (tgsi_type_is_64bit(dtype) && (chan_index == 1 || chan_index == 3))
 			continue;
 		if (inst->Instruction.Saturate)
 			value = radeon_llvm_saturate(bld_base, value);
@@ -436,18 +582,21 @@ void radeon_llvm_emit_store(
 			continue;
 		}
 
-		if (dtype != TGSI_TYPE_DOUBLE)
+		if (!tgsi_type_is_64bit(dtype))
 			value = bitcast(bld_base, TGSI_TYPE_FLOAT, value);
 
 		if (reg->Register.Indirect) {
 			struct tgsi_declaration_range range = get_array_range(bld_base,
-				reg->Register.File, &reg->Indirect);
+				reg->Register.File, reg->Register.Index, &reg->Indirect);
 
         		unsigned i, size = range.Last - range.First + 1;
-			LLVMValueRef array = LLVMBuildInsertElement(builder,
-				emit_array_fetch(bld_base, reg->Register.File, TGSI_TYPE_FLOAT, range, chan_index),
-				value,  emit_array_index(bld, &reg->Indirect, reg->Register.Index - range.First), "");
-
+			unsigned file = reg->Register.File;
+			unsigned reg_index = reg->Register.Index;
+			LLVMValueRef array = store_value_to_array(bld_base, value, file, chan_index,
+			                                          reg_index, &reg->Indirect);
+	                if (get_alloca_for_array(bld_base, file, reg_index)) {
+				continue;
+			}
         		for (i = 0; i < size; ++i) {
 				switch(reg->Register.File) {
 				case TGSI_FILE_OUTPUT:
@@ -457,14 +606,11 @@ void radeon_llvm_emit_store(
 				case TGSI_FILE_TEMPORARY:
 					if (range.First + i >= ctx->temps_count)
 						continue;
-					if (uses_temp_indirect_addressing(bld_base))
-						temp_ptr = lp_get_temp_ptr_soa(bld, i + range.First, chan_index);
-					else
-						temp_ptr = ctx->temps[(i + range.First) * TGSI_NUM_CHANNELS + chan_index];
+					temp_ptr = ctx->temps[(i + range.First) * TGSI_NUM_CHANNELS + chan_index];
 					break;
 
 				default:
-					return;
+					continue;
 				}
 				value = LLVMBuildExtractElement(builder, array, 
 					lp_build_const_int32(gallivm, i), "");
@@ -475,27 +621,32 @@ void radeon_llvm_emit_store(
 			switch(reg->Register.File) {
 			case TGSI_FILE_OUTPUT:
 				temp_ptr = bld->outputs[reg->Register.Index][chan_index];
-				if (dtype == TGSI_TYPE_DOUBLE)
+				if (tgsi_type_is_64bit(dtype))
 					temp_ptr2 = bld->outputs[reg->Register.Index][chan_index + 1];
 				break;
 
 			case TGSI_FILE_TEMPORARY:
+			{
+				LLVMValueRef array;
 				if (reg->Register.Index >= ctx->temps_count)
 					continue;
-				if (uses_temp_indirect_addressing(bld_base)) {
-					temp_ptr = NULL;
-					break;
+				array = get_alloca_for_array(bld_base, reg->Register.File, reg->Register.Index);
+
+				if (array) {
+					store_value_to_array(bld_base, value, reg->Register.File, chan_index, reg->Register.Index,
+								NULL);
+					continue;
 				}
 				temp_ptr = ctx->temps[ TGSI_NUM_CHANNELS * reg->Register.Index + chan_index];
-				if (dtype == TGSI_TYPE_DOUBLE)
+				if (tgsi_type_is_64bit(dtype))
 					temp_ptr2 = ctx->temps[ TGSI_NUM_CHANNELS * reg->Register.Index + chan_index + 1];
 
 				break;
-
+			}
 			default:
 				return;
 			}
-			if (dtype != TGSI_TYPE_DOUBLE)
+			if (!tgsi_type_is_64bit(dtype))
 				LLVMBuildStore(builder, value, temp_ptr);
 			else {
 				LLVMValueRef ptr = LLVMBuildBitCast(builder, value,
@@ -513,13 +664,12 @@ void radeon_llvm_emit_store(
 	}
 }
 
-static void bgnloop_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void bgnloop_emit(const struct lp_build_tgsi_action *action,
+			 struct lp_build_tgsi_context *bld_base,
+			 struct lp_build_emit_data *emit_data)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBasicBlockRef loop_block;
 	LLVMBasicBlockRef endloop_block;
 	endloop_block = LLVMAppendBasicBlockInContext(gallivm->context,
@@ -545,38 +695,35 @@ static void bgnloop_emit(
 	ctx->loop[ctx->loop_depth - 1].endloop_block = endloop_block;
 }
 
-static void brk_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void brk_emit(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
-	struct radeon_llvm_loop * current_loop = get_current_loop(ctx);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
+	struct radeon_llvm_loop *current_loop = get_current_loop(ctx);
 
 	LLVMBuildBr(gallivm->builder, current_loop->endloop_block);
 }
 
-static void cont_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void cont_emit(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
-	struct radeon_llvm_loop * current_loop = get_current_loop(ctx);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
+	struct radeon_llvm_loop *current_loop = get_current_loop(ctx);
 
 	LLVMBuildBr(gallivm->builder, current_loop->loop_block);
 }
 
-static void else_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void else_emit(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
-	struct radeon_llvm_branch * current_branch = get_current_branch(ctx);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
+	struct radeon_llvm_branch *current_branch = get_current_branch(ctx);
 	LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gallivm->builder);
 
 	/* We need to add a terminator to the current block if the previous
@@ -603,14 +750,13 @@ static void else_emit(
 	LLVMPositionBuilderAtEnd(gallivm->builder, current_branch->else_block);
 }
 
-static void endif_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void endif_emit(const struct lp_build_tgsi_action *action,
+		       struct lp_build_tgsi_context *bld_base,
+		       struct lp_build_emit_data *emit_data)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
-	struct radeon_llvm_branch * current_branch = get_current_branch(ctx);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
+	struct radeon_llvm_branch *current_branch = get_current_branch(ctx);
 	LLVMBasicBlockRef current_block = LLVMGetInsertBlock(gallivm->builder);
 
 	/* If we have consecutive ENDIF instructions, then the first ENDIF
@@ -635,14 +781,13 @@ static void endif_emit(
 	ctx->branch_depth--;
 }
 
-static void endloop_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void endloop_emit(const struct lp_build_tgsi_action *action,
+			 struct lp_build_tgsi_context *bld_base,
+			 struct lp_build_emit_data *emit_data)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
-	struct radeon_llvm_loop * current_loop = get_current_loop(ctx);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
+	struct radeon_llvm_loop *current_loop = get_current_loop(ctx);
 
 	if (!LLVMGetBasicBlockTerminator(LLVMGetInsertBlock(gallivm->builder))) {
 		 LLVMBuildBr(gallivm->builder, current_loop->loop_block);
@@ -652,14 +797,13 @@ static void endloop_emit(
 	ctx->loop_depth--;
 }
 
-static void if_cond_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data,
-	LLVMValueRef cond)
+static void if_cond_emit(const struct lp_build_tgsi_action *action,
+			 struct lp_build_tgsi_context *bld_base,
+			 struct lp_build_emit_data *emit_data,
+			 LLVMValueRef cond)
 {
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBasicBlockRef if_block, else_block, endif_block;
 
 	endif_block = LLVMAppendBasicBlockInContext(gallivm->context,
@@ -689,12 +833,11 @@ static void if_cond_emit(
 	ctx->branch[ctx->branch_depth - 1].has_else = 0;
 }
 
-static void if_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void if_emit(const struct lp_build_tgsi_action *action,
+		    struct lp_build_tgsi_context *bld_base,
+		    struct lp_build_emit_data *emit_data)
 {
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMValueRef cond;
 
 	cond = LLVMBuildFCmp(gallivm->builder, LLVMRealUNE,
@@ -704,12 +847,11 @@ static void if_emit(
 	if_cond_emit(action, bld_base, emit_data, cond);
 }
 
-static void uif_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void uif_emit(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMValueRef cond;
 
 	cond = LLVMBuildICmp(gallivm->builder, LLVMIntNE,
@@ -719,11 +861,10 @@ static void uif_emit(
 	if_cond_emit(action, bld_base, emit_data, cond);
 }
 
-static void kill_if_fetch_args(
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void kill_if_fetch_args(struct lp_build_tgsi_context *bld_base,
+			       struct lp_build_emit_data *emit_data)
 {
-	const struct tgsi_full_instruction * inst = emit_data->inst;
+	const struct tgsi_full_instruction *inst = emit_data->inst;
 	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBuilderRef builder = gallivm->builder;
 	unsigned i;
@@ -747,10 +888,9 @@ static void kill_if_fetch_args(
 					bld_base->base.zero, "");
 }
 
-static void kil_emit(
-	const struct lp_build_tgsi_action * action,
-	struct lp_build_tgsi_context * bld_base,
-	struct lp_build_emit_data * emit_data)
+static void kil_emit(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	unsigned i;
 	for (i = 0; i < emit_data->arg_count; i++) {
@@ -761,20 +901,50 @@ static void kil_emit(
 	}
 }
 
+static LLVMValueRef build_cube_intrinsic(struct gallivm_state *gallivm,
+					 LLVMValueRef in[3])
+{
+	if (HAVE_LLVM >= 0x0309) {
+		LLVMTypeRef f32 = LLVMTypeOf(in[0]);
+		LLVMValueRef out[4];
+
+		out[0] = lp_build_intrinsic(gallivm->builder, "llvm.amdgcn.cubetc",
+					    f32, in, 3, LLVMReadNoneAttribute);
+		out[1] = lp_build_intrinsic(gallivm->builder, "llvm.amdgcn.cubesc",
+					    f32, in, 3, LLVMReadNoneAttribute);
+		out[2] = lp_build_intrinsic(gallivm->builder, "llvm.amdgcn.cubema",
+					    f32, in, 3, LLVMReadNoneAttribute);
+		out[3] = lp_build_intrinsic(gallivm->builder, "llvm.amdgcn.cubeid",
+					    f32, in, 3, LLVMReadNoneAttribute);
+
+		return lp_build_gather_values(gallivm, out, 4);
+	} else {
+		LLVMValueRef c[4] = {
+			in[0],
+			in[1],
+			in[2],
+			LLVMGetUndef(LLVMTypeOf(in[0]))
+		};
+		LLVMValueRef vec = lp_build_gather_values(gallivm, c, 4);
+
+		return lp_build_intrinsic(gallivm->builder, "llvm.AMDGPU.cube",
+					  LLVMTypeOf(vec), &vec, 1,
+					  LLVMReadNoneAttribute);
+	}
+}
+
 static void radeon_llvm_cube_to_2d_coords(struct lp_build_tgsi_context *bld_base,
 					  LLVMValueRef *in, LLVMValueRef *out)
 {
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBuilderRef builder = gallivm->builder;
 	LLVMTypeRef type = bld_base->base.elem_type;
 	LLVMValueRef coords[4];
 	LLVMValueRef mad_args[3];
-	LLVMValueRef v, cube_vec;
+	LLVMValueRef v;
 	unsigned i;
 
-	cube_vec = lp_build_gather_values(bld_base->base.gallivm, in, 4);
-	v = lp_build_intrinsic(builder, "llvm.AMDGPU.cube", LLVMVectorType(type, 4),
-                            &cube_vec, 1, LLVMReadNoneAttribute);
+	v = build_cube_intrinsic(gallivm, in);
 
 	for (i = 0; i < 4; ++i)
 		coords[i] = LLVMBuildExtractElement(builder, v,
@@ -801,16 +971,15 @@ static void radeon_llvm_cube_to_2d_coords(struct lp_build_tgsi_context *bld_base
 	out[2] = coords[3];
 }
 
-void radeon_llvm_emit_prepare_cube_coords(
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data,
-		LLVMValueRef *coords_arg,
-		LLVMValueRef *derivs_arg)
+void radeon_llvm_emit_prepare_cube_coords(struct lp_build_tgsi_context *bld_base,
+					  struct lp_build_emit_data *emit_data,
+					  LLVMValueRef *coords_arg,
+					  LLVMValueRef *derivs_arg)
 {
 
 	unsigned target = emit_data->inst->Texture.Texture;
 	unsigned opcode = emit_data->inst->Instruction.Opcode;
-	struct gallivm_state * gallivm = bld_base->base.gallivm;
+	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBuilderRef builder = gallivm->builder;
 	LLVMValueRef coords[4];
 	unsigned i;
@@ -873,10 +1042,9 @@ void radeon_llvm_emit_prepare_cube_coords(
 	memcpy(coords_arg, coords, sizeof(coords));
 }
 
-static void emit_icmp(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_icmp(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	unsigned pred;
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
@@ -904,10 +1072,9 @@ static void emit_icmp(
 	emit_data->output[emit_data->chan] = v;
 }
 
-static void emit_ucmp(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_ucmp(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 
@@ -935,10 +1102,9 @@ static void emit_cmp(const struct lp_build_tgsi_action *action,
 		LLVMBuildSelect(builder, cond, args[1], args[2], "");
 }
 
-static void emit_set_cond(
-		const struct lp_build_tgsi_action *action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_set_cond(const struct lp_build_tgsi_action *action,
+			  struct lp_build_tgsi_context *bld_base,
+			  struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	LLVMRealPredicate pred;
@@ -964,10 +1130,9 @@ static void emit_set_cond(
 		cond, bld_base->base.one, bld_base->base.zero, "");
 }
 
-static void emit_fcmp(
-		const struct lp_build_tgsi_action *action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_fcmp(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	LLVMContextRef context = bld_base->base.gallivm->context;
@@ -993,10 +1158,9 @@ static void emit_fcmp(
 	emit_data->output[emit_data->chan] = v;
 }
 
-static void emit_dcmp(
-		const struct lp_build_tgsi_action *action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_dcmp(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	LLVMContextRef context = bld_base->base.gallivm->context;
@@ -1022,10 +1186,9 @@ static void emit_dcmp(
 	emit_data->output[emit_data->chan] = v;
 }
 
-static void emit_not(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_not(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	LLVMValueRef v = bitcast(bld_base, TGSI_TYPE_UNSIGNED,
@@ -1033,10 +1196,9 @@ static void emit_not(
 	emit_data->output[emit_data->chan] = LLVMBuildNot(builder, v, "");
 }
 
-static void emit_arl(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_arl(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	LLVMValueRef floor_index =  lp_build_emit_llvm_unary(bld_base, TGSI_OPCODE_FLR, emit_data->args[0]);
@@ -1044,119 +1206,107 @@ static void emit_arl(
 			floor_index, bld_base->base.int_elem_type , "");
 }
 
-static void emit_and(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_and(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildAnd(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_or(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_or(const struct lp_build_tgsi_action *action,
+		    struct lp_build_tgsi_context *bld_base,
+		    struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildOr(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_uadd(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_uadd(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildAdd(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_udiv(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_udiv(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildUDiv(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_idiv(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_idiv(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildSDiv(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_mod(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_mod(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildSRem(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_umod(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_umod(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildURem(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_shl(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_shl(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildShl(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_ushr(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_ushr(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildLShr(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
-static void emit_ishr(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_ishr(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildAShr(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_xor(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_xor(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildXor(builder,
 			emit_data->args[0], emit_data->args[1], "");
 }
 
-static void emit_ssg(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_ssg(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 
@@ -1177,30 +1327,27 @@ static void emit_ssg(
 	emit_data->output[emit_data->chan] = val;
 }
 
-static void emit_ineg(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_ineg(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildNeg(builder,
 			emit_data->args[0], "");
 }
 
-static void emit_dneg(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_dneg(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildFNeg(builder,
 			emit_data->args[0], "");
 }
 
-static void emit_frac(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_frac(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	char *intr;
@@ -1221,51 +1368,47 @@ static void emit_frac(
 			emit_data->args[0], floor, "");
 }
 
-static void emit_f2i(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_f2i(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildFPToSI(builder,
 			emit_data->args[0], bld_base->int_bld.elem_type, "");
 }
 
-static void emit_f2u(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_f2u(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildFPToUI(builder,
 			emit_data->args[0], bld_base->uint_bld.elem_type, "");
 }
 
-static void emit_i2f(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_i2f(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildSIToFP(builder,
 			emit_data->args[0], bld_base->base.elem_type, "");
 }
 
-static void emit_u2f(
-		const struct lp_build_tgsi_action * action,
-		struct lp_build_tgsi_context * bld_base,
-		struct lp_build_emit_data * emit_data)
+static void emit_u2f(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	LLVMBuilderRef builder = bld_base->base.gallivm->builder;
 	emit_data->output[emit_data->chan] = LLVMBuildUIToFP(builder,
 			emit_data->args[0], bld_base->base.elem_type, "");
 }
 
-static void emit_immediate(struct lp_build_tgsi_context * bld_base,
-		const struct tgsi_full_immediate *imm)
+static void emit_immediate(struct lp_build_tgsi_context *bld_base,
+			   const struct tgsi_full_immediate *imm)
 {
 	unsigned i;
-	struct radeon_llvm_context * ctx = radeon_llvm_context(bld_base);
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
 
 	for (i = 0; i < 4; ++i) {
 		ctx->soa.immediates[ctx->soa.num_immediates][i] =
@@ -1280,16 +1423,16 @@ build_tgsi_intrinsic_nomem(const struct lp_build_tgsi_action *action,
 			   struct lp_build_tgsi_context *bld_base,
 			   struct lp_build_emit_data *emit_data)
 {
-	struct lp_build_context * base = &bld_base->base;
+	struct lp_build_context *base = &bld_base->base;
 	emit_data->output[emit_data->chan] =
 		lp_build_intrinsic(base->gallivm->builder, action->intr_name,
 				   emit_data->dst_type, emit_data->args,
 				   emit_data->arg_count, LLVMReadNoneAttribute);
 }
 
-static void emit_bfi(const struct lp_build_tgsi_action * action,
-		     struct lp_build_tgsi_context * bld_base,
-		     struct lp_build_emit_data * emit_data)
+static void emit_bfi(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBuilderRef builder = gallivm->builder;
@@ -1321,9 +1464,9 @@ static void emit_bfi(const struct lp_build_tgsi_action * action,
 }
 
 /* this is ffs in C */
-static void emit_lsb(const struct lp_build_tgsi_action * action,
-		     struct lp_build_tgsi_context * bld_base,
-		     struct lp_build_emit_data * emit_data)
+static void emit_lsb(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
 {
 	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMValueRef args[2] = {
@@ -1346,9 +1489,9 @@ static void emit_lsb(const struct lp_build_tgsi_action * action,
 }
 
 /* Find the last bit set. */
-static void emit_umsb(const struct lp_build_tgsi_action * action,
-		      struct lp_build_tgsi_context * bld_base,
-		      struct lp_build_emit_data * emit_data)
+static void emit_umsb(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBuilderRef builder = gallivm->builder;
@@ -1377,9 +1520,9 @@ static void emit_umsb(const struct lp_build_tgsi_action * action,
 }
 
 /* Find the last bit opposite of the sign bit. */
-static void emit_imsb(const struct lp_build_tgsi_action * action,
-		     struct lp_build_tgsi_context * bld_base,
-		     struct lp_build_emit_data * emit_data)
+static void emit_imsb(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
 {
 	struct gallivm_state *gallivm = bld_base->base.gallivm;
 	LLVMBuilderRef builder = gallivm->builder;
@@ -1454,8 +1597,8 @@ static void emit_minmax_int(const struct lp_build_tgsi_action *action,
 				emit_data->args[1], "");
 }
 
-static void pk2h_fetch_args(struct lp_build_tgsi_context * bld_base,
-			    struct lp_build_emit_data * emit_data)
+static void pk2h_fetch_args(struct lp_build_tgsi_context *bld_base,
+			    struct lp_build_emit_data *emit_data)
 {
 	emit_data->args[0] = lp_build_emit_fetch(bld_base, emit_data->inst,
 						 0, TGSI_CHAN_X);
@@ -1490,8 +1633,8 @@ static void emit_pk2h(const struct lp_build_tgsi_action *action,
 	emit_data->output[emit_data->chan] = comp[0];
 }
 
-static void up2h_fetch_args(struct lp_build_tgsi_context * bld_base,
-			    struct lp_build_emit_data * emit_data)
+static void up2h_fetch_args(struct lp_build_tgsi_context *bld_base,
+			    struct lp_build_emit_data *emit_data)
 {
 	emit_data->args[0] = lp_build_emit_fetch(bld_base, emit_data->inst,
 						 0, TGSI_CHAN_X);
@@ -1522,7 +1665,39 @@ static void emit_up2h(const struct lp_build_tgsi_action *action,
 	}
 }
 
-void radeon_llvm_context_init(struct radeon_llvm_context * ctx, const char *triple)
+static void emit_fdiv(const struct lp_build_tgsi_action *action,
+		      struct lp_build_tgsi_context *bld_base,
+		      struct lp_build_emit_data *emit_data)
+{
+	struct radeon_llvm_context *ctx = radeon_llvm_context(bld_base);
+
+	emit_data->output[emit_data->chan] =
+		LLVMBuildFDiv(bld_base->base.gallivm->builder,
+			      emit_data->args[0], emit_data->args[1], "");
+
+	/* Use v_rcp_f32 instead of precise division. */
+	if (HAVE_LLVM >= 0x0309 &&
+	    !LLVMIsConstant(emit_data->output[emit_data->chan]))
+		LLVMSetMetadata(emit_data->output[emit_data->chan],
+				ctx->fpmath_md_kind, ctx->fpmath_md_2p5_ulp);
+}
+
+/* 1/sqrt is translated to rsq for f32 if fp32 denormals are not enabled in
+ * the target machine. f64 needs global unsafe math flags to get rsq. */
+static void emit_rsq(const struct lp_build_tgsi_action *action,
+		     struct lp_build_tgsi_context *bld_base,
+		     struct lp_build_emit_data *emit_data)
+{
+	LLVMValueRef sqrt =
+		lp_build_emit_llvm_unary(bld_base, TGSI_OPCODE_SQRT,
+					 emit_data->args[0]);
+
+	emit_data->output[emit_data->chan] =
+		lp_build_emit_llvm_binary(bld_base, TGSI_OPCODE_DIV,
+					  bld_base->base.one, sqrt);
+}
+
+void radeon_llvm_context_init(struct radeon_llvm_context *ctx, const char *triple)
 {
 	struct lp_type type;
 
@@ -1539,12 +1714,12 @@ void radeon_llvm_context_init(struct radeon_llvm_context * ctx, const char *trip
 	LLVMSetTarget(ctx->gallivm.module, triple);
 	ctx->gallivm.builder = LLVMCreateBuilderInContext(ctx->gallivm.context);
 
-	struct lp_build_tgsi_context * bld_base = &ctx->soa.bld_base;
+	struct lp_build_tgsi_context *bld_base = &ctx->soa.bld_base;
 
-	type.floating = TRUE;
-	type.fixed = FALSE;
-	type.sign = TRUE;
-	type.norm = FALSE;
+	type.floating = true;
+	type.fixed = false;
+	type.sign = true;
+	type.norm = false;
 	type.width = 32;
 	type.length = 1;
 
@@ -1569,6 +1744,13 @@ void radeon_llvm_context_init(struct radeon_llvm_context * ctx, const char *trip
 	bld_base->emit_fetch_funcs[TGSI_FILE_TEMPORARY] = radeon_llvm_emit_fetch;
 	bld_base->emit_fetch_funcs[TGSI_FILE_OUTPUT] = radeon_llvm_emit_fetch;
 	bld_base->emit_fetch_funcs[TGSI_FILE_SYSTEM_VALUE] = fetch_system_value;
+
+	/* metadata allowing 2.5 ULP */
+	ctx->fpmath_md_kind = LLVMGetMDKindIDInContext(ctx->gallivm.context,
+						       "fpmath", 6);
+	LLVMValueRef arg = lp_build_const_float(&ctx->gallivm, 2.5);
+	ctx->fpmath_md_2p5_ulp = LLVMMDNodeInContext(ctx->gallivm.context,
+						     &arg, 1);
 
 	/* Allocate outputs */
 	ctx->soa.outputs = ctx->outputs;
@@ -1599,13 +1781,15 @@ void radeon_llvm_context_init(struct radeon_llvm_context * ctx, const char *trip
 	bld_base->op_actions[TGSI_OPCODE_DFMA].emit = build_tgsi_intrinsic_nomem;
 	bld_base->op_actions[TGSI_OPCODE_DFMA].intr_name = "llvm.fma.f64";
 	bld_base->op_actions[TGSI_OPCODE_DFRAC].emit = emit_frac;
+	bld_base->op_actions[TGSI_OPCODE_DIV].emit = emit_fdiv;
 	bld_base->op_actions[TGSI_OPCODE_DNEG].emit = emit_dneg;
 	bld_base->op_actions[TGSI_OPCODE_DSEQ].emit = emit_dcmp;
 	bld_base->op_actions[TGSI_OPCODE_DSGE].emit = emit_dcmp;
 	bld_base->op_actions[TGSI_OPCODE_DSLT].emit = emit_dcmp;
 	bld_base->op_actions[TGSI_OPCODE_DSNE].emit = emit_dcmp;
 	bld_base->op_actions[TGSI_OPCODE_DRSQ].emit = build_tgsi_intrinsic_nomem;
-	bld_base->op_actions[TGSI_OPCODE_DRSQ].intr_name = "llvm.AMDGPU.rsq.f64";
+	bld_base->op_actions[TGSI_OPCODE_DRSQ].intr_name =
+		HAVE_LLVM >= 0x0309 ? "llvm.amdgcn.rsq.f64" : "llvm.AMDGPU.rsq.f64";
 	bld_base->op_actions[TGSI_OPCODE_DSQRT].emit = build_tgsi_intrinsic_nomem;
 	bld_base->op_actions[TGSI_OPCODE_DSQRT].intr_name = "llvm.sqrt.f64";
 	bld_base->op_actions[TGSI_OPCODE_ELSE].emit = else_emit;
@@ -1616,8 +1800,8 @@ void radeon_llvm_context_init(struct radeon_llvm_context * ctx, const char *trip
 		HAVE_LLVM >= 0x0308 ? "llvm.exp2.f32" : "llvm.AMDIL.exp.";
 	bld_base->op_actions[TGSI_OPCODE_FLR].emit = build_tgsi_intrinsic_nomem;
 	bld_base->op_actions[TGSI_OPCODE_FLR].intr_name = "llvm.floor.f32";
-	bld_base->op_actions[TGSI_OPCODE_FMA].emit = build_tgsi_intrinsic_nomem;
-	bld_base->op_actions[TGSI_OPCODE_FMA].intr_name = "llvm.fma.f32";
+	bld_base->op_actions[TGSI_OPCODE_FMA].emit =
+		bld_base->op_actions[TGSI_OPCODE_MAD].emit;
 	bld_base->op_actions[TGSI_OPCODE_FRC].emit = emit_frac;
 	bld_base->op_actions[TGSI_OPCODE_F2I].emit = emit_f2i;
 	bld_base->op_actions[TGSI_OPCODE_F2U].emit = emit_f2u;
@@ -1660,8 +1844,7 @@ void radeon_llvm_context_init(struct radeon_llvm_context * ctx, const char *trip
 	bld_base->op_actions[TGSI_OPCODE_POW].intr_name = "llvm.pow.f32";
 	bld_base->op_actions[TGSI_OPCODE_ROUND].emit = build_tgsi_intrinsic_nomem;
 	bld_base->op_actions[TGSI_OPCODE_ROUND].intr_name = "llvm.rint.f32";
-	bld_base->op_actions[TGSI_OPCODE_RSQ].intr_name = "llvm.AMDGPU.rsq.clamped.f32";
-	bld_base->op_actions[TGSI_OPCODE_RSQ].emit = build_tgsi_intrinsic_nomem;
+	bld_base->op_actions[TGSI_OPCODE_RSQ].emit = emit_rsq;
 	bld_base->op_actions[TGSI_OPCODE_SGE].emit = emit_set_cond;
 	bld_base->op_actions[TGSI_OPCODE_SEQ].emit = emit_set_cond;
 	bld_base->op_actions[TGSI_OPCODE_SHL].emit = emit_shl;
@@ -1695,7 +1878,7 @@ void radeon_llvm_context_init(struct radeon_llvm_context * ctx, const char *trip
 	bld_base->op_actions[TGSI_OPCODE_UP2H].emit = emit_up2h;
 }
 
-void radeon_llvm_create_func(struct radeon_llvm_context * ctx,
+void radeon_llvm_create_func(struct radeon_llvm_context *ctx,
 			     LLVMTypeRef *return_types, unsigned num_return_elems,
 			     LLVMTypeRef *ParamTypes, unsigned ParamCount)
 {
@@ -1718,9 +1901,9 @@ void radeon_llvm_create_func(struct radeon_llvm_context * ctx,
 	LLVMPositionBuilderAtEnd(ctx->gallivm.builder, main_fn_body);
 }
 
-void radeon_llvm_finalize_module(struct radeon_llvm_context * ctx)
+void radeon_llvm_finalize_module(struct radeon_llvm_context *ctx)
 {
-	struct gallivm_state * gallivm = ctx->soa.bld_base.base.gallivm;
+	struct gallivm_state *gallivm = ctx->soa.bld_base.base.gallivm;
 	const char *triple = LLVMGetTarget(gallivm->module);
 	LLVMTargetLibraryInfoRef target_library_info;
 
@@ -1749,7 +1932,7 @@ void radeon_llvm_finalize_module(struct radeon_llvm_context * ctx)
 	gallivm_dispose_target_library_info(target_library_info);
 }
 
-void radeon_llvm_dispose(struct radeon_llvm_context * ctx)
+void radeon_llvm_dispose(struct radeon_llvm_context *ctx)
 {
 	LLVMDisposeModule(ctx->soa.bld_base.base.gallivm->module);
 	LLVMContextDispose(ctx->soa.bld_base.base.gallivm->context);

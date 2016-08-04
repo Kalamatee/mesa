@@ -65,7 +65,7 @@ program_resource_visitor::process(const glsl_type *type, const char *name)
 
    unsigned record_array_count = 1;
    char *name_copy = ralloc_strdup(NULL, name);
-   unsigned packing = type->interface_packing;
+   enum glsl_interface_packing packing = type->get_interface_packing();
 
    recursion(type, &name_copy, strlen(name), false, NULL, packing, false,
              record_array_count, NULL);
@@ -79,9 +79,9 @@ program_resource_visitor::process(ir_variable *var)
    const bool row_major =
       var->data.matrix_layout == GLSL_MATRIX_LAYOUT_ROW_MAJOR;
 
-   const unsigned packing = var->get_interface_type() ?
-      var->get_interface_type()->interface_packing :
-      var->type->interface_packing;
+   const enum glsl_interface_packing packing = var->get_interface_type() ?
+      var->get_interface_type_packing() :
+      var->type->get_interface_packing();
 
    const glsl_type *t =
       var->data.from_named_ifc_block ? var->get_interface_type() : var->type;
@@ -116,7 +116,7 @@ void
 program_resource_visitor::recursion(const glsl_type *t, char **name,
                                     size_t name_length, bool row_major,
                                     const glsl_type *record_type,
-                                    const unsigned packing,
+                                    const enum glsl_interface_packing packing,
                                     bool last_field,
                                     unsigned record_array_count,
                                     const glsl_struct_field *named_ifc_member)
@@ -228,7 +228,7 @@ void
 program_resource_visitor::visit_field(const glsl_type *type, const char *name,
                                       bool row_major,
                                       const glsl_type *,
-                                      const unsigned,
+                                      const enum glsl_interface_packing,
                                       bool /* last_field */)
 {
    visit_field(type, name, row_major);
@@ -243,13 +243,13 @@ program_resource_visitor::visit_field(const glsl_struct_field *field)
 
 void
 program_resource_visitor::enter_record(const glsl_type *, const char *, bool,
-                                       const unsigned)
+                                       const enum glsl_interface_packing)
 {
 }
 
 void
 program_resource_visitor::leave_record(const glsl_type *, const char *, bool,
-                                       const unsigned)
+                                       const enum glsl_interface_packing)
 {
 }
 
@@ -402,7 +402,9 @@ private:
        * uniforms.
        */
       this->num_active_uniforms++;
-      this->num_values += values;
+
+      if(!is_gl_identifier(name) && !is_shader_storage && !is_buffer_block)
+         this->num_values += values;
    }
 
    struct string_to_uint_map *hidden_map;
@@ -660,7 +662,7 @@ private:
    }
 
    virtual void enter_record(const glsl_type *type, const char *,
-                             bool row_major, const unsigned packing) {
+                             bool row_major, const enum glsl_interface_packing packing) {
       assert(type->is_record());
       if (this->buffer_block_index == -1)
          return;
@@ -673,7 +675,7 @@ private:
    }
 
    virtual void leave_record(const glsl_type *type, const char *,
-                             bool row_major, const unsigned packing) {
+                             bool row_major, const enum glsl_interface_packing packing) {
       assert(type->is_record());
       if (this->buffer_block_index == -1)
          return;
@@ -687,7 +689,7 @@ private:
 
    virtual void visit_field(const glsl_type *type, const char *name,
                             bool row_major, const glsl_type * /* record_type */,
-                            const unsigned packing,
+                            const enum glsl_interface_packing packing,
                             bool /* last_field */)
    {
       assert(!type->without_array()->is_record());
@@ -762,12 +764,14 @@ private:
          current_var->data.how_declared == ir_var_hidden;
       this->uniforms[id].builtin = is_gl_identifier(name);
 
-      /* Do not assign storage if the uniform is builtin */
-      if (!this->uniforms[id].builtin)
-         this->uniforms[id].storage = this->values;
-
       this->uniforms[id].is_shader_storage =
          current_var->is_in_shader_storage_block();
+
+      /* Do not assign storage if the uniform is a builtin or buffer object */
+      if (!this->uniforms[id].builtin &&
+          !this->uniforms[id].is_shader_storage &&
+          this->buffer_block_index == -1)
+         this->uniforms[id].storage = this->values;
 
       if (this->buffer_block_index != -1) {
          this->uniforms[id].block_index = this->buffer_block_index;
@@ -819,7 +823,10 @@ private:
          this->uniforms[id].row_major = false;
       }
 
-      this->values += values_for_type(type);
+      if (!this->uniforms[id].builtin &&
+          !this->uniforms[id].is_shader_storage &&
+          this->buffer_block_index == -1)
+         this->values += values_for_type(type);
    }
 
    /**
@@ -881,7 +888,7 @@ public:
  * shaders).
  */
 static void
-link_update_uniform_buffer_variables(struct gl_shader *shader)
+link_update_uniform_buffer_variables(struct gl_linked_shader *shader)
 {
    foreach_in_list(ir_instruction, node, shader->ir) {
       ir_variable *const var = node->as_variable();
@@ -1017,7 +1024,7 @@ link_assign_uniform_locations(struct gl_shader_program *prog,
    struct string_to_uint_map *hiddenUniforms = new string_to_uint_map;
    count_uniform_size uniform_size(prog->UniformHash, hiddenUniforms);
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
-      struct gl_shader *sh = prog->_LinkedShaders[i];
+      struct gl_linked_shader *sh = prog->_LinkedShaders[i];
 
       if (sh == NULL)
          continue;
@@ -1199,7 +1206,7 @@ link_assign_uniform_locations(struct gl_shader_program *prog,
          continue;
 
       for (unsigned j = 0; j < MESA_SHADER_STAGES; j++) {
-         struct gl_shader *sh = prog->_LinkedShaders[j];
+         struct gl_linked_shader *sh = prog->_LinkedShaders[j];
          if (!sh)
             continue;
 
@@ -1229,7 +1236,7 @@ link_assign_uniform_locations(struct gl_shader_program *prog,
       if (uniforms[i].remap_location != UNMAPPED_UNIFORM_LOC)
          continue;
       for (unsigned j = 0; j < MESA_SHADER_STAGES; j++) {
-         struct gl_shader *sh = prog->_LinkedShaders[j];
+         struct gl_linked_shader *sh = prog->_LinkedShaders[j];
          if (!sh)
             continue;
 
@@ -1251,7 +1258,9 @@ link_assign_uniform_locations(struct gl_shader_program *prog,
 
 #ifndef NDEBUG
    for (unsigned i = 0; i < num_uniforms; i++) {
-      assert(uniforms[i].storage != NULL || uniforms[i].builtin);
+      assert(uniforms[i].storage != NULL || uniforms[i].builtin ||
+             uniforms[i].is_shader_storage ||
+             uniforms[i].block_index != -1);
    }
 
    assert(parcel.values == data_end);

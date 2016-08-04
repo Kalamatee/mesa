@@ -35,7 +35,6 @@
 #include "enable.h"
 #include "errors.h"
 #include "light.h"
-#include "util/simple_list.h"
 #include "mtypes.h"
 #include "enums.h"
 #include "api_arrayelt.h"
@@ -402,11 +401,10 @@ _mesa_set_enable(struct gl_context *ctx, GLenum cap, GLboolean state)
          FLUSH_VERTICES(ctx, _NEW_LIGHT);
          ctx->Light.Light[cap-GL_LIGHT0].Enabled = state;
          if (state) {
-            insert_at_tail(&ctx->Light.EnabledList,
-                           &ctx->Light.Light[cap-GL_LIGHT0]);
+            ctx->Light._EnabledLights |= 1u << (cap - GL_LIGHT0);
          }
          else {
-            remove_from_list(&ctx->Light.Light[cap-GL_LIGHT0]);
+            ctx->Light._EnabledLights &= ~(1u << (cap - GL_LIGHT0));
          }
          break;
       case GL_LIGHTING:

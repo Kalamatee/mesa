@@ -233,6 +233,15 @@ struct si_shader;
  * binaries for one TGSI program. This can be shared by multiple contexts.
  */
 struct si_shader_selector {
+	struct si_screen	*screen;
+	struct util_queue_fence ready;
+
+	/* Should only be used by si_init_shader_selector_async
+	 * if thread_index == -1 (non-threaded). */
+	LLVMTargetMachineRef	tm;
+	struct pipe_debug_callback debug;
+	bool			is_debug_context;
+
 	pipe_mutex		mutex;
 	struct si_shader	*first_variant; /* immutable after the first variant */
 	struct si_shader	*last_variant; /* mutable */
@@ -311,16 +320,14 @@ struct si_tcs_epilog_bits {
 /* Common PS bits between the shader key and the prolog key. */
 struct si_ps_prolog_bits {
 	unsigned	color_two_side:1;
-	/* TODO: add a flatshade bit that skips interpolation for colors */
+	unsigned	flatshade_colors:1;
 	unsigned	poly_stipple:1;
-	unsigned	force_persample_interp:1;
-	/* TODO:
-	 * - add force_center_interp if MSAA is disabled and centroid or
-	 *   sample are present
-	 * - add force_center_interp_bc_optimize to force center interpolation
-	 *   based on the bc_optimize SGPR bit if MSAA is enabled, centroid is
-	 *   present and sample isn't present.
-	 */
+	unsigned	force_persp_sample_interp:1;
+	unsigned	force_linear_sample_interp:1;
+	unsigned	force_persp_center_interp:1;
+	unsigned	force_linear_center_interp:1;
+	unsigned	bc_optimize_for_persp:1;
+	unsigned	bc_optimize_for_linear:1;
 };
 
 /* Common PS bits between the shader key and the epilog key. */
@@ -355,6 +362,7 @@ union si_shader_part_key {
 		unsigned	colors_read:8; /* color input components read */
 		unsigned	num_interp_inputs:5; /* BCOLOR is at this location */
 		unsigned	face_vgpr_index:5;
+		unsigned	wqm:1;
 		char		color_attr_index[2];
 		char		color_interp_vgpr_index[2]; /* -1 == constant */
 	} ps_prolog;
@@ -390,6 +398,8 @@ union si_shader_key {
 struct si_shader_config {
 	unsigned			num_sgprs;
 	unsigned			num_vgprs;
+	unsigned			spilled_sgprs;
+	unsigned			spilled_vgprs;
 	unsigned			lds_size;
 	unsigned			spi_ps_input_ena;
 	unsigned			spi_ps_input_addr;
@@ -429,6 +439,12 @@ struct si_shader {
 	struct radeon_shader_binary	binary;
 	struct si_shader_config		config;
 	struct si_shader_info		info;
+
+	/* Shader key + LLVM IR + disassembly + statistics.
+	 * Generated for debug contexts only.
+	 */
+	char				*shader_log;
+	size_t				shader_log_size;
 };
 
 struct si_shader_part {
@@ -479,7 +495,6 @@ int si_compile_tgsi_shader(struct si_screen *sscreen,
 int si_shader_create(struct si_screen *sscreen, LLVMTargetMachineRef tm,
 		     struct si_shader *shader,
 		     struct pipe_debug_callback *debug);
-void si_dump_shader_key(unsigned shader, union si_shader_key *key, FILE *f);
 int si_compile_llvm(struct si_screen *sscreen,
 		    struct radeon_shader_binary *binary,
 		    struct si_shader_config *conf,

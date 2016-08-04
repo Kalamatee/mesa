@@ -51,7 +51,9 @@ static void
 svga_transfer_dma_band(struct svga_context *svga,
                        struct svga_transfer *st,
                        SVGA3dTransferType transfer,
-                       unsigned y, unsigned h, unsigned srcy,
+                       unsigned x, unsigned y, unsigned z,
+                       unsigned w, unsigned h, unsigned d,
+                       unsigned srcx, unsigned srcy, unsigned srcz,
                        SVGA3dSurfaceDMAFlags flags)
 {
    struct svga_texture *texture = svga_texture(st->base.resource);
@@ -60,27 +62,27 @@ svga_transfer_dma_band(struct svga_context *svga,
 
    assert(!st->use_direct_map);
 
-   box.x = st->base.box.x;
+   box.x = x;
    box.y = y;
-   box.z = st->base.box.z;
-   box.w = st->base.box.width;
+   box.z = z;
+   box.w = w;
    box.h = h;
-   box.d = 1;
-   box.srcx = 0;
+   box.d = d;
+   box.srcx = srcx;
    box.srcy = srcy;
-   box.srcz = 0;
+   box.srcz = srcz;
 
    SVGA_DBG(DEBUG_DMA, "dma %s sid %p, face %u, (%u, %u, %u) - "
             "(%u, %u, %u), %ubpp\n",
             transfer == SVGA3D_WRITE_HOST_VRAM ? "to" : "from",
             texture->handle,
             st->slice,
-            st->base.box.x,
+            x,
             y,
-            box.z,
-            st->base.box.x + st->base.box.width,
+            z,
+            x + w,
             y + h,
-            box.z + 1,
+            z + 1,
             util_format_get_blocksize(texture->b.b.format) * 8 /
             (util_format_get_blockwidth(texture->b.b.format)
              * util_format_get_blockheight(texture->b.b.format)));
@@ -119,7 +121,9 @@ svga_transfer_dma(struct svga_context *svga,
    if (!st->swbuf) {
       /* Do the DMA transfer in a single go */
       svga_transfer_dma_band(svga, st, transfer,
-                             st->base.box.y, st->base.box.height, 0,
+                             st->base.box.x, st->base.box.y, st->base.box.z,
+                             st->base.box.width, st->base.box.height, st->base.box.depth,
+                             0, 0, 0,
                              flags);
 
       if (transfer == SVGA3D_READ_HOST_VRAM) {
@@ -170,7 +174,10 @@ svga_transfer_dma(struct svga_context *svga,
             }
          }
 
-         svga_transfer_dma_band(svga, st, transfer, y, h, srcy, flags);
+         svga_transfer_dma_band(svga, st, transfer,
+                                st->base.box.x, y, st->base.box.z,
+                                st->base.box.width, h, st->base.box.depth,
+                                0, srcy, 0, flags);
 
          /*
           * Prevent the texture contents to be discarded on the next band
@@ -343,6 +350,30 @@ svga_texture_transfer_map(struct pipe_context *pipe,
    if (!st)
       return NULL;
 
+   st->base.level = level;
+   st->base.usage = usage;
+   st->base.box = *box;
+
+   switch (tex->b.b.target) {
+   case PIPE_TEXTURE_CUBE:
+      st->slice = st->base.box.z;
+      st->base.box.z = 0;   /* so we don't apply double offsets below */
+      break;
+   case PIPE_TEXTURE_2D_ARRAY:
+   case PIPE_TEXTURE_1D_ARRAY:
+      st->slice = st->base.box.z;
+      st->base.box.z = 0;   /* so we don't apply double offsets below */
+
+      /* Force direct map for transfering multiple slices */
+      if (st->base.box.depth > 1)
+         use_direct_map = svga_have_gb_objects(svga);
+
+      break;
+   default:
+      st->slice = 0;
+      break;
+   }
+
    {
       unsigned w, h;
       if (use_direct_map) {
@@ -363,23 +394,8 @@ svga_texture_transfer_map(struct pipe_context *pipe,
 
    pipe_resource_reference(&st->base.resource, texture);
 
-   st->base.level = level;
-   st->base.usage = usage;
-   st->base.box = *box;
    st->base.stride = nblocksx*util_format_get_blocksize(texture->format);
    st->base.layer_stride = st->base.stride * nblocksy;
-
-   switch (tex->b.b.target) {
-   case PIPE_TEXTURE_CUBE:
-   case PIPE_TEXTURE_2D_ARRAY:
-   case PIPE_TEXTURE_1D_ARRAY:
-      st->slice = st->base.box.z;
-      st->base.box.z = 0;   /* so we don't apply double offsets below */
-      break;
-   default:
-      st->slice = 0;
-      break;
-   }
 
    if (usage & PIPE_TRANSFER_WRITE) {
       /* record texture upload for HUD */
@@ -540,6 +556,13 @@ svga_texture_transfer_map(struct pipe_context *pipe,
       baseLevelSize.height = tex->b.b.height0;
       baseLevelSize.depth = tex->b.b.depth0;
 
+      if ((tex->b.b.target == PIPE_TEXTURE_1D_ARRAY) ||
+          (tex->b.b.target == PIPE_TEXTURE_2D_ARRAY)) {
+         st->base.layer_stride =
+            svga3dsurface_get_image_offset(tex->key.format, baseLevelSize,
+                                           tex->b.b.last_level + 1, 1, 0);
+      }
+
       offset = svga3dsurface_get_image_offset(tex->key.format, baseLevelSize,
                                               tex->b.b.last_level + 1, /* numMips */
                                               st->slice, level);
@@ -666,27 +689,35 @@ svga_texture_transfer_unmap(struct pipe_context *pipe,
 	 svga_texture(transfer->resource)->handle;
       SVGA3dBox box;
       enum pipe_error ret;
+      unsigned nlayers = 1;
 
       assert(svga_have_gb_objects(svga));
 
       /* update the effected region */
       box.x = transfer->box.x;
       box.y = transfer->box.y;
+      box.w = transfer->box.width;
+      box.h = transfer->box.height;
+      box.d = transfer->box.depth;
+
       switch (tex->b.b.target) {
       case PIPE_TEXTURE_CUBE:
-      case PIPE_TEXTURE_2D_ARRAY:
          box.z = 0;
          break;
+      case PIPE_TEXTURE_2D_ARRAY:
+         nlayers = box.d;
+         box.z = 0;
+         box.d = 1;
+         break;
       case PIPE_TEXTURE_1D_ARRAY:
+         nlayers = box.d;
          box.y = box.z = 0;
+         box.d = 1;
          break;
       default:
          box.z = transfer->box.z;
          break;
       }
-      box.w = transfer->box.width;
-      box.h = transfer->box.height;
-      box.d = transfer->box.depth;
 
       if (0)
          debug_printf("%s %d, %d, %d  %d x %d x %d\n",
@@ -695,15 +726,21 @@ svga_texture_transfer_unmap(struct pipe_context *pipe,
                       box.w, box.h, box.d);
 
       if (svga_have_vgpu10(svga)) {
-         ret = update_image_vgpu10(svga, surf, &box, st->slice, transfer->level,
-                                   tex->b.b.last_level + 1);
+         unsigned i;
+         for (i = 0; i < nlayers; i++) {
+            ret = update_image_vgpu10(svga, surf, &box,
+                                      st->slice + i, transfer->level,
+                                      tex->b.b.last_level + 1);
+            assert(ret == PIPE_OK);
+         }
       } else {
+         assert(nlayers == 1);
          ret = update_image_vgpu9(svga, surf, &box, st->slice, transfer->level);
+         assert(ret == PIPE_OK);
       }
 
       svga->hud.num_resource_updates++;
 
-      assert(ret == PIPE_OK);
       (void) ret;
    }
 
@@ -742,7 +779,6 @@ struct u_resource_vtbl svga_texture_vtbl =
    svga_texture_transfer_map,	      /* transfer_map */
    u_default_transfer_flush_region,   /* transfer_flush_region */
    svga_texture_transfer_unmap,	      /* transfer_unmap */
-   u_default_transfer_inline_write    /* transfer_inline_write */
 };
 
 
@@ -908,14 +944,17 @@ svga_texture_create(struct pipe_screen *screen,
       goto fail;
    }
 
-   /* Use typeless formats for sRGB and depth resources.  Typeless
+   /* The actual allocation is done with a typeless format.  Typeless
     * formats can be reinterpreted as other formats.  For example,
     * SVGA3D_R8G8B8A8_UNORM_TYPELESS can be interpreted as
     * SVGA3D_R8G8B8A8_UNORM_SRGB or SVGA3D_R8G8B8A8_UNORM.
+    * Do not use typeless formats for SHARED, DISPLAY_TARGET or SCANOUT
+    * buffers.
     */
-   if (svgascreen->sws->have_vgpu10 &&
-       (util_format_is_srgb(template->format) ||
-        format_has_depth(template->format))) {
+   if (svgascreen->sws->have_vgpu10
+       && ((bindings & (PIPE_BIND_SHARED |
+                        PIPE_BIND_DISPLAY_TARGET |
+                        PIPE_BIND_SCANOUT)) == 0)) {
       SVGA3dSurfaceFormat typeless = svga_typeless_format(tex->key.format);
       if (0) {
          debug_printf("Convert resource type %s -> %s (bind 0x%x)\n",
@@ -923,6 +962,16 @@ svga_texture_create(struct pipe_screen *screen,
                       svga_format_name(typeless),
                       bindings);
       }
+
+      if (svga_format_is_uncompressed_snorm(tex->key.format)) {
+         /* We can't normally render to snorm surfaces, but once we
+          * substitute a typeless format, we can if the rendertarget view
+          * is unorm.  This can happen with GL_ARB_copy_image.
+          */
+         tex->key.flags |= SVGA3D_SURFACE_HINT_RENDERTARGET;
+         tex->key.flags |= SVGA3D_SURFACE_BIND_RENDER_TARGET;
+      }
+
       tex->key.format = typeless;
    }
 

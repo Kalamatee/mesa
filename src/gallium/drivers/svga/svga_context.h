@@ -357,16 +357,20 @@ struct svga_hw_draw_state
    SVGA3dPrimitiveType topology;
 
    /** Vertex buffer state */
-   SVGA3dVertexBuffer vbuffers[PIPE_MAX_ATTRIBS];
-   struct svga_winsys_surface *vbuffer_handles[PIPE_MAX_ATTRIBS];
+   SVGA3dVertexBuffer vbuffer_attrs[PIPE_MAX_ATTRIBS];
+   struct pipe_resource *vbuffers[PIPE_MAX_ATTRIBS];
    unsigned num_vbuffers;
 
-   struct svga_winsys_surface *ib;  /**< index buffer for drawing */
+   struct pipe_resource *ib;  /**< index buffer for drawing */
    SVGA3dSurfaceFormat ib_format;
    unsigned ib_offset;
 
    unsigned num_samplers[PIPE_SHADER_TYPES];
    SVGA3dSamplerId samplers[PIPE_SHADER_TYPES][PIPE_MAX_SAMPLERS];
+
+   unsigned num_rendertargets;
+   struct pipe_surface *rtv[SVGA3D_MAX_RENDER_TARGETS];
+   struct pipe_surface *dsv;
 
    /* used for rebinding */
    unsigned num_sampler_views[PIPE_SHADER_TYPES];

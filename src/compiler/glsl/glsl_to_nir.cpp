@@ -134,7 +134,7 @@ glsl_to_nir(const struct gl_shader_program *shader_prog,
             gl_shader_stage stage,
             const nir_shader_compiler_options *options)
 {
-   struct gl_shader *sh = shader_prog->_LinkedShaders[stage];
+   struct gl_linked_shader *sh = shader_prog->_LinkedShaders[stage];
 
    nir_shader *shader = nir_shader_create(NULL, stage, options);
 
@@ -166,14 +166,14 @@ glsl_to_nir(const struct gl_shader_program *shader_prog,
 
    switch (stage) {
    case MESA_SHADER_TESS_CTRL:
-      shader->info.tcs.vertices_out = shader_prog->TessCtrl.VerticesOut;
+      shader->info.tcs.vertices_out = sh->info.TessCtrl.VerticesOut;
       break;
 
    case MESA_SHADER_GEOMETRY:
       shader->info.gs.vertices_in = shader_prog->Geom.VerticesIn;
-      shader->info.gs.output_primitive = sh->Geom.OutputType;
-      shader->info.gs.vertices_out = sh->Geom.VerticesOut;
-      shader->info.gs.invocations = sh->Geom.Invocations;
+      shader->info.gs.output_primitive = sh->info.Geom.OutputType;
+      shader->info.gs.vertices_out = sh->info.Geom.VerticesOut;
+      shader->info.gs.invocations = sh->info.Geom.Invocations;
       shader->info.gs.uses_end_primitive = shader_prog->Geom.UsesEndPrimitive;
       shader->info.gs.uses_streams = shader_prog->Geom.UsesStreams;
       break;
@@ -184,7 +184,7 @@ glsl_to_nir(const struct gl_shader_program *shader_prog,
 
       shader->info.fs.uses_discard = fp->UsesKill;
       shader->info.fs.uses_sample_qualifier = fp->IsSample != 0;
-      shader->info.fs.early_fragment_tests = sh->EarlyFragmentTests;
+      shader->info.fs.early_fragment_tests = sh->info.EarlyFragmentTests;
       shader->info.fs.depth_layout = fp->FragDepthLayout;
       break;
    }
@@ -1284,9 +1284,6 @@ nir_visitor::visit(ir_expression *ir)
           intrin->intrinsic == nir_intrinsic_interp_var_at_sample)
          intrin->src[0] = nir_src_for_ssa(evaluate_rvalue(ir->operands[1]));
 
-      if (intrin->intrinsic == nir_intrinsic_interp_var_at_offset)
-         shader->info.uses_interp_var_at_offset = true;
-
       unsigned bit_size =  glsl_get_bit_size(deref->type);
       add_instr(&intrin->instr, deref->type->vector_elements, bit_size);
 
@@ -1953,7 +1950,7 @@ void
 nir_visitor::visit(ir_constant *ir)
 {
    /*
-    * We don't know if this variable is an an array or struct that gets
+    * We don't know if this variable is an array or struct that gets
     * dereferenced, so do the safe thing an make it a variable with a
     * constant initializer and return a dereference.
     */

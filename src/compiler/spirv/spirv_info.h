@@ -1,5 +1,5 @@
 /*
- * Copyright 2012, 2013 Advanced Micro Devices, Inc.
+ * Copyright © 2016 Intel Corporation
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -16,24 +16,12 @@
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
  * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- *
- * Authors: Tom Stellard <thomas.stellard@amd.com>
- *
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+ * IN THE SOFTWARE.
  */
 
-#ifndef RADEON_LLVM_UTIL_H
-#define RADEON_LLVM_UTIL_H
+#include "spirv.h"
 
-#include <llvm-c/Core.h>
-
-LLVMModuleRef radeon_llvm_parse_bitcode(LLVMContextRef ctx,
-			const char * bitcode, unsigned bitcode_len);
-unsigned radeon_llvm_get_num_kernels(LLVMContextRef ctx,
-			const char *bitcode, unsigned bitcode_len);
-LLVMModuleRef radeon_llvm_get_kernel_module(LLVMContextRef ctx, unsigned index,
-			const char *bitcode, unsigned bitcode_len);
-
-#endif
+const char *spirv_capability_to_string(SpvCapability cap);
+const char *spirv_decoration_to_string(SpvDecoration dec);

@@ -1,13 +1,14 @@
 #   $Id: mmakefile.src 48030 2013-09-08 21:14:08Z verhaegs $
-include $(TOP)/config/make.cfg
+
+include $(SRCDIR)/config/aros.cfg
 
 GALLIUM_PATH = $(SRCDIR)/$(CURDIR)/../../../..
 
 include $(GALLIUM_PATH)/../aros/mesa3dgl/mesa.cfg
 include $(GALLIUM_PATH)/drivers/vc4/Makefile.sources
 
-#MM- workbench-hidds : hidd-vc4-$(AROS_TARGET_TOOLCHAIN)-$(AROS_TARGET_CPU)
-#MM- hidd-vc4-yes-arm : hidd-vc4
+##MM- workbench-hidds : hidd-vc4-$(AROS_TARGET_TOOLCHAIN)-$(AROS_TARGET_CPU)
+##MM- hidd-vc4-yes-arm : hidd-vc4
 
 #MM- hidd-vc4: includes hidd-gallium mesa3dgl-linklibs-galliumauxiliary mesa3dgl-linklibs-mesautil
 

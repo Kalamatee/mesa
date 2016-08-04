@@ -120,19 +120,30 @@ make_surface(const struct anv_device *dev,
       [VK_IMAGE_TYPE_3D] = ISL_SURF_DIM_3D,
    };
 
-   isl_tiling_flags_t tiling_flags = anv_info->isl_tiling_flags;
-   if (vk_info->tiling == VK_IMAGE_TILING_LINEAR)
-      tiling_flags = ISL_TILING_LINEAR_BIT;
+   /* Translate the Vulkan tiling to an equivalent ISL tiling, then filter the
+    * result with an optionally provided ISL tiling argument.
+    */
+   isl_tiling_flags_t tiling_flags =
+      (vk_info->tiling == VK_IMAGE_TILING_LINEAR) ?
+      ISL_TILING_LINEAR_BIT : ISL_TILING_ANY_MASK;
+
+   if (anv_info->isl_tiling_flags)
+      tiling_flags &= anv_info->isl_tiling_flags;
+
+   assert(tiling_flags);
 
    struct anv_surface *anv_surf = get_surface(image, aspect);
 
    image->extent = anv_sanitize_image_extent(vk_info->imageType,
                                              vk_info->extent);
 
+   enum isl_format format = anv_get_isl_format(&dev->info, vk_info->format,
+                                               aspect, vk_info->tiling);
+   assert(format != ISL_FORMAT_UNSUPPORTED);
+
    ok = isl_surf_init(&dev->isl_dev, &anv_surf->isl,
       .dim = vk_to_isl_surf_dim[vk_info->imageType],
-      .format = anv_get_isl_format(&dev->info, vk_info->format,
-                                   aspect, vk_info->tiling),
+      .format = format,
       .width = image->extent.width,
       .height = image->extent.height,
       .depth = image->extent.depth,
@@ -260,7 +271,6 @@ anv_CreateImage(VkDevice device,
    return anv_image_create(device,
       &(struct anv_image_create_info) {
          .vk_info = pCreateInfo,
-         .isl_tiling_flags = ISL_TILING_ANY_MASK,
       },
       pAllocator,
       pImage);
@@ -537,12 +547,15 @@ anv_image_view_init(struct anv_image_view *iview,
       iview->color_rt_surface_state.alloc_size = 0;
    }
 
+   /* NOTE: This one needs to go last since it may stomp isl_view.format */
    if (image->usage & usage_mask & VK_IMAGE_USAGE_STORAGE_BIT) {
       iview->storage_surface_state = alloc_surface_state(device, cmd_buffer);
 
       if (isl_has_matching_typed_storage_image_format(&device->info,
                                                       format.isl_format)) {
          isl_view.usage = cube_usage | ISL_SURF_USAGE_STORAGE_BIT;
+         isl_view.format = isl_lower_storage_image_format(&device->info,
+                                                          isl_view.format);
          isl_surf_fill_state(&device->isl_dev,
                              iview->storage_surface_state.map,
                              .surf = &surface->isl,
@@ -625,18 +638,19 @@ void anv_buffer_view_init(struct anv_buffer_view *view,
    view->format = anv_get_isl_format(&device->info, pCreateInfo->format,
                                      VK_IMAGE_ASPECT_COLOR_BIT,
                                      VK_IMAGE_TILING_LINEAR);
+   const uint32_t format_bs = isl_format_get_layout(view->format)->bpb / 8;
    view->bo = buffer->bo;
    view->offset = buffer->offset + pCreateInfo->offset;
    view->range = pCreateInfo->range == VK_WHOLE_SIZE ?
-                 buffer->size - view->offset : pCreateInfo->range;
+                 buffer->size - pCreateInfo->offset : pCreateInfo->range;
+   view->range = align_down_npot_u32(view->range, format_bs);
 
    if (buffer->usage & VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT) {
       view->surface_state = alloc_surface_state(device, cmd_buffer);
 
       anv_fill_buffer_surface_state(device, view->surface_state,
                                     view->format,
-                                    view->offset, view->range,
-                                    isl_format_get_layout(view->format)->bs);
+                                    view->offset, view->range, format_bs);
    } else {
       view->surface_state = (struct anv_state){ 0 };
    }
@@ -654,7 +668,7 @@ void anv_buffer_view_init(struct anv_buffer_view *view,
                                     storage_format,
                                     view->offset, view->range,
                                     (storage_format == ISL_FORMAT_RAW ? 1 :
-                                     isl_format_get_layout(storage_format)->bs));
+                                     isl_format_get_layout(storage_format)->bpb / 8));
 
       isl_buffer_fill_image_param(&device->isl_dev,
                                   &view->storage_image_param,

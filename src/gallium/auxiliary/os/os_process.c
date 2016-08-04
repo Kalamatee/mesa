@@ -34,13 +34,17 @@
 #  include <windows.h>
 #elif defined(__GLIBC__) || defined(__CYGWIN__)
 #  include <errno.h>
-#elif defined(PIPE_OS_BSD) || defined(PIPE_OS_APPLE)
+#elif defined(PIPE_OS_AROS) || defined(PIPE_OS_BSD) || defined(PIPE_OS_APPLE)
 #  include <stdlib.h>
 #elif defined(PIPE_OS_HAIKU)
 #  include <kernel/OS.h>
 #  include <kernel/image.h>
 #else
 #warning unexpected platform in os_process.c
+#endif
+
+#if defined(PIPE_OS_LINUX)
+#  include <fcntl.h>
 #endif
 
 
@@ -89,6 +93,8 @@ os_get_process_name(char *procname, size_t size)
       image_info info;
       get_image_info(B_CURRENT_TEAM, &info);
       name = info.name;
+#elif defined(PIPE_OS_AROS)
+      name = "TODO";
 #else
 #warning unexpected platform in os_process.c
       return FALSE;
@@ -107,4 +113,48 @@ os_get_process_name(char *procname, size_t size)
    else {
       return FALSE;
    }
+}
+
+
+/**
+ * Return the command line for the calling process.  This is basically
+ * the argv[] array with the arguments separated by spaces.
+ * \param cmdline  returns the command line string
+ * \param size  size of the cmdline buffer
+ * \return  TRUE or FALSE for success, failure
+ */
+boolean
+os_get_command_line(char *cmdline, size_t size)
+{
+#if defined(PIPE_SUBSYSTEM_WINDOWS_USER)
+   const char *args = GetCommandLine();
+   if (args) {
+      strncpy(cmdline, args, size);
+      // make sure we terminate the string
+      cmdline[size - 1] = 0;
+      return TRUE;
+   }
+#elif defined(PIPE_OS_LINUX)
+   int f = open("/proc/self/cmdline", O_RDONLY);
+   if (f) {
+      const int n = read(f, cmdline, size - 1);
+      int i;
+      assert(n < size);
+      // The arguments are separated by '\0' chars.  Convert them to spaces.
+      for (i = 0; i < n; i++) {
+         if (cmdline[i] == 0) {
+            cmdline[i] = ' ';
+         }
+      }
+      // terminate the string
+      cmdline[n] = 0;
+      close(f);
+      return TRUE;
+   }
+#endif
+
+   /* XXX to-do: implement this function for other operating systems */
+
+   cmdline[0] = 0;
+   return FALSE;
 }

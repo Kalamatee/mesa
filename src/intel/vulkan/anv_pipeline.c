@@ -123,13 +123,12 @@ anv_shader_compile_to_nir(struct anv_device *device,
          num_spec_entries = spec_info->mapEntryCount;
          spec_entries = malloc(num_spec_entries * sizeof(*spec_entries));
          for (uint32_t i = 0; i < num_spec_entries; i++) {
-            const uint32_t *data =
-               spec_info->pData + spec_info->pMapEntries[i].offset;
-            assert((const void *)(data + 1) <=
-                   spec_info->pData + spec_info->dataSize);
+            VkSpecializationMapEntry entry = spec_info->pMapEntries[i];
+            const void *data = spec_info->pData + entry.offset;
+            assert(data + entry.size <= spec_info->pData + spec_info->dataSize);
 
             spec_entries[i].id = spec_info->pMapEntries[i].constantID;
-            spec_entries[i].data = *data;
+            spec_entries[i].data = *(const uint32_t *)data;
          }
       }
 
@@ -164,6 +163,9 @@ anv_shader_compile_to_nir(struct anv_device *device,
       nir_remove_dead_variables(nir, nir_var_shader_in);
       nir_remove_dead_variables(nir, nir_var_shader_out);
       nir_remove_dead_variables(nir, nir_var_system_value);
+      nir_validate_shader(nir);
+
+      nir_propagate_invariant(nir);
       nir_validate_shader(nir);
 
       nir_lower_io_to_temporaries(entry_point->shader, entry_point, true, false);
@@ -327,6 +329,7 @@ anv_pipeline_compile(struct anv_pipeline *pipeline,
       /* If the shader uses any push constants at all, we'll just give
        * them the maximum possible number
        */
+      assert(nir->num_uniforms <= MAX_PUSH_CONSTANTS_SIZE);
       prog_data->nr_params += MAX_PUSH_CONSTANTS_SIZE / sizeof(float);
    }
 
@@ -337,6 +340,10 @@ anv_pipeline_compile(struct anv_pipeline *pipeline,
       prog_data->nr_params += nir->info.num_images * BRW_IMAGE_PARAM_SIZE;
       pipeline->needs_data_cache = true;
    }
+
+   if (stage == MESA_SHADER_COMPUTE)
+      ((struct brw_cs_prog_data *)prog_data)->thread_local_id_index =
+         prog_data->nr_params++; /* The CS Thread ID uniform */
 
    if (nir->info.num_ssbos > 0)
       pipeline->needs_data_cache = true;
@@ -380,6 +387,7 @@ anv_fill_binding_table(struct brw_stage_prog_data *prog_data, unsigned bias)
 {
    prog_data->binding_table.size_bytes = 0;
    prog_data->binding_table.texture_start = bias;
+   prog_data->binding_table.gather_texture_start = bias;
    prog_data->binding_table.ubo_start = bias;
    prog_data->binding_table.ssbo_start = bias;
    prog_data->binding_table.image_start = bias;
@@ -391,22 +399,8 @@ anv_pipeline_add_compiled_stage(struct anv_pipeline *pipeline,
                                 const struct brw_stage_prog_data *prog_data,
                                 struct anv_pipeline_bind_map *map)
 {
-   struct brw_device_info *devinfo = &pipeline->device->info;
-   uint32_t max_threads[] = {
-      [MESA_SHADER_VERTEX]                  = devinfo->max_vs_threads,
-      [MESA_SHADER_TESS_CTRL]               = devinfo->max_hs_threads,
-      [MESA_SHADER_TESS_EVAL]               = devinfo->max_ds_threads,
-      [MESA_SHADER_GEOMETRY]                = devinfo->max_gs_threads,
-      [MESA_SHADER_FRAGMENT]                = devinfo->max_wm_threads,
-      [MESA_SHADER_COMPUTE]                 = devinfo->max_cs_threads,
-   };
-
    pipeline->prog_data[stage] = prog_data;
    pipeline->active_stages |= mesa_to_vk_shader_stage(stage);
-   pipeline->scratch_start[stage] = pipeline->total_scratch;
-   pipeline->total_scratch =
-      align_u32(pipeline->total_scratch, 1024) +
-      prog_data->total_scratch * max_threads[stage];
    pipeline->bindings[stage] = *map;
 }
 
@@ -643,7 +637,8 @@ anv_pipeline_compile_fs(struct anv_pipeline *pipeline,
          for (unsigned i = 0; i < array_len; i++) {
             rt_bindings[num_rts] = (struct anv_pipeline_binding) {
                .set = ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS,
-               .offset = rt + i,
+               .binding = 0,
+               .index = rt + i,
             };
          }
 
@@ -659,7 +654,8 @@ anv_pipeline_compile_fs(struct anv_pipeline *pipeline,
          /* If we have no render targets, we need a null render target */
          rt_bindings[0] = (struct anv_pipeline_binding) {
             .set = ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS,
-            .offset = UINT16_MAX,
+            .binding = 0,
+            .index = UINT8_MAX,
          };
          num_rts = 1;
       }
@@ -942,9 +938,22 @@ anv_compute_urb_partition(struct anv_pipeline *pipeline)
    pipeline->urb.entries[MESA_SHADER_TESS_EVAL] = 0;
 }
 
+/**
+ * Copy pipeline state not marked as dynamic.
+ * Dynamic state is pipeline state which hasn't been provided at pipeline
+ * creation time, but is dynamically provided afterwards using various
+ * vkCmdSet* functions.
+ *
+ * The set of state considered "non_dynamic" is determined by the pieces of
+ * state that have their corresponding VkDynamicState enums omitted from
+ * VkPipelineDynamicStateCreateInfo::pDynamicStates.
+ *
+ * @param[out] pipeline    Destination non_dynamic state.
+ * @param[in]  pCreateInfo Source of non_dynamic state to be copied.
+ */
 static void
-anv_pipeline_init_dynamic_state(struct anv_pipeline *pipeline,
-                                const VkGraphicsPipelineCreateInfo *pCreateInfo)
+copy_non_dynamic_state(struct anv_pipeline *pipeline,
+                       const VkGraphicsPipelineCreateInfo *pCreateInfo)
 {
    anv_cmd_dirty_mask_t states = ANV_CMD_DIRTY_DYNAMIC_ALL;
    ANV_FROM_HANDLE(anv_render_pass, pass, pCreateInfo->renderPass);
@@ -961,18 +970,27 @@ anv_pipeline_init_dynamic_state(struct anv_pipeline *pipeline,
 
    struct anv_dynamic_state *dynamic = &pipeline->dynamic_state;
 
-   dynamic->viewport.count = pCreateInfo->pViewportState->viewportCount;
-   if (states & (1 << VK_DYNAMIC_STATE_VIEWPORT)) {
-      typed_memcpy(dynamic->viewport.viewports,
-                   pCreateInfo->pViewportState->pViewports,
-                   pCreateInfo->pViewportState->viewportCount);
-   }
+   /* Section 9.2 of the Vulkan 1.0.15 spec says:
+    *
+    *    pViewportState is [...] NULL if the pipeline
+    *    has rasterization disabled.
+    */
+   if (!pCreateInfo->pRasterizationState->rasterizerDiscardEnable) {
+      assert(pCreateInfo->pViewportState);
 
-   dynamic->scissor.count = pCreateInfo->pViewportState->scissorCount;
-   if (states & (1 << VK_DYNAMIC_STATE_SCISSOR)) {
-      typed_memcpy(dynamic->scissor.scissors,
-                   pCreateInfo->pViewportState->pScissors,
-                   pCreateInfo->pViewportState->scissorCount);
+      dynamic->viewport.count = pCreateInfo->pViewportState->viewportCount;
+      if (states & (1 << VK_DYNAMIC_STATE_VIEWPORT)) {
+         typed_memcpy(dynamic->viewport.viewports,
+                     pCreateInfo->pViewportState->pViewports,
+                     pCreateInfo->pViewportState->viewportCount);
+      }
+
+      dynamic->scissor.count = pCreateInfo->pViewportState->scissorCount;
+      if (states & (1 << VK_DYNAMIC_STATE_SCISSOR)) {
+         typed_memcpy(dynamic->scissor.scissors,
+                     pCreateInfo->pViewportState->pScissors,
+                     pCreateInfo->pViewportState->scissorCount);
+      }
    }
 
    if (states & (1 << VK_DYNAMIC_STATE_LINE_WIDTH)) {
@@ -990,10 +1008,27 @@ anv_pipeline_init_dynamic_state(struct anv_pipeline *pipeline,
          pCreateInfo->pRasterizationState->depthBiasSlopeFactor;
    }
 
-   if (states & (1 << VK_DYNAMIC_STATE_BLEND_CONSTANTS)) {
+   /* Section 9.2 of the Vulkan 1.0.15 spec says:
+    *
+    *    pColorBlendState is [...] NULL if the pipeline has rasterization
+    *    disabled or if the subpass of the render pass the pipeline is
+    *    created against does not use any color attachments.
+    */
+   bool uses_color_att = false;
+   for (unsigned i = 0; i < subpass->color_count; ++i) {
+      if (subpass->color_attachments[i] != VK_ATTACHMENT_UNUSED) {
+         uses_color_att = true;
+         break;
+      }
+   }
+
+   if (uses_color_att &&
+       !pCreateInfo->pRasterizationState->rasterizerDiscardEnable) {
       assert(pCreateInfo->pColorBlendState);
-      typed_memcpy(dynamic->blend_constants,
-                   pCreateInfo->pColorBlendState->blendConstants, 4);
+
+      if (states & (1 << VK_DYNAMIC_STATE_BLEND_CONSTANTS))
+         typed_memcpy(dynamic->blend_constants,
+                     pCreateInfo->pColorBlendState->blendConstants, 4);
    }
 
    /* If there is no depthstencil attachment, then don't read
@@ -1002,14 +1037,17 @@ anv_pipeline_init_dynamic_state(struct anv_pipeline *pipeline,
     * no need to override the depthstencil defaults in
     * anv_pipeline::dynamic_state when there is no depthstencil attachment.
     *
-    * From the Vulkan spec (20 Oct 2015, git-aa308cb):
+    * Section 9.2 of the Vulkan 1.0.15 spec says:
     *
-    *    pDepthStencilState [...] may only be NULL if renderPass and subpass
-    *    specify a subpass that has no depth/stencil attachment.
+    *    pDepthStencilState is [...] NULL if the pipeline has rasterization
+    *    disabled or if the subpass of the render pass the pipeline is created
+    *    against does not use a depth/stencil attachment.
     */
-   if (subpass->depth_stencil_attachment != VK_ATTACHMENT_UNUSED) {
+   if (!pCreateInfo->pRasterizationState->rasterizerDiscardEnable &&
+       subpass->depth_stencil_attachment != VK_ATTACHMENT_UNUSED) {
+      assert(pCreateInfo->pDepthStencilState);
+
       if (states & (1 << VK_DYNAMIC_STATE_DEPTH_BOUNDS)) {
-         assert(pCreateInfo->pDepthStencilState);
          dynamic->depth_bounds.min =
             pCreateInfo->pDepthStencilState->minDepthBounds;
          dynamic->depth_bounds.max =
@@ -1017,7 +1055,6 @@ anv_pipeline_init_dynamic_state(struct anv_pipeline *pipeline,
       }
 
       if (states & (1 << VK_DYNAMIC_STATE_STENCIL_COMPARE_MASK)) {
-         assert(pCreateInfo->pDepthStencilState);
          dynamic->stencil_compare_mask.front =
             pCreateInfo->pDepthStencilState->front.compareMask;
          dynamic->stencil_compare_mask.back =
@@ -1025,7 +1062,6 @@ anv_pipeline_init_dynamic_state(struct anv_pipeline *pipeline,
       }
 
       if (states & (1 << VK_DYNAMIC_STATE_STENCIL_WRITE_MASK)) {
-         assert(pCreateInfo->pDepthStencilState);
          dynamic->stencil_write_mask.front =
             pCreateInfo->pDepthStencilState->front.writeMask;
          dynamic->stencil_write_mask.back =
@@ -1033,7 +1069,6 @@ anv_pipeline_init_dynamic_state(struct anv_pipeline *pipeline,
       }
 
       if (states & (1 << VK_DYNAMIC_STATE_STENCIL_REFERENCE)) {
-         assert(pCreateInfo->pDepthStencilState);
          dynamic->stencil_reference.front =
             pCreateInfo->pDepthStencilState->front.reference;
          dynamic->stencil_reference.back =
@@ -1117,7 +1152,9 @@ anv_pipeline_init(struct anv_pipeline *pipeline,
    pipeline->batch.end = pipeline->batch.start + sizeof(pipeline->batch_data);
    pipeline->batch.relocs = &pipeline->batch_relocs;
 
-   anv_pipeline_init_dynamic_state(pipeline, pCreateInfo);
+   copy_non_dynamic_state(pipeline, pCreateInfo);
+   pipeline->depth_clamp_enable = pCreateInfo->pRasterizationState &&
+                                  pCreateInfo->pRasterizationState->depthClampEnable;
 
    pipeline->use_repclear = extra && extra->use_repclear;
 
@@ -1127,7 +1164,6 @@ anv_pipeline_init(struct anv_pipeline *pipeline,
     * of various prog_data pointers.  Make them NULL by default.
     */
    memset(pipeline->prog_data, 0, sizeof(pipeline->prog_data));
-   memset(pipeline->scratch_start, 0, sizeof(pipeline->scratch_start));
    memset(pipeline->bindings, 0, sizeof(pipeline->bindings));
 
    pipeline->vs_simd8 = NO_KERNEL;
@@ -1136,7 +1172,6 @@ anv_pipeline_init(struct anv_pipeline *pipeline,
    pipeline->ps_ksp0 = NO_KERNEL;
 
    pipeline->active_stages = 0;
-   pipeline->total_scratch = 0;
 
    const VkPipelineShaderStageCreateInfo *pStages[MESA_SHADER_STAGES] = { 0, };
    struct anv_shader_module *modules[MESA_SHADER_STAGES] = { 0, };
@@ -1228,10 +1263,6 @@ anv_pipeline_init(struct anv_pipeline *pipeline,
 
    if (extra && extra->use_rectlist)
       pipeline->topology = _3DPRIM_RECTLIST;
-
-   while (anv_block_pool_size(&device->scratch_block_pool) <
-          pipeline->total_scratch)
-      anv_block_pool_alloc(&device->scratch_block_pool);
 
    return VK_SUCCESS;
 }

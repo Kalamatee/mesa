@@ -31,7 +31,12 @@
 #include <string.h>
 #include <stdint.h>
 
-#include <sys/types.h>
+#ifdef MAJOR_IN_MKDEV
+#include <sys/mkdev.h>
+#endif
+#ifdef MAJOR_IN_SYSMACROS
+#include <sys/sysmacros.h>
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
@@ -99,32 +104,6 @@ gbm_device_destroy(struct gbm_device *gbm)
       gbm->destroy(gbm);
 }
 
-struct gbm_device *
-_gbm_mesa_get_device(int fd)
-{
-   struct gbm_device *gbm = NULL;
-   struct stat buf;
-   dev_t dev;
-   int i;
-
-   if (fd < 0 || fstat(fd, &buf) < 0 || !S_ISCHR(buf.st_mode)) {
-      errno = EINVAL;
-      return NULL;
-   }
-
-   for (i = 0; i < device_num; ++i) {
-      dev = devices[i]->stat.st_rdev;
-      if (major(dev) == major(buf.st_rdev) &&
-          minor(dev) == minor(buf.st_rdev)) {
-         gbm = devices[i];
-         gbm->refcount++;
-         break;
-      }
-   }
-
-   return gbm;
-}
-
 /** Create a gbm device for allocating buffers
  *
  * The file descriptor passed in is used by the backend to communicate with
@@ -132,7 +111,7 @@ _gbm_mesa_get_device(int fd)
  * the file descriptor returned when opening a device such as \c
  * /dev/dri/card0
  *
- * \param fd The file descriptor for an backend specific device
+ * \param fd The file descriptor for a backend specific device
  * \return The newly created struct gbm_device. The resources associated with
  * the device should be freed with gbm_device_destroy() when it is no longer
  * needed. If the creation of the device failed NULL will be returned.
@@ -232,7 +211,7 @@ gbm_bo_get_handle(struct gbm_bo *bo)
 /** Get a DMA-BUF file descriptor for the buffer object
  *
  * This function creates a DMA-BUF (also known as PRIME) file descriptor
- * handle for the buffer object.  Eeach call to gbm_bo_get_fd() returns a new
+ * handle for the buffer object.  Each call to gbm_bo_get_fd() returns a new
  * file descriptor and the caller is responsible for closing the file
  * descriptor.
 
@@ -249,8 +228,8 @@ gbm_bo_get_fd(struct gbm_bo *bo)
 /** Write data into the buffer object
  *
  * If the buffer object was created with the GBM_BO_USE_WRITE flag,
- * this function can used to write data into the buffer object.  The
- * data is copied directly into the object and it's the responsiblity
+ * this function can be used to write data into the buffer object.  The
+ * data is copied directly into the object and it's the responsibility
  * of the caller to make sure the data represents valid pixel data,
  * according to the width, height, stride and format of the buffer object.
  *
@@ -354,14 +333,14 @@ gbm_bo_create(struct gbm_device *gbm,
  *
  * This function imports a foreign object and creates a new gbm bo for it.
  * This enabled using the foreign object with a display API such as KMS.
- * Currently two types of foreign objects are supported, indicated by the type
+ * Currently three types of foreign objects are supported, indicated by the type
  * argument:
  *
  *   GBM_BO_IMPORT_WL_BUFFER
  *   GBM_BO_IMPORT_EGL_IMAGE
  *   GBM_BO_IMPORT_FD
  *
- * The the gbm bo shares the underlying pixels but its life-time is
+ * The gbm bo shares the underlying pixels but its life-time is
  * independent of the foreign object.
  *
  * \param gbm The gbm device returned from gbm_create_device()
@@ -522,7 +501,7 @@ gbm_surface_release_buffer(struct gbm_surface *surf, struct gbm_bo *bo)
  *
  * Before starting a new frame, the surface must have a buffer
  * available for rendering.  Initially, a gbm surface will have a free
- * buffer, but after one of more buffers have been locked (\sa
+ * buffer, but after one or more buffers have been locked (\sa
  * gbm_surface_lock_front_buffer()), the application must check for a
  * free buffer before rendering.
  *

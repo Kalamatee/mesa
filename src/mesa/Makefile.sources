@@ -79,6 +79,7 @@ MAIN_FILES = \
 	main/execmem.c \
 	main/extensions.c \
 	main/extensions.h \
+	main/extensions_table.c \
 	main/extensions_table.h \
 	main/fbobject.c \
 	main/fbobject.h \
@@ -408,6 +409,7 @@ STATETRACKER_FILES = \
 	state_tracker/st_atom_depth.c \
 	state_tracker/st_atom_framebuffer.c \
 	state_tracker/st_atom.h \
+	state_tracker/st_atom_list.h \
 	state_tracker/st_atom_image.c \
 	state_tracker/st_atom_msaa.c \
 	state_tracker/st_atom_pixeltransfer.c \
@@ -501,8 +503,12 @@ STATETRACKER_FILES = \
 	state_tracker/st_mesa_to_tgsi.h \
 	state_tracker/st_nir.h \
 	state_tracker/st_nir_lower_builtin.c \
+	state_tracker/st_pbo.c \
+	state_tracker/st_pbo.h \
 	state_tracker/st_program.c \
 	state_tracker/st_program.h \
+	state_tracker/st_scissor.c \
+	state_tracker/st_scissor.h \
 	state_tracker/st_texture.c \
 	state_tracker/st_texture.h \
 	state_tracker/st_vdpau.c \
@@ -642,13 +648,14 @@ MESA_GALLIUM_FILES = \
 
 INCLUDE_DIRS = \
 	-I$(top_srcdir)/include \
+	-I$(top_builddir)/src \
 	-I$(top_srcdir)/src \
 	-I$(top_builddir)/src/compiler/nir \
-	-I$(top_srcdir)/src/mesa \
 	-I$(top_builddir)/src/mesa \
-	-I$(top_srcdir)/src/mesa/main \
+	-I$(top_srcdir)/src/mesa \
 	-I$(top_builddir)/src/mesa/main \
-	-I$(top_srcdir)/src/mapi \
+	-I$(top_srcdir)/src/mesa/main \
 	-I$(top_builddir)/src/mapi \
+	-I$(top_srcdir)/src/mapi \
 	-I$(top_srcdir)/src/gallium/include \
 	-I$(top_srcdir)/src/gallium/auxiliary

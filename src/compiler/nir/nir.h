@@ -179,7 +179,7 @@ typedef struct nir_variable {
       /**
        * Interpolation mode for shader inputs / outputs
        *
-       * \sa glsl_interp_qualifier
+       * \sa glsl_interp_mode
        */
       unsigned interpolation:2;
 
@@ -785,6 +785,9 @@ nir_ssa_alu_instr_src_components(const nir_alu_instr *instr, unsigned src)
    return instr->dest.dest.ssa.num_components;
 }
 
+bool nir_alu_srcs_equal(const nir_alu_instr *alu1, const nir_alu_instr *alu2,
+                        unsigned src1, unsigned src2);
+
 typedef enum {
    nir_deref_type_var,
    nir_deref_type_array,
@@ -804,7 +807,7 @@ typedef struct {
 } nir_deref_var;
 
 /* This enum describes how the array is referenced.  If the deref is
- * direct then the base_offset is used.  If the deref is indirect then then
+ * direct then the base_offset is used.  If the deref is indirect then
  * offset is given by base_offset + indirect.  If the deref is a wildcard
  * then the deref refers to all of the elements of the array at the same
  * time.  Wildcard dereferences are only ever allowed in copy_var
@@ -987,6 +990,16 @@ typedef enum {
     */
    NIR_INTRINSIC_BINDING = 7,
 
+   /**
+    * Component offset.
+    */
+   NIR_INTRINSIC_COMPONENT = 8,
+
+   /**
+    * Interpolation mode (only meaningful for FS inputs).
+    */
+   NIR_INTRINSIC_INTERP_MODE = 9,
+
    NIR_INTRINSIC_NUM_INDEX_FLAGS,
 
 } nir_intrinsic_index_flag;
@@ -1053,6 +1066,8 @@ INTRINSIC_IDX_ACCESSORS(ucp_id, UCP_ID, unsigned)
 INTRINSIC_IDX_ACCESSORS(range, RANGE, unsigned)
 INTRINSIC_IDX_ACCESSORS(desc_set, DESC_SET, unsigned)
 INTRINSIC_IDX_ACCESSORS(binding, BINDING, unsigned)
+INTRINSIC_IDX_ACCESSORS(component, COMPONENT, unsigned)
+INTRINSIC_IDX_ACCESSORS(interp_mode, INTERP_MODE, unsigned)
 
 /**
  * \group texture information
@@ -1231,6 +1246,50 @@ nir_tex_instr_is_query(nir_tex_instr *instr)
       return false;
    default:
       unreachable("Invalid texture opcode");
+   }
+}
+
+static inline nir_alu_type
+nir_tex_instr_src_type(nir_tex_instr *instr, unsigned src)
+{
+   switch (instr->src[src].src_type) {
+   case nir_tex_src_coord:
+      switch (instr->op) {
+      case nir_texop_txf:
+      case nir_texop_txf_ms:
+      case nir_texop_txf_ms_mcs:
+      case nir_texop_samples_identical:
+         return nir_type_int;
+
+      default:
+         return nir_type_float;
+      }
+
+   case nir_tex_src_lod:
+      switch (instr->op) {
+      case nir_texop_txs:
+      case nir_texop_txf:
+         return nir_type_int;
+
+      default:
+         return nir_type_float;
+      }
+
+   case nir_tex_src_projector:
+   case nir_tex_src_comparitor:
+   case nir_tex_src_bias:
+   case nir_tex_src_ddx:
+   case nir_tex_src_ddy:
+      return nir_type_float;
+
+   case nir_tex_src_offset:
+   case nir_tex_src_ms_index:
+   case nir_tex_src_texture_offset:
+   case nir_tex_src_sampler_offset:
+      return nir_type_int;
+
+   default:
+      unreachable("Invalid texture source type");
    }
 }
 
@@ -1553,13 +1612,13 @@ typedef struct {
 ATTRIBUTE_RETURNS_NONNULL static inline nir_block *
 nir_start_block(nir_function_impl *impl)
 {
-   return (nir_block *) impl->body.head;
+   return (nir_block *) impl->body.head_sentinel.next;
 }
 
 ATTRIBUTE_RETURNS_NONNULL static inline nir_block *
 nir_impl_last_block(nir_function_impl *impl)
 {
-   return (nir_block *) impl->body.tail_pred;
+   return (nir_block *) impl->body.tail_sentinel.prev;
 }
 
 static inline nir_cf_node *
@@ -1651,6 +1710,9 @@ typedef struct nir_shader_compiler_options {
    /* lower {slt,sge,seq,sne} to {flt,fge,feq,fne} + b2f: */
    bool lower_scmp;
 
+   /** enables rules to lower idiv by power-of-two: */
+   bool lower_idiv;
+
    /* Does the native fdot instruction replicate its result for four
     * components?  If so, then opt_algebraic_late will turn all fdotN
     * instructions into fdot_replicatedN instructions.
@@ -1682,6 +1744,16 @@ typedef struct nir_shader_compiler_options {
 
    /* Indicates that the driver only has zero-based vertex id */
    bool vertex_id_zero_based;
+
+   bool lower_cs_local_index_from_id;
+
+   /**
+    * Should nir_lower_io() create load_interpolated_input intrinsics?
+    *
+    * If not, it generates regular load_input intrinsics and interpolation
+    * information must be inferred from the list of input nir_variables.
+    */
+   bool use_interpolated_input_intrinsics;
 } nir_shader_compiler_options;
 
 typedef struct nir_shader_info {
@@ -1717,9 +1789,6 @@ typedef struct nir_shader_info {
 
    /* Whether or not this shader ever uses textureGather() */
    bool uses_texture_gather;
-
-   /** Whether or not this shader uses nir_intrinsic_interp_var_at_offset */
-   bool uses_interp_var_at_offset;
 
    /* Whether or not this shader uses the gl_ClipDistance output */
    bool uses_clip_distance_out;
@@ -1920,6 +1989,10 @@ nir_deref_array *nir_deref_array_create(void *mem_ctx);
 nir_deref_struct *nir_deref_struct_create(void *mem_ctx, unsigned field_index);
 
 nir_deref *nir_copy_deref(void *mem_ctx, nir_deref *deref);
+
+typedef bool (*nir_deref_foreach_leaf_cb)(nir_deref_var *deref, void *state);
+bool nir_deref_foreach_leaf(nir_deref_var *deref,
+                            nir_deref_foreach_leaf_cb cb, void *state);
 
 nir_load_const_instr *
 nir_deref_get_const_initializer_load(nir_shader *shader, nir_deref_var *deref);
@@ -2288,6 +2361,8 @@ bool nir_lower_returns(nir_shader *shader);
 
 bool nir_inline_functions(nir_shader *shader);
 
+bool nir_propagate_invariant(nir_shader *shader);
+
 void nir_lower_var_copy_instr(nir_intrinsic_instr *copy, void *mem_ctx);
 void nir_lower_var_copies(nir_shader *shader);
 
@@ -2302,8 +2377,8 @@ void nir_lower_io_to_temporaries(nir_shader *shader, nir_function *entrypoint,
 
 void nir_shader_gather_info(nir_shader *shader, nir_function_impl *entrypoint);
 
-void nir_assign_var_locations(struct exec_list *var_list,
-                              unsigned *size,
+void nir_assign_var_locations(struct exec_list *var_list, unsigned *size,
+                              unsigned base_offset,
                               int (*type_size)(const struct glsl_type *));
 
 void nir_lower_io(nir_shader *shader,
@@ -2335,6 +2410,16 @@ typedef struct nir_lower_tex_options {
     * sampler types a texture projector is lowered.
     */
    unsigned lower_txp;
+
+   /**
+    * If true, lower away nir_tex_src_offset for all texelfetch instructions.
+    */
+   bool lower_txf_offset;
+
+   /**
+    * If true, lower away nir_tex_src_offset for all rect textures.
+    */
+   bool lower_rect_offset;
 
    /**
     * If true, lower rect textures to 2D, using txs to fetch the

@@ -2557,6 +2557,23 @@ only be used with 32-bit integer image formats.
   resource[offset] = (dst_x > src_x ? dst_x : src_x)
 
 
+.. _voteopcodes:
+
+Vote opcodes
+^^^^^^^^^^^^
+
+These opcodes compare the given value across the shader invocations
+running in the current SIMD group. The details of exactly which
+invocations get compared are implementation-defined, and it would be a
+correct implementation to only ever consider the current thread's
+value. (i.e. SIMD group of 1). The argument is treated as a boolean.
+
+.. opcode:: VOTE_ANY - Value is set in any of the current invocations
+
+.. opcode:: VOTE_ALL - Value is set in all of the current invocations
+
+.. opcode:: VOTE_EQ - Value is the same in all of the current invocations
+
 
 Explanation of symbols used
 ------------------------------
@@ -3027,6 +3044,14 @@ TGSI_SEMANTIC_DRAWID
 For vertex shaders, the zero-based index of the current draw in a
 ``glMultiDraw*`` invocation. This is an integer value, and only the X
 component is used.
+
+
+TGSI_SEMANTIC_WORK_DIM
+""""""""""""""""""""""
+
+For compute shaders started via opencl this retrieves the work_dim
+parameter to the clEnqueueNDRangeKernel call with which the shader
+was started.
 
 
 Declaration Interpolate

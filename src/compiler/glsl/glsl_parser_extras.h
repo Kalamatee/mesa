@@ -300,12 +300,15 @@ struct _mesa_glsl_parse_state {
    unsigned num_supported_versions;
    struct {
       unsigned ver;
+      uint8_t gl_ver;
       bool es;
-   } supported_versions[15];
+   } supported_versions[16];
 
    bool es_shader;
    unsigned language_version;
    unsigned forced_language_version;
+   bool zero_init;
+   unsigned gl_version;
    gl_shader_stage stage;
 
    /**
@@ -575,6 +578,8 @@ struct _mesa_glsl_parse_state {
    bool ARB_shader_clock_warn;
    bool ARB_shader_draw_parameters_enable;
    bool ARB_shader_draw_parameters_warn;
+   bool ARB_shader_group_vote_enable;
+   bool ARB_shader_group_vote_warn;
    bool ARB_shader_image_load_store_enable;
    bool ARB_shader_image_load_store_warn;
    bool ARB_shader_image_size_enable;
@@ -678,6 +683,8 @@ struct _mesa_glsl_parse_state {
    bool EXT_texture_array_warn;
    bool EXT_texture_buffer_enable;
    bool EXT_texture_buffer_warn;
+   bool MESA_shader_integer_functions_enable;
+   bool MESA_shader_integer_functions_warn;
    /*@}*/
 
    /** Extensions supported by the OpenGL implementation. */
@@ -798,8 +805,19 @@ extern bool _mesa_glsl_process_extension(const char *name, YYLTYPE *name_locp,
 extern "C" {
 #endif
 
+struct glcpp_parser;
+
+typedef void (*glcpp_extension_iterator)(
+		struct _mesa_glsl_parse_state *state,
+		void (*add_builtin_define)(struct glcpp_parser *, const char *, int),
+		struct glcpp_parser *data,
+		unsigned version,
+		bool es);
+
 extern int glcpp_preprocess(void *ctx, const char **shader, char **info_log,
-                      const struct gl_extensions *extensions, struct gl_context *gl_ctx);
+                            glcpp_extension_iterator extensions,
+                            struct _mesa_glsl_parse_state *state,
+                            struct gl_context *gl_ctx);
 
 extern void _mesa_destroy_shader_compiler(void);
 extern void _mesa_destroy_shader_compiler_caches(void);

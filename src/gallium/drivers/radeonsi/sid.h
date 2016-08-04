@@ -98,9 +98,9 @@
 #define PKT3_NUM_INSTANCES                     0x2F
 #define PKT3_DRAW_INDEX_MULTI_AUTO             0x30
 #define PKT3_INDIRECT_BUFFER_SI                0x32 /* not on CIK */
+#define PKT3_INDIRECT_BUFFER_CONST             0x33
 #define PKT3_STRMOUT_BUFFER_UPDATE             0x34
 #define PKT3_DRAW_INDEX_OFFSET_2               0x35
-#define PKT3_DRAW_PREAMBLE                     0x36 /* new on CIK, required on GFX7.2 and later */
 #define PKT3_WRITE_DATA                        0x37
 #define   R_370_CONTROL				0x370 /* 0x[packet number][word index] */
 #define     S_370_ENGINE_SEL(x)			(((unsigned)(x) & 0x3) << 30)
@@ -126,6 +126,13 @@
 #define		WAIT_REG_MEM_EQUAL		3
 #define PKT3_MEM_WRITE                         0x3D /* not on CIK */
 #define PKT3_INDIRECT_BUFFER_CIK               0x3F /* new on CIK */
+#define   R_3F0_IB_BASE_LO                     0x3F0
+#define   R_3F1_IB_BASE_HI                     0x3F1
+#define   R_3F2_CONTROL                        0x3F2
+#define     S_3F2_IB_SIZE(x)                   (((unsigned)(x) & 0xfffff) << 0)
+#define     S_3F2_CHAIN(x)                     (((unsigned)(x) & 0x1) << 20)
+#define     S_3F2_VALID(x)                     (((unsigned)(x) & 0x1) << 23)
+
 #define PKT3_COPY_DATA			       0x40
 #define		COPY_DATA_SRC_SEL(x)		((x) & 0xf)
 #define			COPY_DATA_REG		0
@@ -135,7 +142,7 @@
 #define		COPY_DATA_DST_SEL(x)		(((unsigned)(x) & 0xf) << 8)
 #define		COPY_DATA_COUNT_SEL		(1 << 16)
 #define		COPY_DATA_WR_CONFIRM		(1 << 20)
-#define PKT3_PFP_SYNC_ME		       0x42 /* r7xx+ */
+#define PKT3_PFP_SYNC_ME		       0x42
 #define PKT3_SURFACE_SYNC                      0x43 /* deprecated on CIK, use ACQUIRE_MEM */
 #define PKT3_ME_INITIALIZE                     0x44 /* not on CIK */
 #define PKT3_COND_WRITE                        0x45
@@ -7207,6 +7214,13 @@
 #define   G_02882C_YMAX_BOTTOM_EXCLUSION(x)                           (((x) >> 31) & 0x1)
 #define   C_02882C_YMAX_BOTTOM_EXCLUSION                              0x7FFFFFFF
 /*     */
+#define R_028830_PA_SU_SMALL_PRIM_FILTER_CNTL                           0x028830 /* Polaris */
+#define   S_028830_SMALL_PRIM_FILTER_ENABLE(x)                        (((x) & 0x1) << 0)
+#define   C_028830_SMALL_PRIM_FILTER_ENABLE                           0xFFFFFFFE
+#define   S_028830_TRIANGLE_FILTER_DISABLE(x)                         (((x) & 0x1) << 1)
+#define   S_028830_LINE_FILTER_DISABLE(x)                             (((x) & 0x1) << 2)
+#define   S_028830_POINT_FILTER_DISABLE(x)                            (((x) & 0x1) << 3)
+#define   S_028830_RECTANGLE_FILTER_DISABLE(x)                        (((x) & 0x1) << 4)
 #define R_028A00_PA_SU_POINT_SIZE                                       0x028A00
 #define   S_028A00_HEIGHT(x)                                          (((unsigned)(x) & 0xFFFF) << 0)
 #define   G_028A00_HEIGHT(x)                                          (((x) >> 0) & 0xFFFF)
@@ -7954,9 +7968,12 @@
 #define   S_028B50_ACCUM_QUAD(x)                                      (((unsigned)(x) & 0xFF) << 16)
 #define   G_028B50_ACCUM_QUAD(x)                                      (((x) >> 16) & 0xFF)
 #define   C_028B50_ACCUM_QUAD                                         0xFF00FFFF
-#define   S_028B50_DONUT_SPLIT(x)                                     (((unsigned)(x) & 0xFF) << 24)
-#define   G_028B50_DONUT_SPLIT(x)                                     (((x) >> 24) & 0xFF)
-#define   C_028B50_DONUT_SPLIT                                        0x00FFFFFF
+#define   S_028B50_DONUT_SPLIT(x)                                     (((unsigned)(x) & 0x1F) << 24)
+#define   G_028B50_DONUT_SPLIT(x)                                     (((x) >> 24) & 0x1F)
+#define   C_028B50_DONUT_SPLIT                                        0xE0FFFFFF
+#define   S_028B50_TRAP_SPLIT(x)                                      (((unsigned)(x) & 0x7) << 29) /* Fiji+ */
+#define   G_028B50_TRAP_SPLIT(x)                                      (((x) >> 29) & 0x7)
+#define   C_028B50_TRAP_SPLIT                                         0x1FFFFFFF
 /*    */
 #define R_028B54_VGT_SHADER_STAGES_EN                                   0x028B54
 #define   S_028B54_LS_EN(x)                                           (((unsigned)(x) & 0x03) << 0)
@@ -8077,6 +8094,7 @@
 #define     V_028B6C_DISTRIBUTION_MODE_NO_DIST                      0x00
 #define     V_028B6C_DISTRIBUTION_MODE_PATCHES                      0x01
 #define     V_028B6C_DISTRIBUTION_MODE_DONUTS                       0x02
+#define     V_028B6C_DISTRIBUTION_MODE_TRAPEZOIDS                   0x03 /* Fiji+ */
 #define   S_028B6C_MTYPE(x)                                           (((unsigned)(x) & 0x03) << 19)
 #define   G_028B6C_MTYPE(x)                                           (((x) >> 19) & 0x03)
 #define   C_028B6C_MTYPE                                              0xFFE7FFFF

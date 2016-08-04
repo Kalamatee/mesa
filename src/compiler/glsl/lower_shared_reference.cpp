@@ -51,7 +51,7 @@ class lower_shared_reference_visitor :
       public lower_buffer_access::lower_buffer_access {
 public:
 
-   lower_shared_reference_visitor(struct gl_shader *shader)
+   lower_shared_reference_visitor(struct gl_linked_shader *shader)
       : list_ctx(ralloc_context(NULL)), shader(shader), shared_size(0u)
    {
       list_inithead(&var_offsets);
@@ -88,7 +88,7 @@ public:
                          unsigned write_mask);
 
    void *list_ctx;
-   struct gl_shader *shader;
+   struct gl_linked_shader *shader;
    struct list_head var_offsets;
    unsigned shared_size;
    bool progress;
@@ -138,7 +138,7 @@ lower_shared_reference_visitor::handle_rvalue(ir_rvalue **rvalue)
    bool row_major;
    int matrix_columns;
    assert(var->get_interface_type() == NULL);
-   const unsigned packing = GLSL_INTERFACE_PACKING_STD430;
+   const enum glsl_interface_packing packing = GLSL_INTERFACE_PACKING_STD430;
 
    setup_buffer_access(mem_ctx, var, deref,
                        &offset, &const_offset,
@@ -206,7 +206,7 @@ lower_shared_reference_visitor::handle_assignment(ir_assignment *ir)
    bool row_major;
    int matrix_columns;
    assert(var->get_interface_type() == NULL);
-   const unsigned packing = GLSL_INTERFACE_PACKING_STD430;
+   const enum glsl_interface_packing packing = GLSL_INTERFACE_PACKING_STD430;
 
    setup_buffer_access(mem_ctx, var, deref,
                        &offset, &const_offset,
@@ -365,7 +365,7 @@ lower_shared_reference_visitor::lower_shared_atomic_intrinsic(ir_call *ir)
    bool row_major;
    int matrix_columns;
    assert(var->get_interface_type() == NULL);
-   const unsigned packing = GLSL_INTERFACE_PACKING_STD430;
+   const enum glsl_interface_packing packing = GLSL_INTERFACE_PACKING_STD430;
    buffer_access_type = shared_atomic_access;
 
    setup_buffer_access(mem_ctx, var, deref,
@@ -475,7 +475,7 @@ lower_shared_reference_visitor::visit_enter(ir_call *ir)
 } /* unnamed namespace */
 
 void
-lower_shared_reference(struct gl_shader *shader, unsigned *shared_size)
+lower_shared_reference(struct gl_linked_shader *shader, unsigned *shared_size)
 {
    if (shader->Stage != MESA_SHADER_COMPUTE)
       return;

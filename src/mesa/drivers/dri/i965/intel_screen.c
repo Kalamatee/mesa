@@ -65,6 +65,8 @@ DRI_CONF_BEGIN
    DRI_CONF_SECTION_QUALITY
       DRI_CONF_FORCE_S3TC_ENABLE("false")
 
+      DRI_CONF_PRECISE_TRIG("false")
+
       DRI_CONF_OPT_BEGIN(clamp_max_samples, int, -1)
               DRI_CONF_DESC(en, "Clamp the value of GL_MAX_SAMPLES to the "
                             "given integer. If negative, then do not clamp.")
@@ -85,6 +87,10 @@ DRI_CONF_BEGIN
       DRI_CONF_OPT_BEGIN_B(shader_precompile, "true")
 	 DRI_CONF_DESC(en, "Perform code generation at shader link time.")
       DRI_CONF_OPT_END
+   DRI_CONF_SECTION_END
+
+   DRI_CONF_SECTION_MISCELLANEOUS
+      DRI_CONF_GLSL_ZERO_INIT("false")
    DRI_CONF_SECTION_END
 DRI_CONF_END
 };
@@ -968,27 +974,29 @@ static const __DRIextension *intelRobustScreenExtensions[] = {
 };
 
 static int
-intel_get_param(__DRIscreen *psp, int param, int *value)
+intel_get_param(struct intel_screen *screen, int param, int *value)
 {
-   int ret;
+   int ret = 0;
    struct drm_i915_getparam gp;
 
    memset(&gp, 0, sizeof(gp));
    gp.param = param;
    gp.value = value;
 
-   ret = drmCommandWriteRead(psp->fd, DRM_I915_GETPARAM, &gp, sizeof(gp));
-   if (ret < 0 && ret != -EINVAL)
-	 _mesa_warning(NULL, "drm_i915_getparam: %d", ret);
+   if (drmIoctl(screen->driScrnPriv->fd, DRM_IOCTL_I915_GETPARAM, &gp) == -1) {
+      ret = -errno;
+      if (ret != -EINVAL)
+         _mesa_warning(NULL, "drm_i915_getparam: %d", ret);
+   }
 
    return ret;
 }
 
 static bool
-intel_get_boolean(__DRIscreen *psp, int param)
+intel_get_boolean(struct intel_screen *screen, int param)
 {
    int value = 0;
-   return (intel_get_param(psp, param, &value) == 0) && value;
+   return (intel_get_param(screen, param, &value) == 0) && value;
 }
 
 static void
@@ -1123,12 +1131,12 @@ intel_detect_sseu(struct intel_screen *intelScreen)
    intelScreen->subslice_total = -1;
    intelScreen->eu_total = -1;
 
-   ret = intel_get_param(intelScreen->driScrnPriv, I915_PARAM_SUBSLICE_TOTAL,
+   ret = intel_get_param(intelScreen, I915_PARAM_SUBSLICE_TOTAL,
                          &intelScreen->subslice_total);
    if (ret < 0 && ret != -EINVAL)
       goto err_out;
 
-   ret = intel_get_param(intelScreen->driScrnPriv,
+   ret = intel_get_param(intelScreen,
                          I915_PARAM_EU_TOTAL, &intelScreen->eu_total);
    if (ret < 0 && ret != -EINVAL)
       goto err_out;
@@ -1165,7 +1173,7 @@ intel_init_bufmgr(struct intel_screen *intelScreen)
 
    drm_intel_bufmgr_gem_enable_fenced_relocs(intelScreen->bufmgr);
 
-   if (!intel_get_boolean(spriv, I915_PARAM_HAS_RELAXED_DELTA)) {
+   if (!intel_get_boolean(intelScreen, I915_PARAM_HAS_RELAXED_DELTA)) {
       fprintf(stderr, "[%s: %u] Kernel 2.6.39 required.\n", __func__, __LINE__);
       return false;
    }
@@ -1411,7 +1419,7 @@ set_max_gl_versions(struct intel_screen *screen)
    switch (screen->devinfo->gen) {
    case 9:
    case 8:
-      psp->max_gl_core_version = 43;
+      psp->max_gl_core_version = 44;
       psp->max_gl_compat_version = 30;
       psp->max_gl_es1_version = 11;
       psp->max_gl_es2_version = 31;
@@ -1565,8 +1573,11 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
    intelScreen->hw_has_timestamp = intel_detect_timestamp(intelScreen);
 
    /* GENs prior to 8 do not support EU/Subslice info */
-   if (intelScreen->devinfo->gen >= 8)
+   if (intelScreen->devinfo->gen >= 8) {
       intel_detect_sseu(intelScreen);
+   } else if (intelScreen->devinfo->gen == 7) {
+      intelScreen->subslice_total = 1 << (intelScreen->devinfo->gt - 1);
+   }
 
    const char *force_msaa = getenv("INTEL_FORCE_MSAA");
    if (force_msaa) {
@@ -1599,12 +1610,10 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
          (ret != -1 || errno != EINVAL);
    }
 
-   struct drm_i915_getparam getparam;
-   getparam.param = I915_PARAM_CMD_PARSER_VERSION;
-   getparam.value = &intelScreen->cmd_parser_version;
-   const int ret = drmIoctl(psp->fd, DRM_IOCTL_I915_GETPARAM, &getparam);
-   if (ret == -1)
+   if (intel_get_param(intelScreen, I915_PARAM_CMD_PARSER_VERSION,
+                       &intelScreen->cmd_parser_version) < 0) {
       intelScreen->cmd_parser_version = 0;
+   }
 
    /* Haswell requires command parser version 6 in order to write to the
     * MI_MATH GPR registers, and version 7 in order to use
@@ -1624,12 +1633,8 @@ __DRIconfig **intelInitScreen2(__DRIscreen *psp)
    intelScreen->program_id = 1;
 
    if (intelScreen->devinfo->has_resource_streamer) {
-      int val = -1;
-      getparam.param = I915_PARAM_HAS_RESOURCE_STREAMER;
-      getparam.value = &val;
-
-      drmIoctl(psp->fd, DRM_IOCTL_I915_GETPARAM, &getparam);
-      intelScreen->has_resource_streamer = val > 0;
+      intelScreen->has_resource_streamer =
+        intel_get_boolean(intelScreen, I915_PARAM_HAS_RESOURCE_STREAMER);
    }
 
    return (const __DRIconfig**) intel_screen_make_configs(psp);

@@ -215,6 +215,9 @@ vlVdpVideoSurfaceGetBitsYCbCr(VdpVideoSurface surface,
    if (!pipe)
       return VDP_STATUS_INVALID_HANDLE;
 
+   if (!destination_data || !destination_pitches)
+       return VDP_STATUS_INVALID_POINTER;
+
    format = FormatYCBCRToPipe(destination_ycbcr_format);
    if (format == PIPE_FORMAT_NONE)
       return VDP_STATUS_INVALID_Y_CB_CR_FORMAT;
@@ -313,6 +316,9 @@ vlVdpVideoSurfacePutBitsYCbCr(VdpVideoSurface surface,
    if (!pipe)
       return VDP_STATUS_INVALID_HANDLE;
 
+   if (!source_data || !source_pitches)
+       return VDP_STATUS_INVALID_POINTER;
+
    pipe_mutex_lock(p_surf->device->mutex);
    if (p_surf->video_buffer == NULL || pformat != p_surf->video_buffer->buffer_format) {
 
@@ -353,11 +359,11 @@ vlVdpVideoSurfacePutBitsYCbCr(VdpVideoSurface surface,
             width, height, 1
          };
 
-         pipe->transfer_inline_write(pipe, sv->texture, 0,
-                                     PIPE_TRANSFER_WRITE, &dst_box,
-                                     source_data[i] + source_pitches[i] * j,
-                                     source_pitches[i] * sv->texture->array_size,
-                                     0);
+         pipe->texture_subdata(pipe, sv->texture, 0,
+                               PIPE_TRANSFER_WRITE, &dst_box,
+                               source_data[i] + source_pitches[i] * j,
+                               source_pitches[i] * sv->texture->array_size,
+                               0);
       }
    }
    pipe_mutex_unlock(p_surf->device->mutex);

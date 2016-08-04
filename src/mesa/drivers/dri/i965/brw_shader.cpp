@@ -367,8 +367,6 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
    case FS_OPCODE_PLACEHOLDER_HALT:
       return "placeholder_halt";
 
-   case FS_OPCODE_INTERPOLATE_AT_CENTROID:
-      return "interp_centroid";
    case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
       return "interp_sample";
    case FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET:
@@ -1158,7 +1156,7 @@ brw_assign_common_binding_table_offsets(gl_shader_stage stage,
                                         struct brw_stage_prog_data *stage_prog_data,
                                         uint32_t next_binding_table_offset)
 {
-   const struct gl_shader *shader = NULL;
+   const struct gl_linked_shader *shader = NULL;
    int num_textures = _mesa_fls(prog->SamplersUsed);
 
    if (shader_prog)
@@ -1320,7 +1318,7 @@ brw_compile_tes(const struct brw_compiler *compiler,
                 char **error_str)
 {
    const struct brw_device_info *devinfo = compiler->devinfo;
-   struct gl_shader *shader =
+   struct gl_linked_shader *shader =
       shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL];
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
 

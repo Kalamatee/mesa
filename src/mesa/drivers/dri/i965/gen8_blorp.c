@@ -33,97 +33,6 @@
 
 #include "brw_blorp.h"
 
-
-/* SURFACE_STATE for renderbuffer or texture surface (see
- * brw_update_renderbuffer_surface and brw_update_texture_surface)
- */
-static uint32_t
-gen8_blorp_emit_surface_state(struct brw_context *brw,
-                              const struct brw_blorp_surface_info *surface,
-                              uint32_t read_domains, uint32_t write_domain,
-                              bool is_render_target)
-{
-   uint32_t wm_surf_offset;
-   const struct intel_mipmap_tree *mt = surface->mt;
-   const uint32_t mocs_wb = is_render_target ?
-                               (brw->gen >= 9 ? SKL_MOCS_PTE : BDW_MOCS_PTE) :
-                               (brw->gen >= 9 ? SKL_MOCS_WB : BDW_MOCS_WB);
-   const uint32_t tiling = surface->map_stencil_as_y_tiled
-      ? I915_TILING_Y : mt->tiling;
-   uint32_t tile_x, tile_y;
-
-   uint32_t *surf = gen8_allocate_surface_state(brw, &wm_surf_offset, -1);
-
-   surf[0] = BRW_SURFACE_2D << BRW_SURFACE_TYPE_SHIFT |
-             surface->brw_surfaceformat << BRW_SURFACE_FORMAT_SHIFT |
-             gen8_vertical_alignment(brw, mt, BRW_SURFACE_2D) |
-             gen8_horizontal_alignment(brw, mt, BRW_SURFACE_2D) |
-             gen8_surface_tiling_mode(tiling);
-
-   surf[1] = SET_FIELD(mocs_wb, GEN8_SURFACE_MOCS) | mt->qpitch >> 2;
-
-   surf[2] = SET_FIELD(surface->width - 1, GEN7_SURFACE_WIDTH) |
-             SET_FIELD(surface->height - 1, GEN7_SURFACE_HEIGHT);
-
-   uint32_t pitch_bytes = mt->pitch;
-   if (surface->map_stencil_as_y_tiled)
-      pitch_bytes *= 2;
-   surf[3] = pitch_bytes - 1;
-
-   surf[4] = gen7_surface_msaa_bits(surface->num_samples,
-                                    surface->msaa_layout);
-
-   if (surface->mt->mcs_mt) {
-      surf[6] = SET_FIELD(surface->mt->qpitch / 4, GEN8_SURFACE_AUX_QPITCH) |
-                SET_FIELD((surface->mt->mcs_mt->pitch / 128) - 1,
-                          GEN8_SURFACE_AUX_PITCH) |
-                gen8_get_aux_mode(brw, mt);
-   } else {
-      surf[6] = 0;
-   }
-
-   gen8_emit_fast_clear_color(brw, mt, surf);
-   surf[7] |= SET_FIELD(HSW_SCS_RED,   GEN7_SURFACE_SCS_R) |
-              SET_FIELD(HSW_SCS_GREEN, GEN7_SURFACE_SCS_G) |
-              SET_FIELD(HSW_SCS_BLUE,  GEN7_SURFACE_SCS_B) |
-              SET_FIELD(HSW_SCS_ALPHA, GEN7_SURFACE_SCS_A);
-
-    /* reloc */
-   *((uint64_t *)&surf[8]) =
-      brw_blorp_compute_tile_offsets(surface, &tile_x, &tile_y) +
-      mt->bo->offset64;
-
-   /* Note that the low bits of these fields are missing, so there's the
-    * possibility of getting in trouble.
-    */
-   assert(tile_x % 4 == 0);
-   assert(tile_y % 4 == 0);
-   surf[5] = SET_FIELD(tile_x / 4, BRW_SURFACE_X_OFFSET) |
-             SET_FIELD(tile_y / 4, GEN8_SURFACE_Y_OFFSET);
-
-   if (brw->gen >= 9) {
-      /* Disable Mip Tail by setting a large value. */
-      surf[5] |= SET_FIELD(15, GEN9_SURFACE_MIP_TAIL_START_LOD);
-   }
-
-   if (surface->mt->mcs_mt) {
-      *((uint64_t *) &surf[10]) = surface->mt->mcs_mt->bo->offset64;
-      drm_intel_bo_emit_reloc(brw->batch.bo,
-                              wm_surf_offset + 10 * 4,
-                              surface->mt->mcs_mt->bo, 0,
-                              read_domains, write_domain);
-   }
-
-   /* Emit relocation to surface contents */
-   drm_intel_bo_emit_reloc(brw->batch.bo,
-                           wm_surf_offset + 8 * 4,
-                           mt->bo,
-                           surf[8] - mt->bo->offset64,
-                           read_domains, write_domain);
-
-   return wm_surf_offset;
-}
-
 static uint32_t
 gen8_blorp_emit_blend_state(struct brw_context *brw,
                             const struct brw_blorp_params *params)
@@ -156,8 +65,12 @@ gen8_blorp_emit_blend_state(struct brw_context *brw,
    return blend_state_offset;
 }
 
+/* Hardware seems to try to fetch the constants even though the corresponding
+ * stage gets disabled. Therefore make sure the settings for the constant
+ * buffer are valid.
+ */
 static void
-gen8_blorp_emit_disable_constant_state(struct brw_context *brw,
+gen8_blorp_disable_constant_state(struct brw_context *brw,
                                        unsigned opcode)
 {
    BEGIN_BATCH(11);
@@ -171,17 +84,6 @@ gen8_blorp_emit_disable_constant_state(struct brw_context *brw,
    OUT_BATCH(0);
    OUT_BATCH(0);
    OUT_BATCH(0);
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-}
-
-static void
-gen8_blorp_emit_disable_binding_table(struct brw_context *brw,
-                                      unsigned opcode)
-{
-
-   BEGIN_BATCH(2);
-   OUT_BATCH(opcode << 16 | (2 - 2));
    OUT_BATCH(0);
    ADVANCE_BATCH();
 }
@@ -294,22 +196,40 @@ static void
 gen8_blorp_emit_sbe_state(struct brw_context *brw,
                           const struct brw_blorp_params *params)
 {
+   const unsigned num_varyings = params->wm_prog_data->num_varying_inputs;
+   const unsigned urb_read_length =
+      brw_blorp_get_urb_length(params->wm_prog_data);
+
    /* 3DSTATE_SBE */
    {
       const unsigned sbe_cmd_length = brw->gen == 8 ? 4 : 6;
       BEGIN_BATCH(sbe_cmd_length);
       OUT_BATCH(_3DSTATE_SBE << 16 | (sbe_cmd_length - 2));
-      OUT_BATCH(GEN7_SBE_SWIZZLE_ENABLE |
-                params->num_varyings << GEN7_SBE_NUM_OUTPUTS_SHIFT |
-                1 << GEN7_SBE_URB_ENTRY_READ_LENGTH_SHIFT |
+
+      /* There is no need for swizzling (GEN7_SBE_SWIZZLE_ENABLE). All the
+       * vertex data coming from vertex fetcher is taken as unmodified
+       * (i.e., passed through). Vertex shader state is disabled and vertex
+       * fetcher builds complete vertex entries including VUE header.
+       * This is for unknown reason really needed to be disabled when more
+       * than one vec4 worth of vertex attributes are needed.
+       */
+      OUT_BATCH(num_varyings << GEN7_SBE_NUM_OUTPUTS_SHIFT |
+                urb_read_length << GEN7_SBE_URB_ENTRY_READ_LENGTH_SHIFT |
                 BRW_SF_URB_ENTRY_READ_OFFSET <<
                    GEN8_SBE_URB_ENTRY_READ_OFFSET_SHIFT |
                 GEN8_SBE_FORCE_URB_ENTRY_READ_LENGTH |
                 GEN8_SBE_FORCE_URB_ENTRY_READ_OFFSET);
       OUT_BATCH(0);
-      OUT_BATCH(0);
+      OUT_BATCH(params->wm_prog_data->flat_inputs);
       if (sbe_cmd_length >= 6) {
-         OUT_BATCH(GEN9_SBE_ACTIVE_COMPONENT_XYZW << (0 << 1));
+         /* Fragment coordinates are always enabled. */
+         uint32_t dw4 = (GEN9_SBE_ACTIVE_COMPONENT_XYZW << (0 << 1));
+
+         for (unsigned i = 0; i < num_varyings; ++i) {
+            dw4 |= (GEN9_SBE_ACTIVE_COMPONENT_XYZW << ((i + 1) << 1));
+         }
+
+         OUT_BATCH(dw4);
          OUT_BATCH(0);
       }
       ADVANCE_BATCH();
@@ -384,7 +304,6 @@ gen8_blorp_emit_ps_config(struct brw_context *brw,
       dw3 |= 1 << GEN7_PS_BINDING_TABLE_ENTRY_COUNT_SHIFT; /* One surface */
    }
 
-   dw6 |= GEN7_PS_PUSH_CONSTANT_ENABLE;
    dw7 |= prog_data->first_curbe_grf_0 << GEN7_PS_DISPATCH_START_GRF_SHIFT_0;
    dw7 |= prog_data->first_curbe_grf_2 << GEN7_PS_DISPATCH_START_GRF_SHIFT_2;
 
@@ -443,10 +362,11 @@ gen8_blorp_emit_ps_extra(struct brw_context *brw,
 
    dw1 |= GEN8_PSX_PIXEL_SHADER_VALID;
 
-   if (params->src.mt) {
+   if (params->src.mt)
       dw1 |= GEN8_PSX_KILL_ENABLE;
+
+   if (params->wm_prog_data->num_varying_inputs)
       dw1 |= GEN8_PSX_ATTRIBUTE_ENABLE;
-   }
 
    if (params->dst.num_samples > 1 && prog_data &&
        prog_data->persample_msaa_dispatch)
@@ -515,8 +435,12 @@ gen8_blorp_emit_vf_sys_gen_vals_state(struct brw_context *brw)
 
 static void
 gen8_blorp_emit_vf_instancing_state(struct brw_context *brw,
-                                    unsigned num_elems)
+                                    const struct brw_blorp_params *params)
 {
+   const unsigned num_varyings =
+      params->wm_prog_data ? params->wm_prog_data->num_varying_inputs : 0;
+   const unsigned num_elems = 2 + num_varyings;
+
    for (unsigned i = 0; i < num_elems; ++i) {
       BEGIN_BATCH(3);
       OUT_BATCH(_3DSTATE_VF_INSTANCING << 16 | (3 - 2));
@@ -551,43 +475,23 @@ gen8_blorp_emit_depth_stencil_state(struct brw_context *brw,
    ADVANCE_BATCH();
 }
 
-static void
-gen8_blorp_emit_constant_ps(struct brw_context *brw,
-                            uint32_t wm_push_const_offset)
+/**
+ * Convert an swizzle enumeration (i.e. SWIZZLE_X) to one of the Gen7.5+
+ * "Shader Channel Select" enumerations (i.e. HSW_SCS_RED).  The mappings are
+ *
+ * SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_W, SWIZZLE_ZERO, SWIZZLE_ONE
+ *         0          1          2          3             4            5
+ *         4          5          6          7             0            1
+ *   SCS_RED, SCS_GREEN,  SCS_BLUE, SCS_ALPHA,     SCS_ZERO,     SCS_ONE
+ *
+ * which is simply adding 4 then modding by 8 (or anding with 7).
+ *
+ * We then may need to apply workarounds for textureGather hardware bugs.
+ */
+static unsigned
+swizzle_to_scs(GLenum swizzle)
 {
-   const int dwords = brw->gen >= 8 ? 11 : 7;
-   BEGIN_BATCH(dwords);
-   OUT_BATCH(_3DSTATE_CONSTANT_PS << 16 | (dwords - 2));
-
-   if (brw->gen >= 9) {
-      OUT_BATCH(0);
-      OUT_BATCH(BRW_BLORP_NUM_PUSH_CONST_REGS);
-   } else {
-      OUT_BATCH(BRW_BLORP_NUM_PUSH_CONST_REGS);
-      OUT_BATCH(0);
-   }
-
-   if (brw->gen >= 9) {
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_RELOC64(brw->batch.bo, I915_GEM_DOMAIN_RENDER, 0,
-                  wm_push_const_offset);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-   } else {
-      OUT_BATCH(wm_push_const_offset);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-      OUT_BATCH(0);
-   }
-
-   ADVANCE_BATCH();
+   return (swizzle + 4) & 7;
 }
 
 static uint32_t
@@ -600,10 +504,10 @@ gen8_blorp_emit_surface_states(struct brw_context *brw,
    intel_miptree_used_for_rendering(params->dst.mt);
 
    wm_surf_offset_renderbuffer =
-      gen8_blorp_emit_surface_state(brw, &params->dst,
-                                    I915_GEM_DOMAIN_RENDER,
-                                    I915_GEM_DOMAIN_RENDER,
-                                    true /* is_render_target */);
+      brw_blorp_emit_surface_state(brw, &params->dst,
+                                   I915_GEM_DOMAIN_RENDER,
+                                   I915_GEM_DOMAIN_RENDER,
+                                   true /* is_render_target */);
    if (params->src.mt) {
       const struct brw_blorp_surface_info *surface = &params->src;
       struct intel_mipmap_tree *mt = surface->mt;
@@ -622,22 +526,28 @@ gen8_blorp_emit_surface_states(struct brw_context *brw,
           mt->msaa_layout == INTEL_MSAA_LAYOUT_CMS) ?
          MAX2(mt->num_samples, 1) : 1;
 
-      /* Cube textures are sampled as 2D array. */
-      const bool is_cube = mt->target == GL_TEXTURE_CUBE_MAP_ARRAY ||
-                           mt->target == GL_TEXTURE_CUBE_MAP;
-      const unsigned depth = (is_cube ? 6 : 1) * mt->logical_depth0;
-      const GLenum target = is_cube ? GL_TEXTURE_2D_ARRAY : mt->target;
-      const unsigned max_level = surface->level + mt->last_level + 1;
       const unsigned layer = mt->target != GL_TEXTURE_3D ?
                                 surface->layer / layer_divider : 0;
 
-      brw->vtbl.emit_texture_surface_state(brw, mt, target,
-                                           layer, layer + depth,
-                                           surface->level, max_level,
-                                           surface->brw_surfaceformat,
-                                           surface->swizzle,
-                                           &wm_surf_offset_texture,
-                                           -1, false, false);
+      struct isl_view view = {
+         .format = surface->brw_surfaceformat,
+         .base_level = surface->level,
+         .levels = mt->last_level - surface->level + 1,
+         .base_array_layer = layer,
+         .array_len = mt->logical_depth0 - layer,
+         .channel_select = {
+            swizzle_to_scs(GET_SWZ(surface->swizzle, 0)),
+            swizzle_to_scs(GET_SWZ(surface->swizzle, 1)),
+            swizzle_to_scs(GET_SWZ(surface->swizzle, 2)),
+            swizzle_to_scs(GET_SWZ(surface->swizzle, 3)),
+         },
+         .usage = ISL_SURF_USAGE_TEXTURE_BIT,
+      };
+
+      brw_emit_surface_state(brw, mt, &view,
+                             brw->gen >= 9 ? SKL_MOCS_WB : BDW_MOCS_WB,
+                             false, &wm_surf_offset_texture, -1,
+                             I915_GEM_DOMAIN_SAMPLER, 0);
    }
 
    return gen6_blorp_emit_binding_table(brw,
@@ -658,7 +568,7 @@ gen8_blorp_exec(struct brw_context *brw, const struct brw_blorp_params *params)
    gen7_blorp_emit_cc_viewport(brw);
    gen7_l3_state.emit(brw);
 
-   gen7_blorp_emit_urb_config(brw);
+   gen7_blorp_emit_urb_config(brw, params);
 
    const uint32_t cc_blend_state_offset =
       gen8_blorp_emit_blend_state(brw, params);
@@ -667,24 +577,13 @@ gen8_blorp_exec(struct brw_context *brw, const struct brw_blorp_params *params)
    const uint32_t cc_state_offset = gen6_blorp_emit_cc_state(brw);
    gen7_blorp_emit_cc_state_pointer(brw, cc_state_offset);
 
-   gen8_blorp_emit_disable_constant_state(brw, _3DSTATE_CONSTANT_VS);
-   gen8_blorp_emit_disable_constant_state(brw, _3DSTATE_CONSTANT_HS);
-   gen8_blorp_emit_disable_constant_state(brw, _3DSTATE_CONSTANT_DS);
-   gen8_blorp_emit_disable_constant_state(brw, _3DSTATE_CONSTANT_GS);
+   gen8_blorp_disable_constant_state(brw, _3DSTATE_CONSTANT_VS);
+   gen8_blorp_disable_constant_state(brw, _3DSTATE_CONSTANT_HS);
+   gen8_blorp_disable_constant_state(brw, _3DSTATE_CONSTANT_DS);
+   gen8_blorp_disable_constant_state(brw, _3DSTATE_CONSTANT_GS);
+   gen8_blorp_disable_constant_state(brw, _3DSTATE_CONSTANT_PS);
 
-   const uint32_t wm_push_const_offset =
-      gen6_blorp_emit_wm_constants(brw, params);
-   gen8_blorp_emit_constant_ps(brw, wm_push_const_offset);
    wm_bind_bo_offset = gen8_blorp_emit_surface_states(brw, params);
-
-   gen8_blorp_emit_disable_binding_table(brw,
-                                         _3DSTATE_BINDING_TABLE_POINTERS_VS);
-   gen8_blorp_emit_disable_binding_table(brw,
-                                         _3DSTATE_BINDING_TABLE_POINTERS_HS);
-   gen8_blorp_emit_disable_binding_table(brw,
-                                         _3DSTATE_BINDING_TABLE_POINTERS_DS);
-   gen8_blorp_emit_disable_binding_table(brw,
-                                         _3DSTATE_BINDING_TABLE_POINTERS_GS);
 
    gen7_blorp_emit_binding_table_pointers_ps(brw, wm_bind_bo_offset);
 
@@ -726,7 +625,7 @@ gen8_blorp_exec(struct brw_context *brw, const struct brw_blorp_params *params)
    gen8_blorp_emit_vf_topology(brw);
    gen8_blorp_emit_vf_sys_gen_vals_state(brw);
    gen6_blorp_emit_vertices(brw, params);
-   gen8_blorp_emit_vf_instancing_state(brw, 2);
+   gen8_blorp_emit_vf_instancing_state(brw, params);
    gen8_blorp_emit_vf_state(brw);
    gen7_blorp_emit_primitive(brw, params);
 

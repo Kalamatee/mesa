@@ -337,7 +337,7 @@ static const struct brw_tracked_state *gen8_render_atoms[] =
    &gen7_te_state,
    &gen8_ds_state,
    &gen8_gs_state,
-   &gen8_sol_state,
+   &gen7_sol_state,
    &gen6_clip_state,
    &gen8_raster_state,
    &gen8_sbe_state,
@@ -668,7 +668,7 @@ brw_print_dirty_count(struct dirty_bit_map *bit_map)
 {
    for (int i = 0; bit_map[i].bit != 0; i++) {
       if (bit_map[i].count > 1) {
-         fprintf(stderr, "0x%016lx: %12d (%s)\n",
+         fprintf(stderr, "0x%016"PRIx64": %12d (%s)\n",
                  bit_map[i].bit, bit_map[i].count, bit_map[i].name);
       }
    }

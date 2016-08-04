@@ -503,7 +503,8 @@ static struct radeon_bo *radeon_create_bo(struct radeon_drm_winsys *rws,
                                           unsigned size, unsigned alignment,
                                           unsigned usage,
                                           unsigned initial_domains,
-                                          unsigned flags)
+                                          unsigned flags,
+                                          unsigned pb_cache_bucket)
 {
     struct radeon_bo *bo;
     struct drm_radeon_gem_create args;
@@ -551,12 +552,15 @@ static struct radeon_bo *radeon_create_bo(struct radeon_drm_winsys *rws,
     bo->va = 0;
     bo->initial_domain = initial_domains;
     pipe_mutex_init(bo->map_mutex);
-    pb_cache_init_entry(&rws->bo_cache, &bo->cache_entry, &bo->base);
+    pb_cache_init_entry(&rws->bo_cache, &bo->cache_entry, &bo->base,
+                        pb_cache_bucket);
 
     if (rws->info.has_virtual_memory) {
         struct drm_radeon_gem_va va;
+        unsigned va_gap_size;
 
-        bo->va = radeon_bomgr_find_va(rws, size, alignment);
+        va_gap_size = rws->check_vm ? MAX2(4 * alignment, 64 * 1024) : 0;
+        bo->va = radeon_bomgr_find_va(rws, size + va_gap_size, alignment);
 
         va.handle = bo->handle;
         va.vm_id = 0;
@@ -721,7 +725,7 @@ radeon_winsys_bo_create(struct radeon_winsys *rws,
 {
     struct radeon_drm_winsys *ws = radeon_drm_winsys(rws);
     struct radeon_bo *bo;
-    unsigned usage = 0;
+    unsigned usage = 0, pb_cache_bucket;
 
     /* Only 32-bit sizes are supported. */
     if (size > UINT_MAX)
@@ -740,19 +744,32 @@ radeon_winsys_bo_create(struct radeon_winsys *rws,
     if (domain == RADEON_DOMAIN_VRAM_GTT)
         usage = 1 << 2;
     else
-        usage = domain >> 1;
+        usage = (unsigned)domain >> 1;
     assert(flags < sizeof(usage) * 8 - 3);
     usage |= 1 << (flags + 3);
 
-    bo = radeon_bo(pb_cache_reclaim_buffer(&ws->bo_cache, size, alignment, usage));
+    /* Determine the pb_cache bucket for minimizing pb_cache misses. */
+    pb_cache_bucket = 0;
+    if (size <= 4096) /* small buffers */
+       pb_cache_bucket += 1;
+    if (domain & RADEON_DOMAIN_VRAM) /* VRAM or VRAM+GTT */
+       pb_cache_bucket += 2;
+    if (flags == RADEON_FLAG_GTT_WC) /* WC */
+       pb_cache_bucket += 4;
+    assert(pb_cache_bucket < ARRAY_SIZE(ws->bo_cache.buckets));
+
+    bo = radeon_bo(pb_cache_reclaim_buffer(&ws->bo_cache, size, alignment,
+                                           usage, pb_cache_bucket));
     if (bo)
         return &bo->base;
 
-    bo = radeon_create_bo(ws, size, alignment, usage, domain, flags);
+    bo = radeon_create_bo(ws, size, alignment, usage, domain, flags,
+                          pb_cache_bucket);
     if (!bo) {
         /* Clear the cache and try again. */
         pb_cache_release_all_buffers(&ws->bo_cache);
-        bo = radeon_create_bo(ws, size, alignment, usage, domain, flags);
+        bo = radeon_create_bo(ws, size, alignment, usage, domain, flags,
+                              pb_cache_bucket);
         if (!bo)
             return NULL;
     }
@@ -996,10 +1013,10 @@ fail:
     return NULL;
 }
 
-static boolean radeon_winsys_bo_get_handle(struct pb_buffer *buffer,
-                                           unsigned stride, unsigned offset,
-                                           unsigned slice_size,
-                                           struct winsys_handle *whandle)
+static bool radeon_winsys_bo_get_handle(struct pb_buffer *buffer,
+                                        unsigned stride, unsigned offset,
+                                        unsigned slice_size,
+                                        struct winsys_handle *whandle)
 {
     struct drm_gem_flink flink;
     struct radeon_bo *bo = radeon_bo(buffer);
@@ -1014,7 +1031,7 @@ static boolean radeon_winsys_bo_get_handle(struct pb_buffer *buffer,
             flink.handle = bo->handle;
 
             if (ioctl(ws->fd, DRM_IOCTL_GEM_FLINK, &flink)) {
-                return FALSE;
+                return false;
             }
 
             bo->flink_name = flink.name;
@@ -1028,14 +1045,14 @@ static boolean radeon_winsys_bo_get_handle(struct pb_buffer *buffer,
         whandle->handle = bo->handle;
     } else if (whandle->type == DRM_API_HANDLE_TYPE_FD) {
         if (drmPrimeHandleToFD(ws->fd, bo->handle, DRM_CLOEXEC, (int*)&whandle->handle))
-            return FALSE;
+            return false;
     }
 
     whandle->stride = stride;
     whandle->offset = offset;
     whandle->offset += slice_size * whandle->layer;
 
-    return TRUE;
+    return true;
 }
 
 static bool radeon_winsys_bo_is_user_ptr(struct pb_buffer *buf)

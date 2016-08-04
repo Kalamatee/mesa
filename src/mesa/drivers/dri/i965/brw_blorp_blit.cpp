@@ -330,18 +330,11 @@ enum sampler_message_arg
 };
 
 struct brw_blorp_blit_vars {
-   /* Uniforms values from brw_blorp_wm_push_constants */
-   nir_variable *u_dst_x0;
-   nir_variable *u_dst_x1;
-   nir_variable *u_dst_y0;
-   nir_variable *u_dst_y1;
-   nir_variable *u_rect_grid_x1;
-   nir_variable *u_rect_grid_y1;
-   struct {
-      nir_variable *multiplier;
-      nir_variable *offset;
-   } u_x_transform, u_y_transform;
-   nir_variable *u_src_z;
+   /* Input values from brw_blorp_wm_inputs */
+   nir_variable *v_discard_rect;
+   nir_variable *v_rect_grid;
+   nir_variable *v_coord_transform;
+   nir_variable *v_src_z;
 
    /* gl_FragCoord */
    nir_variable *frag_coord;
@@ -354,24 +347,22 @@ static void
 brw_blorp_blit_vars_init(nir_builder *b, struct brw_blorp_blit_vars *v,
                          const struct brw_blorp_blit_prog_key *key)
 {
-#define LOAD_UNIFORM(name, type)\
-   v->u_##name = nir_variable_create(b->shader, nir_var_uniform, type, #name); \
-   v->u_##name->data.location = \
-      offsetof(struct brw_blorp_wm_push_constants, name);
+    /* Blended and scaled blits never use pixel discard. */
+    assert(!key->use_kill || !(key->blend && key->blit_scaled));
 
-   LOAD_UNIFORM(dst_x0, glsl_uint_type())
-   LOAD_UNIFORM(dst_x1, glsl_uint_type())
-   LOAD_UNIFORM(dst_y0, glsl_uint_type())
-   LOAD_UNIFORM(dst_y1, glsl_uint_type())
-   LOAD_UNIFORM(rect_grid_x1, glsl_float_type())
-   LOAD_UNIFORM(rect_grid_y1, glsl_float_type())
-   LOAD_UNIFORM(x_transform.multiplier, glsl_float_type())
-   LOAD_UNIFORM(x_transform.offset, glsl_float_type())
-   LOAD_UNIFORM(y_transform.multiplier, glsl_float_type())
-   LOAD_UNIFORM(y_transform.offset, glsl_float_type())
-   LOAD_UNIFORM(src_z, glsl_uint_type())
+#define LOAD_INPUT(name, type)\
+   v->v_##name = nir_variable_create(b->shader, nir_var_shader_in, \
+                                     type, #name); \
+   v->v_##name->data.interpolation = INTERP_MODE_FLAT; \
+   v->v_##name->data.location = VARYING_SLOT_VAR0 + \
+      offsetof(struct brw_blorp_wm_inputs, name) / (4 * sizeof(float));
 
-#undef DECL_UNIFORM
+   LOAD_INPUT(discard_rect, glsl_vec4_type())
+   LOAD_INPUT(rect_grid, glsl_vec4_type())
+   LOAD_INPUT(coord_transform, glsl_vec4_type())
+   LOAD_INPUT(src_z, glsl_uint_type())
+
+#undef LOAD_INPUT
 
    v->frag_coord = nir_variable_create(b->shader, nir_var_shader_in,
                                        glsl_vec4_type(), "gl_FragCoord");
@@ -406,10 +397,12 @@ nir_ssa_def *
 blorp_blit_apply_transform(nir_builder *b, nir_ssa_def *src_pos,
                            struct brw_blorp_blit_vars *v)
 {
-   nir_ssa_def *offset = nir_vec2(b, nir_load_var(b, v->u_x_transform.offset),
-                                     nir_load_var(b, v->u_y_transform.offset));
-   nir_ssa_def *mul = nir_vec2(b, nir_load_var(b, v->u_x_transform.multiplier),
-                                  nir_load_var(b, v->u_y_transform.multiplier));
+   nir_ssa_def *coord_transform = nir_load_var(b, v->v_coord_transform);
+
+   nir_ssa_def *offset = nir_vec2(b, nir_channel(b, coord_transform, 1),
+                                     nir_channel(b, coord_transform, 3));
+   nir_ssa_def *mul = nir_vec2(b, nir_channel(b, coord_transform, 0),
+                                  nir_channel(b, coord_transform, 2));
 
    return nir_ffma(b, src_pos, mul, offset);
 }
@@ -419,10 +412,17 @@ blorp_nir_discard_if_outside_rect(nir_builder *b, nir_ssa_def *pos,
                                   struct brw_blorp_blit_vars *v)
 {
    nir_ssa_def *c0, *c1, *c2, *c3;
-   c0 = nir_ult(b, nir_channel(b, pos, 0), nir_load_var(b, v->u_dst_x0));
-   c1 = nir_uge(b, nir_channel(b, pos, 0), nir_load_var(b, v->u_dst_x1));
-   c2 = nir_ult(b, nir_channel(b, pos, 1), nir_load_var(b, v->u_dst_y0));
-   c3 = nir_uge(b, nir_channel(b, pos, 1), nir_load_var(b, v->u_dst_y1));
+   nir_ssa_def *discard_rect = nir_load_var(b, v->v_discard_rect);
+   nir_ssa_def *dst_x0 = nir_channel(b, discard_rect, 0);
+   nir_ssa_def *dst_x1 = nir_channel(b, discard_rect, 1);
+   nir_ssa_def *dst_y0 = nir_channel(b, discard_rect, 2);
+   nir_ssa_def *dst_y1 = nir_channel(b, discard_rect, 3);
+
+   c0 = nir_ult(b, nir_channel(b, pos, 0), dst_x0);
+   c1 = nir_uge(b, nir_channel(b, pos, 0), dst_x1);
+   c2 = nir_ult(b, nir_channel(b, pos, 1), dst_y0);
+   c3 = nir_uge(b, nir_channel(b, pos, 1), dst_y1);
+
    nir_ssa_def *oob = nir_ior(b, nir_ior(b, c0, c1), nir_ior(b, c2, c3));
 
    nir_intrinsic_instr *discard =
@@ -500,7 +500,7 @@ blorp_nir_txf(nir_builder *b, struct brw_blorp_blit_vars *v,
     */
    assert(pos->num_components == 2);
    pos = nir_vec3(b, nir_channel(b, pos, 0), nir_channel(b, pos, 1),
-                     nir_load_var(b, v->u_src_z));
+                     nir_load_var(b, v->v_src_z));
 
    tex->sampler_dim = GLSL_SAMPLER_DIM_3D;
    tex->coord_components = 3;
@@ -1033,7 +1033,7 @@ blorp_nir_manual_blend_bilinear(nir_builder *b, nir_ssa_def *pos,
                                 struct brw_blorp_blit_vars *v)
 {
    nir_ssa_def *pos_xy = nir_channels(b, pos, 0x3);
-
+   nir_ssa_def *rect_grid = nir_load_var(b, v->v_rect_grid);
    nir_ssa_def *scale = nir_imm_vec2(b, key->x_scale, key->y_scale);
 
    /* Translate coordinates to lay out the samples in a rectangular  grid
@@ -1048,8 +1048,8 @@ blorp_nir_manual_blend_bilinear(nir_builder *b, nir_ssa_def *pos,
     * texels on texture edges.
     */
    pos_xy = nir_fmin(b, nir_fmax(b, pos_xy, nir_imm_float(b, 0.0)),
-                        nir_vec2(b, nir_load_var(b, v->u_rect_grid_x1),
-                                    nir_load_var(b, v->u_rect_grid_y1)));
+                        nir_vec2(b, nir_channel(b, rect_grid, 0),
+                                    nir_channel(b, rect_grid, 1)));
 
    /* Store the fractional parts to be used as bilinear interpolation
     * coefficients.
@@ -1106,9 +1106,9 @@ blorp_nir_manual_blend_bilinear(nir_builder *b, nir_ssa_def *pos,
        * In the case of 16x MSAA the two layouts don't match.
        * Sample index layout:                Sample number layout:
        * ---------------------               ---------------------
-       * |  0 |  1 |  2 |  3 |               | 15 | 10 |  9 | 13 |
+       * |  0 |  1 |  2 |  3 |               | 15 | 10 |  9 |  7 |
        * ---------------------               ---------------------
-       * |  4 |  5 |  6 |  7 |               |  4 |  1 |  7 |  3 |
+       * |  4 |  5 |  6 |  7 |               |  4 |  1 |  3 | 13 |
        * ---------------------               ---------------------
        * |  8 |  9 | 10 | 11 |               | 12 |  2 |  0 |  6 |
        * ---------------------               ---------------------
@@ -1116,7 +1116,7 @@ blorp_nir_manual_blend_bilinear(nir_builder *b, nir_ssa_def *pos,
        * ---------------------               ---------------------
        *
        * This is equivalent to
-       * S' = (0xfa9d4173c206b85e >> (S * 4)) & 0xf
+       * S' = (0xe58b602cd31479af >> (S * 4)) & 0xf
        */
       nir_ssa_def *frac = nir_ffract(b, sample_coords);
       nir_ssa_def *sample =
@@ -1130,11 +1130,11 @@ blorp_nir_manual_blend_bilinear(nir_builder *b, nir_ssa_def *pos,
                            nir_imm_int(b, 0xf));
       } else if (tex_samples == 16) {
          nir_ssa_def *sample_low =
-            nir_iand(b, nir_ishr(b, nir_imm_int(b, 0xc206b85e),
+            nir_iand(b, nir_ishr(b, nir_imm_int(b, 0xd31479af),
                                  nir_ishl(b, sample, nir_imm_int(b, 2))),
                      nir_imm_int(b, 0xf));
          nir_ssa_def *sample_high =
-            nir_iand(b, nir_ishr(b, nir_imm_int(b, 0xfa9d4173),
+            nir_iand(b, nir_ishr(b, nir_imm_int(b, 0xe58b602c),
                                  nir_ishl(b, nir_iadd(b, sample,
                                                       nir_imm_int(b, -8)),
                                           nir_imm_int(b, 2))),
@@ -1385,8 +1385,10 @@ brw_blorp_build_nir_shader(struct brw_context *brw,
     * If we need to kill pixels that are outside the destination rectangle,
     * now is the time to do it.
     */
-   if (key->use_kill)
+   if (key->use_kill) {
+      assert(!(key->blend && key->blit_scaled));
       blorp_nir_discard_if_outside_rect(&b, dst_pos, &v);
+   }
 
    src_pos = blorp_blit_apply_transform(&b, nir_i2f(&b, dst_pos), &v);
    if (dst_pos->num_components == 3) {
@@ -1434,6 +1436,7 @@ brw_blorp_build_nir_shader(struct brw_context *brw,
                                                 key->texture_data_type);
       }
    } else if (key->blend && key->blit_scaled) {
+      assert(!key->use_kill);
       color = blorp_nir_manual_blend_bilinear(&b, src_pos, key->src_samples, key, &v);
    } else {
       if (key->bilinear_filter) {
@@ -1761,8 +1764,11 @@ brw_blorp_blit_miptrees(struct brw_context *brw,
    /* Scaling factors used for bilinear filtering in multisample scaled
     * blits.
     */
-   wm_prog_key.x_scale = 2.0f;
-   wm_prog_key.y_scale = src_mt->num_samples / 2.0f;
+   if (src_mt->num_samples == 16)
+      wm_prog_key.x_scale = 4.0f;
+   else
+      wm_prog_key.x_scale = 2.0f;
+   wm_prog_key.y_scale = src_mt->num_samples / wm_prog_key.x_scale;
 
    if (filter == GL_LINEAR &&
        params.src.num_samples <= 1 && params.dst.num_samples <= 1)
@@ -1829,22 +1835,30 @@ brw_blorp_blit_miptrees(struct brw_context *brw,
    /* Round floating point values to nearest integer to avoid "off by one texel"
     * kind of errors when blitting.
     */
-   params.x0 = params.wm_push_consts.dst_x0 = roundf(dst_x0);
-   params.y0 = params.wm_push_consts.dst_y0 = roundf(dst_y0);
-   params.x1 = params.wm_push_consts.dst_x1 = roundf(dst_x1);
-   params.y1 = params.wm_push_consts.dst_y1 = roundf(dst_y1);
-   params.wm_push_consts.rect_grid_x1 =
+   params.x0 = params.wm_inputs.discard_rect.x0 = roundf(dst_x0);
+   params.y0 = params.wm_inputs.discard_rect.y0 = roundf(dst_y0);
+   params.x1 = params.wm_inputs.discard_rect.x1 = roundf(dst_x1);
+   params.y1 = params.wm_inputs.discard_rect.y1 = roundf(dst_y1);
+
+   params.wm_inputs.rect_grid.x1 =
       minify(src_mt->logical_width0, src_level) * wm_prog_key.x_scale - 1.0f;
-   params.wm_push_consts.rect_grid_y1 =
+   params.wm_inputs.rect_grid.y1 =
       minify(src_mt->logical_height0, src_level) * wm_prog_key.y_scale - 1.0f;
 
-   brw_blorp_setup_coord_transform(&params.wm_push_consts.x_transform,
+   brw_blorp_setup_coord_transform(&params.wm_inputs.coord_transform[0],
                                    src_x0, src_x1, dst_x0, dst_x1, mirror_x);
-   brw_blorp_setup_coord_transform(&params.wm_push_consts.y_transform,
+   brw_blorp_setup_coord_transform(&params.wm_inputs.coord_transform[1],
                                    src_y0, src_y1, dst_y0, dst_y1, mirror_y);
 
-   params.wm_push_consts.src_z =
-      params.src.mt->target == GL_TEXTURE_3D ? params.src.layer : 0;
+   if (brw->gen >= 8 && params.src.mt->target == GL_TEXTURE_3D) {
+      /* On gen8+ we use actual 3-D textures so we need to pass the layer
+       * through to the sampler.
+       */
+      params.wm_inputs.src_z = params.src.layer;
+   } else {
+      /* On gen7 and earlier, we fake everything with 2-D textures */
+      params.wm_inputs.src_z = 0;
+   }
 
    if (params.dst.num_samples <= 1 && dst_mt->num_samples > 1) {
       /* We must expand the rectangle we send through the rendering pipeline,

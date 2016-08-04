@@ -341,6 +341,12 @@ ir_expression::ir_expression(int op, ir_rvalue *op0)
       this->type = glsl_type::int_type;
       break;
 
+   case ir_unop_vote_any:
+   case ir_unop_vote_all:
+   case ir_unop_vote_eq:
+      this->type = glsl_type::bool_type;
+      break;
+
    default:
       assert(!"not reached: missing automatic type setup for ir_expression");
       this->type = op0->type;
@@ -563,6 +569,9 @@ static const char *const operator_strs[] = {
    "interpolate_at_centroid",
    "get_buffer_size",
    "ssbo_unsized_array_length",
+   "vote_any",
+   "vote_all",
+   "vote_eq",
    "+",
    "-",
    "*",
@@ -798,7 +807,7 @@ ir_constant::ir_constant(const struct glsl_type *type, exec_list *value_list)
       this->value.u[i] = 0;
    }
 
-   ir_constant *value = (ir_constant *) (value_list->head);
+   ir_constant *value = (ir_constant *) (value_list->get_head_raw());
 
    /* Constructors with exactly one scalar argument are special for vectors
     * and matrices.  For vectors, the scalar value is replicated to fill all
@@ -1064,7 +1073,7 @@ ir_constant::get_record_field(const char *name)
    if (this->components.is_empty())
       return NULL;
 
-   exec_node *node = this->components.head;
+   exec_node *node = this->components.get_head_raw();
    for (int i = 0; i < idx; i++) {
       node = node->next;
 
@@ -1188,8 +1197,8 @@ ir_constant::has_value(const ir_constant *c) const
    }
 
    if (this->type->base_type == GLSL_TYPE_STRUCT) {
-      const exec_node *a_node = this->components.head;
-      const exec_node *b_node = c->components.head;
+      const exec_node *a_node = this->components.get_head_raw();
+      const exec_node *b_node = c->components.get_head_raw();
 
       while (!a_node->is_tail_sentinel()) {
 	 assert(!b_node->is_tail_sentinel());
@@ -1667,7 +1676,7 @@ ir_variable::ir_variable(const struct glsl_type *type, const char *name,
    this->data.invariant = false;
    this->data.how_declared = ir_var_declared_normally;
    this->data.mode = mode;
-   this->data.interpolation = INTERP_QUALIFIER_NONE;
+   this->data.interpolation = INTERP_MODE_NONE;
    this->data.max_array_access = -1;
    this->data.offset = 0;
    this->data.precision = GLSL_PRECISION_NONE;
@@ -1694,10 +1703,10 @@ const char *
 interpolation_string(unsigned interpolation)
 {
    switch (interpolation) {
-   case INTERP_QUALIFIER_NONE:          return "no";
-   case INTERP_QUALIFIER_SMOOTH:        return "smooth";
-   case INTERP_QUALIFIER_FLAT:          return "flat";
-   case INTERP_QUALIFIER_NOPERSPECTIVE: return "noperspective";
+   case INTERP_MODE_NONE:          return "no";
+   case INTERP_MODE_SMOOTH:        return "smooth";
+   case INTERP_MODE_FLAT:          return "flat";
+   case INTERP_MODE_NOPERSPECTIVE: return "noperspective";
    }
 
    assert(!"Should not get here.");
@@ -2020,27 +2029,4 @@ mode_string(const ir_variable *var)
 
    assert(!"Should not get here.");
    return "invalid variable";
-}
-
-/**
- * Get the varying type stripped of the outermost array if we're processing
- * a stage whose varyings are arrays indexed by a vertex number (such as
- * geometry shader inputs).
- */
-const glsl_type *
-get_varying_type(const ir_variable *var, gl_shader_stage stage)
-{
-   const glsl_type *type = var->type;
-
-   if (!var->data.patch &&
-       ((var->data.mode == ir_var_shader_out &&
-         stage == MESA_SHADER_TESS_CTRL) ||
-        (var->data.mode == ir_var_shader_in &&
-         (stage == MESA_SHADER_TESS_CTRL || stage == MESA_SHADER_TESS_EVAL ||
-          stage == MESA_SHADER_GEOMETRY)))) {
-      assert(type->is_array());
-      type = type->fields.array;
-   }
-
-   return type;
 }

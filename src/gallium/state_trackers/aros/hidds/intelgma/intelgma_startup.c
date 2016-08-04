@@ -3,7 +3,7 @@
     $Id: startup.c 50703 2015-05-18 00:54:09Z neil $
 */
 
-#define DEBUG 1
+#define DEBUG 0
 #include <aros/debug.h>
 
 #include <proto/dos.h>
@@ -50,6 +50,7 @@ OOP_AttrBase HiddBitMapAttrBase;
 OOP_AttrBase HiddColorMapAttrBase;
 OOP_AttrBase HiddSyncAttrBase;
 OOP_AttrBase HiddDisplayAttrBase;
+OOP_AttrBase HiddDisplayIntelGMAAttrBase;
 OOP_AttrBase HiddDMEnumAttrBase;
 OOP_AttrBase __IHidd_PlanarBM;
 
@@ -63,13 +64,14 @@ struct g45staticdata sd;
 static const struct OOP_ABDescr attrbases[] =
 {
     {IID_Meta,                  &MetaAttrBase                   },
-    {IID_Hidd_Gfx,                &HiddGfxAttrBase                  },
+    {IID_Hidd_Gfx,              &HiddGfxAttrBase                  },
     {IID_Hidd,                  &HiddAttrBase                   },
     {IID_Hidd_PCIDevice,        &HiddPCIDeviceAttrBase          },
     {IID_Hidd_BitMap,           &HiddBitMapAttrBase             },
     {IID_Hidd_PixFmt,           &HiddPixFmtAttrBase             },
     {IID_Hidd_Sync,             &HiddSyncAttrBase               },
     {IID_Hidd_Display,          &HiddDisplayAttrBase            },
+    {IID_Hidd_Display_IntelGMA, &HiddDisplayIntelGMAAttrBase },
     {IID_Hidd_DMEnum,           &HiddDMEnumAttrBase             },
     {IID_Hidd_BitMap_IntelGMA,  &HiddBitMapIntelGMAAttrBase     },
     {IID_Hidd_I2C,              &HiddI2CAttrBase                },

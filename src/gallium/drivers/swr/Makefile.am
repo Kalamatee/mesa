@@ -22,20 +22,22 @@
 include Makefile.sources
 include $(top_srcdir)/src/gallium/Automake.inc
 
-AM_CXXFLAGS = $(GALLIUM_DRIVER_CFLAGS) -std=c++11
+AM_CXXFLAGS = $(GALLIUM_DRIVER_CFLAGS) $(SWR_CXX11_CXXFLAGS)
 
 noinst_LTLIBRARIES = libmesaswr.la
 
 libmesaswr_la_SOURCES = $(LOADER_SOURCES)
 
 COMMON_CXXFLAGS = \
+	-fno-strict-aliasing \
 	$(GALLIUM_DRIVER_CFLAGS) \
 	$(LLVM_CXXFLAGS) \
-	-std=c++11 \
+	$(SWR_CXX11_CXXFLAGS) \
 	-I$(builddir)/rasterizer/scripts \
 	-I$(builddir)/rasterizer/jitter \
 	-I$(srcdir)/rasterizer \
 	-I$(srcdir)/rasterizer/core \
+	-I$(srcdir)/rasterizer/scripts \
 	-I$(srcdir)/rasterizer/jitter
 
 COMMON_SOURCES = \
@@ -51,8 +53,6 @@ BUILT_SOURCES = \
 	rasterizer/scripts/gen_knobs.cpp \
 	rasterizer/scripts/gen_knobs.h \
 	rasterizer/jitter/state_llvm.h \
-	rasterizer/jitter/builder_gen.h \
-	rasterizer/jitter/builder_gen.cpp \
 	rasterizer/jitter/builder_x86.h \
 	rasterizer/jitter/builder_x86.cpp
 
@@ -121,15 +121,49 @@ COMMON_LDFLAGS = \
 	$(NO_UNDEFINED) \
 	$(LLVM_LDFLAGS)
 
+
+# XXX: As we cannot use BUILT_SOURCES (the files will end up in the dist
+# tarball) just annotate the dependency directly.
+# As the single direct user of builder_gen.h is a header (builder.h) trace all
+# the translusive users (one that use the latter header).
+rasterizer/jitter/blend_jit.cpp: rasterizer/jitter/builder_gen.h
+rasterizer/jitter/builder.cpp: rasterizer/jitter/builder_gen.h
+rasterizer/jitter/builder_gen.cpp: rasterizer/jitter/builder_gen.h
+rasterizer/jitter/builder_x86.cpp: rasterizer/jitter/builder_gen.h
+rasterizer/jitter/builder_misc.cpp: rasterizer/jitter/builder_gen.h
+rasterizer/jitter/fetch_jit.cpp: rasterizer/jitter/builder_gen.h
+rasterizer/jitter/streamout_jit.cpp: rasterizer/jitter/builder_gen.h
+swr_shader.cpp: rasterizer/jitter/builder_gen.h
+
+CLEANFILES = \
+	rasterizer/jitter/builder_gen.h \
+	rasterizer/jitter/builder_gen.cpp
+
+# XXX: Due to the funky dependencies above, the builder_x86.cpp file gets
+# generated (copied) into builddir when building from release tarball.
+# Add a temporary workaround to remove it, until the above issue is resolved.
+distclean-local:
+	( test $(top_srcdir) != $(top_builddir) && \
+		rm $(builddir)/rasterizer/jitter/builder_x86.cpp ) || true
+
 lib_LTLIBRARIES = libswrAVX.la libswrAVX2.la
 
 libswrAVX_la_CXXFLAGS = \
-	-march=core-avx-i \
+	$(SWR_AVX_CXXFLAGS) \
 	-DKNOB_ARCH=KNOB_ARCH_AVX \
 	$(COMMON_CXXFLAGS)
 
 libswrAVX_la_SOURCES = \
 	$(COMMON_SOURCES)
+
+# XXX: Don't ship these generated sources for now, since they are specific
+# to the LLVM version they are generated from. Thus a release tarball
+# containing the said files, generated against eg. LLVM 3.8 will fail to build
+# on systems with other versions of LLVM eg. 3.7 or 3.6.
+# Move these back to BUILT_SOURCES once that is resolved.
+nodist_libswrAVX_la_SOURCES = \
+	rasterizer/jitter/builder_gen.h \
+	rasterizer/jitter/builder_gen.cpp
 
 libswrAVX_la_LIBADD = \
 	$(COMMON_LIBADD)
@@ -138,12 +172,21 @@ libswrAVX_la_LDFLAGS = \
 	$(COMMON_LDFLAGS)
 
 libswrAVX2_la_CXXFLAGS = \
-	-march=core-avx2 \
+	$(SWR_AVX2_CXXFLAGS) \
 	-DKNOB_ARCH=KNOB_ARCH_AVX2 \
 	$(COMMON_CXXFLAGS)
 
 libswrAVX2_la_SOURCES = \
 	$(COMMON_SOURCES)
+
+# XXX: Don't ship these generated sources for now, since they are specific
+# to the LLVM version they are generated from. Thus a release tarball
+# containing the said files, generated against eg. LLVM 3.8 will fail to build
+# on systems with other versions of LLVM eg. 3.7 or 3.6.
+# Move these back to BUILT_SOURCES once that is resolved.
+nodist_libswrAVX2_la_SOURCES = \
+	rasterizer/jitter/builder_gen.h \
+	rasterizer/jitter/builder_gen.cpp
 
 libswrAVX2_la_LIBADD = \
 	$(COMMON_LIBADD)

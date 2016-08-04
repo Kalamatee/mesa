@@ -247,7 +247,7 @@
  * Chipset Graphics Controller Programmer's Reference Manual,
  * Volume 2: 3D/Media", Revision 1.0b as of January 2008,
  * available at
- *     http://intellinuxgraphics.org/documentation.html
+ *     https://01.org/linuxgraphics/documentation/hardware-specification-prms
  * at the time of this writing).
  *
  * These appear to be supported on at least some
@@ -857,7 +857,7 @@ enum opcode {
    BRW_OPCODE_XOR =	7,
    BRW_OPCODE_SHR =	8,
    BRW_OPCODE_SHL =	9,
-   // BRW_OPCODE_DIM =	10,  /**< Gen7.5 only */ /* Reused */
+   BRW_OPCODE_DIM =	10,  /**< Gen7.5 only */ /* Reused */
    // BRW_OPCODE_SMOV =	10,  /**< Gen8+       */ /* Reused */
    /* Reserved - 11 */
    BRW_OPCODE_ASR =	12,
@@ -1120,7 +1120,6 @@ enum opcode {
    FS_OPCODE_UNPACK_HALF_2x16_SPLIT_X,
    FS_OPCODE_UNPACK_HALF_2x16_SPLIT_Y,
    FS_OPCODE_PLACEHOLDER_HALT,
-   FS_OPCODE_INTERPOLATE_AT_CENTROID,
    FS_OPCODE_INTERPOLATE_AT_SAMPLE,
    FS_OPCODE_INTERPOLATE_AT_SHARED_OFFSET,
    FS_OPCODE_INTERPOLATE_AT_PER_SLOT_OFFSET,
@@ -2533,19 +2532,19 @@ enum brw_pixel_shader_coverage_mask_mode {
 # define GEN8_PSX_SHADER_USES_INPUT_COVERAGE_MASK       (1 << 1)
 # define GEN9_PSX_SHADER_NORMAL_COVERAGE_MASK_SHIFT     0
 
-enum brw_wm_barycentric_interp_mode {
-   BRW_WM_PERSPECTIVE_PIXEL_BARYCENTRIC		= 0,
-   BRW_WM_PERSPECTIVE_CENTROID_BARYCENTRIC	= 1,
-   BRW_WM_PERSPECTIVE_SAMPLE_BARYCENTRIC	= 2,
-   BRW_WM_NONPERSPECTIVE_PIXEL_BARYCENTRIC	= 3,
-   BRW_WM_NONPERSPECTIVE_CENTROID_BARYCENTRIC	= 4,
-   BRW_WM_NONPERSPECTIVE_SAMPLE_BARYCENTRIC	= 5,
-   BRW_WM_BARYCENTRIC_INTERP_MODE_COUNT  = 6
+enum brw_barycentric_mode {
+   BRW_BARYCENTRIC_PERSPECTIVE_PIXEL       = 0,
+   BRW_BARYCENTRIC_PERSPECTIVE_CENTROID    = 1,
+   BRW_BARYCENTRIC_PERSPECTIVE_SAMPLE      = 2,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_PIXEL    = 3,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_CENTROID = 4,
+   BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE   = 5,
+   BRW_BARYCENTRIC_MODE_COUNT              = 6
 };
-#define BRW_WM_NONPERSPECTIVE_BARYCENTRIC_BITS \
-   ((1 << BRW_WM_NONPERSPECTIVE_PIXEL_BARYCENTRIC) | \
-    (1 << BRW_WM_NONPERSPECTIVE_CENTROID_BARYCENTRIC) | \
-    (1 << BRW_WM_NONPERSPECTIVE_SAMPLE_BARYCENTRIC))
+#define BRW_BARYCENTRIC_NONPERSPECTIVE_BITS \
+   ((1 << BRW_BARYCENTRIC_NONPERSPECTIVE_PIXEL) | \
+    (1 << BRW_BARYCENTRIC_NONPERSPECTIVE_CENTROID) | \
+    (1 << BRW_BARYCENTRIC_NONPERSPECTIVE_SAMPLE))
 
 #define _3DSTATE_WM				0x7814 /* GEN6+ */
 /* DW1: kernel pointer */
@@ -2943,6 +2942,9 @@ enum brw_wm_barycentric_interp_mode {
 # define MEDIA_GPGPU_THREAD_COUNT_MASK          INTEL_MASK(7, 0)
 # define GEN8_MEDIA_GPGPU_THREAD_COUNT_SHIFT    0
 # define GEN8_MEDIA_GPGPU_THREAD_COUNT_MASK     INTEL_MASK(9, 0)
+/* GEN7 DW6, GEN8+ DW7 */
+# define CROSS_THREAD_READ_LENGTH_SHIFT         0
+# define CROSS_THREAD_READ_LENGTH_MASK          INTEL_MASK(7, 0)
 #define MEDIA_STATE_FLUSH                       0x7004
 #define GPGPU_WALKER                            0x7105
 /* GEN7 DW0 */

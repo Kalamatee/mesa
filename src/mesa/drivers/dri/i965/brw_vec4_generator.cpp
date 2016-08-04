@@ -1637,6 +1637,9 @@ generate_code(struct brw_codegen *p,
          /* FBL only supports UD type for dst. */
          brw_FBL(p, retype(dst, BRW_REGISTER_TYPE_UD), src[0]);
          break;
+      case BRW_OPCODE_LZD:
+         brw_LZD(p, dst, src[0]);
+         break;
       case BRW_OPCODE_CBIT:
          assert(devinfo->gen >= 7);
          /* CBIT only supports UD type for dst. */
@@ -2012,6 +2015,13 @@ generate_code(struct brw_codegen *p,
 
       case SHADER_OPCODE_MOV_INDIRECT:
          generate_mov_indirect(p, inst, dst, src[0], src[1], src[2]);
+         break;
+
+      case BRW_OPCODE_DIM:
+         assert(devinfo->is_haswell);
+         assert(src[0].type == BRW_REGISTER_TYPE_DF);
+         assert(dst.type == BRW_REGISTER_TYPE_DF);
+         brw_DIM(p, dst, retype(src[0], BRW_REGISTER_TYPE_F));
          break;
 
       default:

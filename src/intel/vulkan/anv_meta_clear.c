@@ -94,7 +94,7 @@ build_color_shaders(struct nir_shader **out_vs,
       nir_variable_create(vs_b.shader, nir_var_shader_out, color_type,
                           "v_color");
    vs_out_color->data.location = VARYING_SLOT_VAR0;
-   vs_out_color->data.interpolation = INTERP_QUALIFIER_FLAT;
+   vs_out_color->data.interpolation = INTERP_MODE_FLAT;
 
    nir_variable *fs_in_color =
       nir_variable_create(fs_b.shader, nir_var_shader_in, color_type,
@@ -173,6 +173,7 @@ create_pipeline(struct anv_device *device,
             .cullMode = VK_CULL_MODE_NONE,
             .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
             .depthBiasEnable = false,
+            .depthClampEnable = true,
          },
          .pMultisampleState = &(VkPipelineMultisampleStateCreateInfo) {
             .sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
@@ -761,9 +762,11 @@ anv_cmd_clear_image(struct anv_cmd_buffer *cmd_buffer,
 
    for (uint32_t r = 0; r < range_count; r++) {
       const VkImageSubresourceRange *range = &ranges[r];
-
       for (uint32_t l = 0; l < anv_get_levelCount(image, range); ++l) {
-         for (uint32_t s = 0; s < anv_get_layerCount(image, range); ++s) {
+         const uint32_t layer_count = image->type == VK_IMAGE_TYPE_3D ?
+                                      anv_minify(image->extent.depth, l) :
+                                      anv_get_layerCount(image, range);
+         for (uint32_t s = 0; s < layer_count; ++s) {
             struct anv_image_view iview;
             anv_image_view_init(&iview, cmd_buffer->device,
                &(VkImageViewCreateInfo) {

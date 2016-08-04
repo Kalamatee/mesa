@@ -33,6 +33,7 @@
 #include "gallivm/lp_bld_arit.h"
 #include "gallivm/lp_bld_bitarit.h"
 #include "gallivm/lp_bld_flow.h"
+#include "gallivm/lp_bld_misc.h"
 #include "radeon/r600_cs.h"
 #include "radeon/radeon_llvm.h"
 #include "radeon/radeon_elf_util.h"
@@ -100,9 +101,11 @@ struct si_shader_context
 
 	LLVMTargetMachineRef tm;
 
+	unsigned invariant_load_md_kind;
+	unsigned range_md_kind;
 	unsigned uniform_md_kind;
-	LLVMValueRef const_md;
 	LLVMValueRef empty_md;
+
 	LLVMValueRef const_buffers[SI_NUM_CONST_BUFFERS];
 	LLVMValueRef lds;
 	LLVMValueRef *constants[SI_NUM_CONST_BUFFERS];
@@ -147,6 +150,9 @@ static void si_init_shader_ctx(struct si_shader_context *ctx,
 static void si_llvm_emit_barrier(const struct lp_build_tgsi_action *action,
 				 struct lp_build_tgsi_context *bld_base,
 				 struct lp_build_emit_data *emit_data);
+
+static void si_dump_shader_key(unsigned shader, union si_shader_key *key,
+			       FILE *f);
 
 /* Ideally pass the sample mask input to the PS epilog as v13, which
  * is its usual location, so that the shader doesn't have to add v_mov.
@@ -414,7 +420,7 @@ static LLVMValueRef build_indexed_load_const(
 	LLVMValueRef base_ptr, LLVMValueRef index)
 {
 	LLVMValueRef result = build_indexed_load(ctx, base_ptr, index, true);
-	LLVMSetMetadata(result, 1, ctx->const_md);
+	LLVMSetMetadata(result, ctx->invariant_load_md_kind, ctx->empty_md);
 	return result;
 }
 
@@ -494,7 +500,7 @@ static void declare_input_vs(
 	args[2] = buffer_index;
 	input = lp_build_intrinsic(gallivm->builder,
 		"llvm.SI.vs.load.input", ctx->v4f32, args, 3,
-		LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+		LLVMReadNoneAttribute);
 
 	/* Break up the vec4 into individual components */
 	for (chan = 0; chan < 4; chan++) {
@@ -909,8 +915,7 @@ static LLVMValueRef build_buffer_load(struct si_shader_context *ctx,
 		         type_names[func]);
 
 		return lp_build_intrinsic(gallivm->builder, name, types[func], args,
-		                          ARRAY_SIZE(args), LLVMReadOnlyAttribute |
-		                          LLVMNoUnwindAttribute);
+		                          ARRAY_SIZE(args), LLVMReadOnlyAttribute);
 	} else {
 		LLVMValueRef args[] = {
 			LLVMBuildBitCast(gallivm->builder, rsrc, ctx->v16i8, ""),
@@ -941,8 +946,7 @@ static LLVMValueRef build_buffer_load(struct si_shader_context *ctx,
 		         type_names[func], arg_type);
 
 		return lp_build_intrinsic(gallivm->builder, name, types[func], args,
-		                          ARRAY_SIZE(args), LLVMReadOnlyAttribute |
-		                          LLVMNoUnwindAttribute);
+		                          ARRAY_SIZE(args), LLVMReadOnlyAttribute);
 	}
 }
 
@@ -964,7 +968,7 @@ static LLVMValueRef buffer_load(struct lp_build_tgsi_context *bld_base,
 		return LLVMBuildBitCast(gallivm->builder, value, vec_type, "");
 	}
 
-	if (type != TGSI_TYPE_DOUBLE) {
+	if (!tgsi_type_is_64bit(type)) {
 		value = build_buffer_load(ctx, buffer, 4, NULL, base, offset,
 		                          0, 1, 0);
 
@@ -979,7 +983,7 @@ static LLVMValueRef buffer_load(struct lp_build_tgsi_context *bld_base,
 	value2 = build_buffer_load(ctx, buffer, 1, NULL, base, offset,
 	                           swizzle * 4 + 4, 1, 0);
 
-	return radeon_llvm_emit_fetch_double(bld_base, value, value2);
+	return radeon_llvm_emit_fetch_64bit(bld_base, type, value, value2);
 }
 
 /**
@@ -1011,12 +1015,12 @@ static LLVMValueRef lds_load(struct lp_build_tgsi_context *bld_base,
 			    lp_build_const_int32(gallivm, swizzle));
 
 	value = build_indexed_load(ctx, ctx->lds, dw_addr, false);
-	if (type == TGSI_TYPE_DOUBLE) {
+	if (tgsi_type_is_64bit(type)) {
 		LLVMValueRef value2;
 		dw_addr = lp_build_add(&bld_base->uint_bld, dw_addr,
 				       lp_build_const_int32(gallivm, swizzle + 1));
 		value2 = build_indexed_load(ctx, ctx->lds, dw_addr, false);
-		return radeon_llvm_emit_fetch_double(bld_base, value, value2);
+		return radeon_llvm_emit_fetch_64bit(bld_base, type, value, value2);
 	}
 
 	return LLVMBuildBitCast(gallivm->builder, value,
@@ -1229,16 +1233,16 @@ static LLVMValueRef fetch_input_gs(
 	value = lp_build_intrinsic(gallivm->builder,
 				   "llvm.SI.buffer.load.dword.i32.i32",
 				   ctx->i32, args, 9,
-				   LLVMReadOnlyAttribute | LLVMNoUnwindAttribute);
-	if (type == TGSI_TYPE_DOUBLE) {
+				   LLVMReadOnlyAttribute);
+	if (tgsi_type_is_64bit(type)) {
 		LLVMValueRef value2;
 		args[2] = lp_build_const_int32(gallivm, (param * 4 + swizzle + 1) * 256);
 		value2 = lp_build_intrinsic(gallivm->builder,
 					    "llvm.SI.buffer.load.dword.i32.i32",
 					    ctx->i32, args, 9,
-					    LLVMReadOnlyAttribute | LLVMNoUnwindAttribute);
-		return radeon_llvm_emit_fetch_double(bld_base,
-						     value, value2);
+					    LLVMReadOnlyAttribute);
+		return radeon_llvm_emit_fetch_64bit(bld_base, type,
+						    value, value2);
 	}
 	return LLVMBuildBitCast(gallivm->builder,
 				value,
@@ -1278,27 +1282,39 @@ static int lookup_interp_param_index(unsigned interpolate, unsigned location)
 static unsigned select_interp_param(struct si_shader_context *ctx,
 				    unsigned param)
 {
-	if (!ctx->shader->key.ps.prolog.force_persample_interp ||
-	    !ctx->is_monolithic)
+	if (!ctx->is_monolithic)
 		return param;
 
-	/* If the shader doesn't use center/centroid, just return the parameter.
-	 *
-	 * If the shader only uses one set of (i,j), "si_emit_spi_ps_input" can
-	 * switch between center/centroid and sample without shader changes.
-	 */
-	switch (param) {
-	case SI_PARAM_PERSP_CENTROID:
-	case SI_PARAM_PERSP_CENTER:
-		return SI_PARAM_PERSP_SAMPLE;
-
-	case SI_PARAM_LINEAR_CENTROID:
-	case SI_PARAM_LINEAR_CENTER:
-		return SI_PARAM_LINEAR_SAMPLE;
-
-	default:
-		return param;
+	if (ctx->shader->key.ps.prolog.force_persp_sample_interp) {
+		switch (param) {
+		case SI_PARAM_PERSP_CENTROID:
+		case SI_PARAM_PERSP_CENTER:
+			return SI_PARAM_PERSP_SAMPLE;
+		}
 	}
+	if (ctx->shader->key.ps.prolog.force_linear_sample_interp) {
+		switch (param) {
+		case SI_PARAM_LINEAR_CENTROID:
+		case SI_PARAM_LINEAR_CENTER:
+			return SI_PARAM_LINEAR_SAMPLE;
+		}
+	}
+	if (ctx->shader->key.ps.prolog.force_persp_center_interp) {
+		switch (param) {
+		case SI_PARAM_PERSP_CENTROID:
+		case SI_PARAM_PERSP_SAMPLE:
+			return SI_PARAM_PERSP_CENTER;
+		}
+	}
+	if (ctx->shader->key.ps.prolog.force_linear_center_interp) {
+		switch (param) {
+		case SI_PARAM_LINEAR_CENTROID:
+		case SI_PARAM_LINEAR_SAMPLE:
+			return SI_PARAM_LINEAR_CENTER;
+		}
+	}
+
+	return param;
 }
 
 /**
@@ -1376,12 +1392,12 @@ static void interp_fs_input(struct si_shader_context *ctx,
 			args[1] = attr_number;
 			front = lp_build_intrinsic(gallivm->builder, intr_name,
 						ctx->f32, args, args[3] ? 4 : 3,
-						LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+						LLVMReadNoneAttribute);
 
 			args[1] = back_attr_number;
 			back = lp_build_intrinsic(gallivm->builder, intr_name,
 					       ctx->f32, args, args[3] ? 4 : 3,
-					       LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+					       LLVMReadNoneAttribute);
 
 			result[chan] = LLVMBuildSelect(gallivm->builder,
 						is_face_positive,
@@ -1398,7 +1414,7 @@ static void interp_fs_input(struct si_shader_context *ctx,
 		args[3] = interp_param;
 		result[0] = lp_build_intrinsic(gallivm->builder, intr_name,
 					ctx->f32, args, args[3] ? 4 : 3,
-					LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+					LLVMReadNoneAttribute);
 		result[1] =
 		result[2] = lp_build_const_float(gallivm, 0.0f);
 		result[3] = lp_build_const_float(gallivm, 1.0f);
@@ -1413,9 +1429,59 @@ static void interp_fs_input(struct si_shader_context *ctx,
 			args[3] = interp_param;
 			result[chan] = lp_build_intrinsic(gallivm->builder, intr_name,
 						ctx->f32, args, args[3] ? 4 : 3,
-						LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+						LLVMReadNoneAttribute);
 		}
 	}
+}
+
+/* LLVMGetParam with bc_optimize resolved. */
+static LLVMValueRef get_interp_param(struct si_shader_context *ctx,
+				     int interp_param_idx)
+{
+	LLVMBuilderRef builder = ctx->radeon_bld.gallivm.builder;
+	LLVMValueRef main_fn = ctx->radeon_bld.main_fn;
+	LLVMValueRef param = NULL;
+
+	/* Handle PRIM_MASK[31] (bc_optimize). */
+	if (ctx->is_monolithic &&
+	    ((ctx->shader->key.ps.prolog.bc_optimize_for_persp &&
+	      interp_param_idx == SI_PARAM_PERSP_CENTROID) ||
+	     (ctx->shader->key.ps.prolog.bc_optimize_for_linear &&
+	      interp_param_idx == SI_PARAM_LINEAR_CENTROID))) {
+		/* The shader should do: if (PRIM_MASK[31]) CENTROID = CENTER;
+		 * The hw doesn't compute CENTROID if the whole wave only
+		 * contains fully-covered quads.
+		 */
+		LLVMValueRef bc_optimize =
+			LLVMGetParam(main_fn, SI_PARAM_PRIM_MASK);
+		bc_optimize = LLVMBuildLShr(builder,
+					    bc_optimize,
+					    LLVMConstInt(ctx->i32, 31, 0), "");
+		bc_optimize = LLVMBuildTrunc(builder, bc_optimize, ctx->i1, "");
+
+		if (ctx->shader->key.ps.prolog.bc_optimize_for_persp &&
+		    interp_param_idx == SI_PARAM_PERSP_CENTROID) {
+			param = LLVMBuildSelect(builder, bc_optimize,
+						LLVMGetParam(main_fn,
+							     SI_PARAM_PERSP_CENTER),
+						LLVMGetParam(main_fn,
+							     SI_PARAM_PERSP_CENTROID),
+						"");
+		}
+		if (ctx->shader->key.ps.prolog.bc_optimize_for_linear &&
+		    interp_param_idx == SI_PARAM_LINEAR_CENTROID) {
+			param = LLVMBuildSelect(builder, bc_optimize,
+						LLVMGetParam(main_fn,
+							     SI_PARAM_LINEAR_CENTER),
+						LLVMGetParam(main_fn,
+							     SI_PARAM_LINEAR_CENTROID),
+						"");
+		}
+	}
+
+	if (!param)
+		param = LLVMGetParam(main_fn, interp_param_idx);
+	return param;
 }
 
 static void declare_input_fs(
@@ -1458,8 +1524,13 @@ static void declare_input_fs(
 	else if (interp_param_idx) {
 		interp_param_idx = select_interp_param(ctx,
 						       interp_param_idx);
-		interp_param = LLVMGetParam(main_fn, interp_param_idx);
+		interp_param = get_interp_param(ctx, interp_param_idx);
 	}
+
+	if (decl->Semantic.Name == TGSI_SEMANTIC_COLOR &&
+	    decl->Interp.Interpolate == TGSI_INTERPOLATE_COLOR &&
+	    ctx->shader->key.ps.prolog.flatshade_colors)
+		interp_param = NULL; /* load the constant color */
 
 	interp_fs_input(ctx, input_index, decl->Semantic.Name,
 			decl->Semantic.Index, shader->selector->info.num_inputs,
@@ -1482,19 +1553,17 @@ static LLVMValueRef get_sample_id(struct radeon_llvm_context *radeon_bld)
  * \p lo is the minimum value inclusive.
  * \p hi is the maximum value exclusive.
  */
-static void set_range_metadata(LLVMValueRef value, unsigned lo, unsigned hi)
+static void set_range_metadata(struct si_shader_context *ctx,
+			       LLVMValueRef value, unsigned lo, unsigned hi)
 {
-	const char *range_md_string = "range";
 	LLVMValueRef range_md, md_args[2];
 	LLVMTypeRef type = LLVMTypeOf(value);
 	LLVMContextRef context = LLVMGetTypeContext(type);
-	unsigned md_range_id = LLVMGetMDKindIDInContext(context,
-				range_md_string, strlen(range_md_string));
 
 	md_args[0] = LLVMConstInt(type, lo, false);
 	md_args[1] = LLVMConstInt(type, hi, false);
 	range_md = LLVMMDNodeInContext(context, md_args, 2);
-	LLVMSetMetadata(value, md_range_id, range_md);
+	LLVMSetMetadata(value, ctx->range_md_kind, range_md);
 }
 
 static LLVMValueRef get_thread_id(struct si_shader_context *ctx)
@@ -1517,7 +1586,7 @@ static LLVMValueRef get_thread_id(struct si_shader_context *ctx)
 					"llvm.amdgcn.mbcnt.hi", ctx->i32,
 					tid_args, 2, LLVMReadNoneAttribute);
 	}
-	set_range_metadata(tid, 0, 64);
+	set_range_metadata(ctx, tid, 0, 64);
 	return tid;
 }
 
@@ -1530,7 +1599,7 @@ static LLVMValueRef buffer_load_const(LLVMBuilderRef builder, LLVMValueRef resou
 	LLVMValueRef args[2] = {resource, offset};
 
 	return lp_build_intrinsic(builder, "llvm.SI.load.const", return_type, args, 2,
-			       LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+			       LLVMReadNoneAttribute);
 }
 
 static LLVMValueRef load_sample_position(struct radeon_llvm_context *radeon_bld, LLVMValueRef sample_id)
@@ -1749,7 +1818,7 @@ static void declare_system_value(
 		value = lp_build_intrinsic(gallivm->builder,
 					   "llvm.amdgcn.ps.live",
 					   ctx->i1, NULL, 0,
-					   LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+					   LLVMReadNoneAttribute);
 		value = LLVMBuildNot(gallivm->builder, value, "");
 		value = LLVMBuildSExt(gallivm->builder, value, ctx->i32, "");
 		break;
@@ -1814,12 +1883,12 @@ static LLVMValueRef fetch_constant(
 	idx = reg->Register.Index * 4 + swizzle;
 
 	if (!reg->Register.Indirect && !reg->Dimension.Indirect) {
-		if (type != TGSI_TYPE_DOUBLE)
+		if (!tgsi_type_is_64bit(type))
 			return bitcast(bld_base, type, ctx->constants[buf][idx]);
 		else {
-			return radeon_llvm_emit_fetch_double(bld_base,
-							     ctx->constants[buf][idx],
-							     ctx->constants[buf][idx + 1]);
+			return radeon_llvm_emit_fetch_64bit(bld_base, type,
+							    ctx->constants[buf][idx],
+							    ctx->constants[buf][idx + 1]);
 		}
 	}
 
@@ -1842,7 +1911,7 @@ static LLVMValueRef fetch_constant(
 	result = buffer_load_const(base->gallivm->builder, bufp,
 				   addr, ctx->f32);
 
-	if (type != TGSI_TYPE_DOUBLE)
+	if (!tgsi_type_is_64bit(type))
 		result = bitcast(bld_base, type, result);
 	else {
 		LLVMValueRef addr2, result2;
@@ -1855,8 +1924,8 @@ static LLVMValueRef fetch_constant(
 		result2 = buffer_load_const(base->gallivm->builder, ctx->const_buffers[buf],
 				   addr2, ctx->f32);
 
-		result = radeon_llvm_emit_fetch_double(bld_base,
-					               result, result2);
+		result = radeon_llvm_emit_fetch_64bit(bld_base, type,
+						      result, result2);
 	}
 	return result;
 }
@@ -1964,7 +2033,7 @@ static void si_llvm_init_export_args(struct lp_build_tgsi_context *bld_base,
 			packed = lp_build_intrinsic(base->gallivm->builder,
 						    "llvm.SI.packf16",
 						    ctx->i32, pack_args, 2,
-						    LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+						    LLVMReadNoneAttribute);
 			args[chan + 5] =
 				LLVMBuildBitCast(base->gallivm->builder,
 						 packed, ctx->f32, "");
@@ -2761,7 +2830,7 @@ static void si_llvm_emit_gs_epilogue(struct lp_build_tgsi_context *bld_base)
 	args[0] = lp_build_const_int32(gallivm,	SENDMSG_GS_OP_NOP | SENDMSG_GS_DONE);
 	args[1] = LLVMGetParam(ctx->radeon_bld.main_fn, SI_PARAM_GS_WAVE_ID);
 	lp_build_intrinsic(gallivm->builder, "llvm.SI.sendmsg",
-			   ctx->voidt, args, 2, LLVMNoUnwindAttribute);
+			   ctx->voidt, args, 2, 0);
 }
 
 static void si_llvm_emit_vs_epilogue(struct lp_build_tgsi_context *bld_base)
@@ -2851,9 +2920,14 @@ static void si_llvm_emit_vs_epilogue(struct lp_build_tgsi_context *bld_base)
 	FREE(outputs);
 }
 
+struct si_ps_exports {
+	unsigned num;
+	LLVMValueRef args[10][9];
+};
+
 static void si_export_mrt_z(struct lp_build_tgsi_context *bld_base,
-			   LLVMValueRef depth, LLVMValueRef stencil,
-			   LLVMValueRef samplemask)
+			    LLVMValueRef depth, LLVMValueRef stencil,
+			    LLVMValueRef samplemask, struct si_ps_exports *exp)
 {
 	struct si_shader_context *ctx = si_shader_context(bld_base);
 	struct lp_build_context *base = &bld_base->base;
@@ -2899,14 +2973,13 @@ static void si_export_mrt_z(struct lp_build_tgsi_context *bld_base,
 	/* Specify which components to enable */
 	args[0] = lp_build_const_int32(base->gallivm, mask);
 
-	lp_build_intrinsic(base->gallivm->builder, "llvm.SI.export",
-			   ctx->voidt, args, 9, 0);
+	memcpy(exp->args[exp->num++], args, sizeof(args));
 }
 
 static void si_export_mrt_color(struct lp_build_tgsi_context *bld_base,
 				LLVMValueRef *color, unsigned index,
 				unsigned samplemask_param,
-				bool is_last)
+				bool is_last, struct si_ps_exports *exp)
 {
 	struct si_shader_context *ctx = si_shader_context(bld_base);
 	struct lp_build_context *base = &bld_base->base;
@@ -2952,8 +3025,7 @@ static void si_export_mrt_color(struct lp_build_tgsi_context *bld_base,
 			} else if (args[c][0] == bld_base->uint_bld.zero)
 				continue; /* unnecessary NULL export */
 
-			lp_build_intrinsic(base->gallivm->builder, "llvm.SI.export",
-					   ctx->voidt, args[c], 9, 0);
+			memcpy(exp->args[exp->num++], args[c], sizeof(args[c]));
 		}
 	} else {
 		LLVMValueRef args[9];
@@ -2967,9 +3039,17 @@ static void si_export_mrt_color(struct lp_build_tgsi_context *bld_base,
 		} else if (args[0] == bld_base->uint_bld.zero)
 			return; /* unnecessary NULL export */
 
-		lp_build_intrinsic(base->gallivm->builder, "llvm.SI.export",
-				   ctx->voidt, args, 9, 0);
+		memcpy(exp->args[exp->num++], args, sizeof(args));
 	}
+}
+
+static void si_emit_ps_exports(struct si_shader_context *ctx,
+			       struct si_ps_exports *exp)
+{
+	for (unsigned i = 0; i < exp->num; i++)
+		lp_build_intrinsic(ctx->radeon_bld.gallivm.builder,
+				   "llvm.SI.export", ctx->voidt,
+				   exp->args[i], 9, 0);
 }
 
 static void si_export_null(struct lp_build_tgsi_context *bld_base)
@@ -3003,6 +3083,7 @@ static void si_llvm_emit_fs_epilogue(struct lp_build_tgsi_context *bld_base)
 	LLVMValueRef depth = NULL, stencil = NULL, samplemask = NULL;
 	int last_color_export = -1;
 	int i;
+	struct si_ps_exports exp = {};
 
 	/* Determine the last export. If MRTZ is present, it's always last.
 	 * Otherwise, find the last color export.
@@ -3069,7 +3150,7 @@ static void si_llvm_emit_fs_epilogue(struct lp_build_tgsi_context *bld_base)
 
 			si_export_mrt_color(bld_base, color, semantic_index,
 					    SI_PARAM_SAMPLE_COVERAGE,
-					    last_color_export == i);
+					    last_color_export == i, &exp);
 			break;
 		default:
 			fprintf(stderr,
@@ -3079,7 +3160,9 @@ static void si_llvm_emit_fs_epilogue(struct lp_build_tgsi_context *bld_base)
 	}
 
 	if (depth || stencil || samplemask)
-		si_export_mrt_z(bld_base, depth, stencil, samplemask);
+		si_export_mrt_z(bld_base, depth, stencil, samplemask, &exp);
+
+	si_emit_ps_exports(ctx, &exp);
 }
 
 /**
@@ -3251,7 +3334,7 @@ static void emit_waitcnt(struct si_shader_context *ctx)
 		lp_build_const_int32(gallivm, 0xf70)
 	};
 	lp_build_intrinsic(builder, "llvm.amdgcn.s.waitcnt",
-			   ctx->voidt, args, 1, LLVMNoUnwindAttribute);
+			   ctx->voidt, args, 1, 0);
 }
 
 static void membar_emit(
@@ -3553,7 +3636,7 @@ static void load_emit_buffer(struct si_shader_context *ctx,
 	emit_data->output[emit_data->chan] = lp_build_intrinsic(
 			builder, intrinsic_name, dst_type,
 			emit_data->args, emit_data->arg_count,
-			LLVMReadOnlyAttribute | LLVMNoUnwindAttribute);
+			LLVMReadOnlyAttribute);
 }
 
 static LLVMValueRef get_memory_ptr(struct si_shader_context *ctx,
@@ -3633,7 +3716,7 @@ static void load_emit(
 			lp_build_intrinsic(
 				builder, "llvm.amdgcn.buffer.load.format.v4f32", emit_data->dst_type,
 				emit_data->args, emit_data->arg_count,
-				LLVMReadOnlyAttribute | LLVMNoUnwindAttribute);
+				LLVMReadOnlyAttribute);
 	} else {
 		build_int_type_name(LLVMTypeOf(emit_data->args[0]),
 				    coords_type, sizeof(coords_type));
@@ -3645,7 +3728,7 @@ static void load_emit(
 			lp_build_intrinsic(
 				builder, intrinsic_name, emit_data->dst_type,
 				emit_data->args, emit_data->arg_count,
-				LLVMReadOnlyAttribute | LLVMNoUnwindAttribute);
+				LLVMReadOnlyAttribute);
 	}
 }
 
@@ -3776,8 +3859,7 @@ static void store_emit_buffer(
 
 		lp_build_intrinsic(
 			builder, intrinsic_name, emit_data->dst_type,
-			emit_data->args, emit_data->arg_count,
-			LLVMNoUnwindAttribute);
+			emit_data->args, emit_data->arg_count, 0);
 	}
 }
 
@@ -3835,8 +3917,8 @@ static void store_emit(
 	if (target == TGSI_TEXTURE_BUFFER) {
 		emit_data->output[emit_data->chan] = lp_build_intrinsic(
 			builder, "llvm.amdgcn.buffer.store.format.v4f32",
-			emit_data->dst_type, emit_data->args, emit_data->arg_count,
-			LLVMNoUnwindAttribute);
+			emit_data->dst_type, emit_data->args,
+			emit_data->arg_count, 0);
 	} else {
 		build_int_type_name(LLVMTypeOf(emit_data->args[1]),
 				    coords_type, sizeof(coords_type));
@@ -3846,8 +3928,7 @@ static void store_emit(
 		emit_data->output[emit_data->chan] =
 			lp_build_intrinsic(
 				builder, intrinsic_name, emit_data->dst_type,
-				emit_data->args, emit_data->arg_count,
-				LLVMNoUnwindAttribute);
+				emit_data->args, emit_data->arg_count, 0);
 	}
 }
 
@@ -4013,8 +4094,7 @@ static void atomic_emit(
 
 	tmp = lp_build_intrinsic(
 		builder, intrinsic_name, bld_base->uint_bld.elem_type,
-		emit_data->args, emit_data->arg_count,
-		LLVMNoUnwindAttribute);
+		emit_data->args, emit_data->arg_count, 0);
 	emit_data->output[emit_data->chan] =
 		LLVMBuildBitCast(builder, tmp, bld_base->base.elem_type, "");
 }
@@ -4071,7 +4151,7 @@ static void resq_emit(
 		out = lp_build_intrinsic(
 			builder, "llvm.SI.getresinfo.i32", emit_data->dst_type,
 			emit_data->args, emit_data->arg_count,
-			LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+			LLVMReadNoneAttribute);
 
 		/* Divide the number of layers by 6 to get the number of cubes. */
 		if (inst->Memory.Texture == TGSI_TEXTURE_CUBE_ARRAY) {
@@ -4311,7 +4391,7 @@ static void txq_emit(const struct lp_build_tgsi_action *action,
 	emit_data->output[emit_data->chan] = lp_build_intrinsic(
 		base->gallivm->builder, "llvm.SI.getresinfo.i32",
 		emit_data->dst_type, emit_data->args, emit_data->arg_count,
-		LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+		LLVMReadNoneAttribute);
 
 	/* Divide the number of layers by 6 to get the number of cubes. */
 	if (target == TGSI_TEXTURE_CUBE_ARRAY ||
@@ -4669,7 +4749,7 @@ static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 			base->gallivm->builder,
 			"llvm.SI.vs.load.input", emit_data->dst_type,
 			emit_data->args, emit_data->arg_count,
-			LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+			LLVMReadNoneAttribute);
 		return;
 	}
 
@@ -4723,7 +4803,7 @@ static void build_tex_intrinsic(const struct lp_build_tgsi_action *action,
 	emit_data->output[emit_data->chan] = lp_build_intrinsic(
 		base->gallivm->builder, intr_name, emit_data->dst_type,
 		emit_data->args, emit_data->arg_count,
-		LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+		LLVMReadNoneAttribute);
 }
 
 static void si_llvm_emit_txqs(
@@ -5024,7 +5104,7 @@ static void build_interp_intrinsic(const struct lp_build_tgsi_action *action,
 	if (interp_param_idx == -1)
 		return;
 	else if (interp_param_idx)
-		interp_param = LLVMGetParam(ctx->radeon_bld.main_fn, interp_param_idx);
+		interp_param = get_interp_param(ctx, interp_param_idx);
 	else
 		interp_param = NULL;
 
@@ -5088,7 +5168,7 @@ static void build_interp_intrinsic(const struct lp_build_tgsi_action *action,
 		emit_data->output[chan] =
 			lp_build_intrinsic(gallivm->builder, intr_name,
 					   ctx->f32, args, args[3] ? 4 : 3,
-					   LLVMReadNoneAttribute | LLVMNoUnwindAttribute);
+					   LLVMReadNoneAttribute);
 	}
 }
 
@@ -5180,7 +5260,7 @@ static void si_llvm_emit_vertex(
 	args[0] = lp_build_const_int32(gallivm, SENDMSG_GS_OP_EMIT | SENDMSG_GS | (stream << 8));
 	args[1] = LLVMGetParam(ctx->radeon_bld.main_fn, SI_PARAM_GS_WAVE_ID);
 	lp_build_intrinsic(gallivm->builder, "llvm.SI.sendmsg",
-			   ctx->voidt, args, 2, LLVMNoUnwindAttribute);
+			   ctx->voidt, args, 2, 0);
 }
 
 /* Cut one primitive from the geometry shader */
@@ -5199,7 +5279,7 @@ static void si_llvm_emit_primitive(
 	args[0] = lp_build_const_int32(gallivm,	SENDMSG_GS_OP_CUT | SENDMSG_GS | (stream << 8));
 	args[1] = LLVMGetParam(ctx->radeon_bld.main_fn, SI_PARAM_GS_WAVE_ID);
 	lp_build_intrinsic(gallivm->builder, "llvm.SI.sendmsg",
-			   ctx->voidt, args, 2, LLVMNoUnwindAttribute);
+			   ctx->voidt, args, 2, 0);
 }
 
 static void si_llvm_emit_barrier(const struct lp_build_tgsi_action *action,
@@ -5220,7 +5300,7 @@ static void si_llvm_emit_barrier(const struct lp_build_tgsi_action *action,
 	lp_build_intrinsic(gallivm->builder,
 			   HAVE_LLVM >= 0x0309 ? "llvm.amdgcn.s.barrier"
 					       : "llvm.AMDGPU.barrier.local",
-			   ctx->voidt, NULL, 0, LLVMNoUnwindAttribute);
+			   ctx->voidt, NULL, 0, 0);
 }
 
 static const struct lp_build_tgsi_action tex_action = {
@@ -5236,7 +5316,7 @@ static const struct lp_build_tgsi_action interp_action = {
 static void si_create_function(struct si_shader_context *ctx,
 			       LLVMTypeRef *returns, unsigned num_returns,
 			       LLVMTypeRef *params, unsigned num_params,
-			       int last_array_pointer, int last_sgpr)
+			       int last_sgpr)
 {
 	int i;
 
@@ -5248,26 +5328,45 @@ static void si_create_function(struct si_shader_context *ctx,
 	for (i = 0; i <= last_sgpr; ++i) {
 		LLVMValueRef P = LLVMGetParam(ctx->radeon_bld.main_fn, i);
 
-		/* We tell llvm that array inputs are passed by value to allow Sinking pass
-		 * to move load. Inputs are constant so this is fine. */
-		if (i <= last_array_pointer)
+		/* The combination of:
+		 * - ByVal
+		 * - dereferenceable
+		 * - invariant.load
+		 * allows the optimization passes to move loads and reduces
+		 * SGPR spilling significantly.
+		 */
+		if (LLVMGetTypeKind(LLVMTypeOf(P)) == LLVMPointerTypeKind) {
 			LLVMAddAttribute(P, LLVMByValAttribute);
-		else
+			lp_add_attr_dereferenceable(P, UINT64_MAX);
+		} else
 			LLVMAddAttribute(P, LLVMInRegAttribute);
+	}
+
+	if (ctx->screen->b.debug_flags & DBG_UNSAFE_MATH) {
+		/* These were copied from some LLVM test. */
+		LLVMAddTargetDependentFunctionAttr(ctx->radeon_bld.main_fn,
+						   "less-precise-fpmad",
+						   "true");
+		LLVMAddTargetDependentFunctionAttr(ctx->radeon_bld.main_fn,
+						   "no-infs-fp-math",
+						   "true");
+		LLVMAddTargetDependentFunctionAttr(ctx->radeon_bld.main_fn,
+						   "no-nans-fp-math",
+						   "true");
+		LLVMAddTargetDependentFunctionAttr(ctx->radeon_bld.main_fn,
+						   "unsafe-fp-math",
+						   "true");
 	}
 }
 
 static void create_meta_data(struct si_shader_context *ctx)
 {
 	struct gallivm_state *gallivm = ctx->radeon_bld.soa.bld_base.base.gallivm;
-	LLVMValueRef args[3];
 
-	args[0] = LLVMMDStringInContext(gallivm->context, "const", 5);
-	args[1] = 0;
-	args[2] = lp_build_const_int32(gallivm, 1);
-
-	ctx->const_md = LLVMMDNodeInContext(gallivm->context, args, 3);
-
+	ctx->invariant_load_md_kind = LLVMGetMDKindIDInContext(gallivm->context,
+							       "invariant.load", 14);
+	ctx->range_md_kind = LLVMGetMDKindIDInContext(gallivm->context,
+						     "range", 5);
 	ctx->uniform_md_kind = LLVMGetMDKindIDInContext(gallivm->context,
 							"amdgpu.uniform", 14);
 
@@ -5341,7 +5440,7 @@ static void create_function(struct si_shader_context *ctx)
 	struct si_shader *shader = ctx->shader;
 	LLVMTypeRef params[SI_NUM_PARAMS + SI_NUM_VERTEX_BUFFERS], v3i32;
 	LLVMTypeRef returns[16+32*4];
-	unsigned i, last_array_pointer, last_sgpr, num_params, num_return_sgprs;
+	unsigned i, last_sgpr, num_params, num_return_sgprs;
 	unsigned num_returns = 0;
 
 	v3i32 = LLVMVectorType(ctx->i32, 3);
@@ -5351,12 +5450,10 @@ static void create_function(struct si_shader_context *ctx)
 	params[SI_PARAM_SAMPLERS] = const_array(ctx->v8i32, SI_NUM_SAMPLERS);
 	params[SI_PARAM_IMAGES] = const_array(ctx->v8i32, SI_NUM_IMAGES);
 	params[SI_PARAM_SHADER_BUFFERS] = const_array(ctx->v4i32, SI_NUM_SHADER_BUFFERS);
-	last_array_pointer = SI_PARAM_SHADER_BUFFERS;
 
 	switch (ctx->type) {
 	case PIPE_SHADER_VERTEX:
 		params[SI_PARAM_VERTEX_BUFFERS] = const_array(ctx->v16i8, SI_NUM_VERTEX_BUFFERS);
-		last_array_pointer = SI_PARAM_VERTEX_BUFFERS;
 		params[SI_PARAM_BASE_VERTEX] = ctx->i32;
 		params[SI_PARAM_START_INSTANCE] = ctx->i32;
 		num_params = SI_PARAM_START_INSTANCE+1;
@@ -5368,7 +5465,6 @@ static void create_function(struct si_shader_context *ctx)
 			num_params = SI_PARAM_LS_OUT_LAYOUT+1;
 		} else {
 			if (ctx->is_gs_copy_shader) {
-				last_array_pointer = SI_PARAM_RW_BUFFERS;
 				num_params = SI_PARAM_RW_BUFFERS+1;
 			} else {
 				params[SI_PARAM_VS_STATE_BITS] = ctx->i32;
@@ -5544,7 +5640,7 @@ static void create_function(struct si_shader_context *ctx)
 	assert(num_params <= ARRAY_SIZE(params));
 
 	si_create_function(ctx, returns, num_returns, params,
-			   num_params, last_array_pointer, last_sgpr);
+			   num_params, last_sgpr);
 
 	/* Reserve register locations for VGPR inputs the PS prolog may need. */
 	if (ctx->type == PIPE_SHADER_FRAGMENT &&
@@ -5825,6 +5921,20 @@ void si_shader_binary_read_config(struct radeon_shader_binary *binary,
 	unsigned i;
 	const unsigned char *config =
 		radeon_shader_binary_config_start(binary, symbol_offset);
+	bool really_needs_scratch = false;
+
+	/* LLVM adds SGPR spills to the scratch size.
+	 * Find out if we really need the scratch buffer.
+	 */
+	for (i = 0; i < binary->reloc_count; i++) {
+		const struct radeon_shader_reloc *reloc = &binary->relocs[i];
+
+		if (!strcmp(scratch_rsrc_dword0_symbol, reloc->name) ||
+		    !strcmp(scratch_rsrc_dword1_symbol, reloc->name)) {
+			really_needs_scratch = true;
+			break;
+		}
+	}
 
 	/* XXX: We may be able to emit some of these values directly rather than
 	 * extracting fields to be emitted later.
@@ -5859,8 +5969,15 @@ void si_shader_binary_read_config(struct radeon_shader_binary *binary,
 		case R_0286E8_SPI_TMPRING_SIZE:
 		case R_00B860_COMPUTE_TMPRING_SIZE:
 			/* WAVESIZE is in units of 256 dwords. */
-			conf->scratch_bytes_per_wave =
-				G_00B860_WAVESIZE(value) * 256 * 4 * 1;
+			if (really_needs_scratch)
+				conf->scratch_bytes_per_wave =
+					G_00B860_WAVESIZE(value) * 256 * 4;
+			break;
+		case 0x4: /* SPILLED_SGPRS */
+			conf->spilled_sgprs = value;
+			break;
+		case 0x8: /* SPILLED_VGPRS */
+			conf->spilled_vgprs = value;
 			break;
 		default:
 			{
@@ -5888,8 +6005,16 @@ void si_shader_apply_scratch_relocs(struct si_context *sctx,
 	unsigned i;
 	uint32_t scratch_rsrc_dword0 = scratch_va;
 	uint32_t scratch_rsrc_dword1 =
-		S_008F04_BASE_ADDRESS_HI(scratch_va >> 32)
-		|  S_008F04_STRIDE(config->scratch_bytes_per_wave / 64);
+		S_008F04_BASE_ADDRESS_HI(scratch_va >> 32);
+
+	/* Enable scratch coalescing if LLVM sets ELEMENT_SIZE & INDEX_STRIDE
+	 * correctly.
+	 */
+	if (HAVE_LLVM >= 0x0309)
+		scratch_rsrc_dword1 |= S_008F04_SWIZZLE_ENABLE(1);
+	else
+		scratch_rsrc_dword1 |=
+			S_008F04_STRIDE(config->scratch_bytes_per_wave / 64);
 
 	for (i = 0 ; i < shader->binary.reloc_count; i++) {
 		const struct radeon_shader_reloc *reloc =
@@ -6063,22 +6188,27 @@ static void si_shader_dump_stats(struct si_screen *sscreen,
 		fprintf(file, "*** SHADER STATS ***\n"
 			"SGPRS: %d\n"
 			"VGPRS: %d\n"
+		        "Spilled SGPRs: %d\n"
+			"Spilled VGPRs: %d\n"
 			"Code Size: %d bytes\n"
 			"LDS: %d blocks\n"
 			"Scratch: %d bytes per wave\n"
 			"Max Waves: %d\n"
-			"********************\n",
-			conf->num_sgprs, conf->num_vgprs, code_size,
+			"********************\n\n\n",
+			conf->num_sgprs, conf->num_vgprs,
+			conf->spilled_sgprs, conf->spilled_vgprs, code_size,
 			conf->lds_size, conf->scratch_bytes_per_wave,
 			max_simd_waves);
 	}
 
 	pipe_debug_message(debug, SHADER_INFO,
 			   "Shader Stats: SGPRS: %d VGPRS: %d Code Size: %d "
-			   "LDS: %d Scratch: %d Max Waves: %d",
+			   "LDS: %d Scratch: %d Max Waves: %d Spilled SGPRs: %d "
+			   "Spilled VGPRs: %d",
 			   conf->num_sgprs, conf->num_vgprs, code_size,
 			   conf->lds_size, conf->scratch_bytes_per_wave,
-			   max_simd_waves);
+			   max_simd_waves, conf->spilled_sgprs,
+			   conf->spilled_vgprs);
 }
 
 static const char *si_get_shader_name(struct si_shader *shader,
@@ -6117,6 +6247,16 @@ void si_shader_dump(struct si_screen *sscreen, struct si_shader *shader,
 		    struct pipe_debug_callback *debug, unsigned processor,
 		    FILE *file)
 {
+	if (file != stderr ||
+	    r600_can_dump_shader(&sscreen->b, processor))
+		si_dump_shader_key(processor, &shader->key, file);
+
+	if (file != stderr && shader->binary.llvm_ir_string) {
+		fprintf(file, "\n%s - main shader part - LLVM IR:\n\n",
+			si_get_shader_name(shader, processor));
+		fprintf(file, "%s\n", shader->binary.llvm_ir_string);
+	}
+
 	if (file != stderr ||
 	    (r600_can_dump_shader(&sscreen->b, processor) &&
 	     !(sscreen->b.debug_flags & DBG_NO_ASM))) {
@@ -6162,10 +6302,14 @@ int si_compile_llvm(struct si_screen *sscreen,
 		}
 	}
 
+	if (sscreen->record_llvm_ir) {
+		char *ir = LLVMPrintModuleToString(mod);
+		binary->llvm_ir_string = strdup(ir);
+		LLVMDisposeMessage(ir);
+	}
+
 	if (!si_replace_shader(count, binary)) {
-		r = radeon_llvm_compile(mod, binary,
-			r600_get_llvm_processor_name(sscreen->b.family), tm,
-			debug);
+		r = radeon_llvm_compile(mod, binary, tm, debug);
 		if (r)
 			return r;
 	}
@@ -6204,6 +6348,14 @@ int si_compile_llvm(struct si_screen *sscreen,
 	}
 
 	return r;
+}
+
+static void si_llvm_build_ret(struct si_shader_context *ctx, LLVMValueRef ret)
+{
+	if (LLVMGetTypeKind(LLVMTypeOf(ret)) == LLVMVoidTypeKind)
+		LLVMBuildRetVoid(ctx->radeon_bld.gallivm.builder);
+	else
+		LLVMBuildRet(ctx->radeon_bld.gallivm.builder, ret);
 }
 
 /* Generate code for the hardware VS shader stage to go with a geometry shader */
@@ -6260,14 +6412,14 @@ static int si_generate_gs_copy_shader(struct si_screen *sscreen,
 						 lp_build_intrinsic(gallivm->builder,
 								 "llvm.SI.buffer.load.dword.i32.i32",
 								 ctx->i32, args, 9,
-								 LLVMReadOnlyAttribute | LLVMNoUnwindAttribute),
+								 LLVMReadOnlyAttribute),
 						 ctx->f32, "");
 		}
 	}
 
 	si_llvm_export_vs(bld_base, outputs, gsinfo->num_outputs);
 
-	LLVMBuildRet(gallivm->builder, ctx->return_value);
+	LLVMBuildRetVoid(gallivm->builder);
 
 	/* Dump LLVM IR before any optimization passes */
 	if (sscreen->b.debug_flags & DBG_PREOPT_IR &&
@@ -6295,7 +6447,8 @@ static int si_generate_gs_copy_shader(struct si_screen *sscreen,
 	return r;
 }
 
-void si_dump_shader_key(unsigned shader, union si_shader_key *key, FILE *f)
+static void si_dump_shader_key(unsigned shader, union si_shader_key *key,
+			       FILE *f)
 {
 	int i;
 
@@ -6328,8 +6481,14 @@ void si_dump_shader_key(unsigned shader, union si_shader_key *key, FILE *f)
 
 	case PIPE_SHADER_FRAGMENT:
 		fprintf(f, "  prolog.color_two_side = %u\n", key->ps.prolog.color_two_side);
+		fprintf(f, "  prolog.flatshade_colors = %u\n", key->ps.prolog.flatshade_colors);
 		fprintf(f, "  prolog.poly_stipple = %u\n", key->ps.prolog.poly_stipple);
-		fprintf(f, "  prolog.force_persample_interp = %u\n", key->ps.prolog.force_persample_interp);
+		fprintf(f, "  prolog.force_persp_sample_interp = %u\n", key->ps.prolog.force_persp_sample_interp);
+		fprintf(f, "  prolog.force_linear_sample_interp = %u\n", key->ps.prolog.force_linear_sample_interp);
+		fprintf(f, "  prolog.force_persp_center_interp = %u\n", key->ps.prolog.force_persp_center_interp);
+		fprintf(f, "  prolog.force_linear_center_interp = %u\n", key->ps.prolog.force_linear_center_interp);
+		fprintf(f, "  prolog.bc_optimize_for_persp = %u\n", key->ps.prolog.bc_optimize_for_persp);
+		fprintf(f, "  prolog.bc_optimize_for_linear = %u\n", key->ps.prolog.bc_optimize_for_linear);
 		fprintf(f, "  epilog.spi_shader_col_format = 0x%x\n", key->ps.epilog.spi_shader_col_format);
 		fprintf(f, "  epilog.color_is_int8 = 0x%X\n", key->ps.epilog.color_is_int8);
 		fprintf(f, "  epilog.last_cbuf = %u\n", key->ps.epilog.last_cbuf);
@@ -6462,7 +6621,6 @@ int si_compile_tgsi_shader(struct si_screen *sscreen,
 	 * conversion fails. */
 	if (r600_can_dump_shader(&sscreen->b, sel->info.processor) &&
 	    !(sscreen->b.debug_flags & DBG_NO_TGSI)) {
-		si_dump_shader_key(sel->type, &shader->key, stderr);
 		tgsi_dump(sel->tokens, 0);
 		si_dump_streamout(&sel->so);
 	}
@@ -6548,7 +6706,7 @@ int si_compile_tgsi_shader(struct si_screen *sscreen,
 		goto out;
 	}
 
-	LLVMBuildRet(bld_base->base.gallivm->builder, ctx.return_value);
+	si_llvm_build_ret(&ctx, ctx.return_value);
 	mod = bld_base->base.gallivm->module;
 
 	/* Dump LLVM IR before any optimization passes */
@@ -6566,6 +6724,41 @@ int si_compile_tgsi_shader(struct si_screen *sscreen,
 	}
 
 	radeon_llvm_dispose(&ctx.radeon_bld);
+
+	/* Validate SGPR and VGPR usage for compute to detect compiler bugs.
+	 * LLVM 3.9svn has this bug.
+	 */
+	if (sel->type == PIPE_SHADER_COMPUTE) {
+		unsigned *props = sel->info.properties;
+		unsigned wave_size = 64;
+		unsigned max_vgprs = 256;
+		unsigned max_sgprs = sscreen->b.chip_class >= VI ? 800 : 512;
+		unsigned max_sgprs_per_wave = 128;
+		unsigned min_waves_per_cu =
+			DIV_ROUND_UP(props[TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH] *
+				     props[TGSI_PROPERTY_CS_FIXED_BLOCK_HEIGHT] *
+				     props[TGSI_PROPERTY_CS_FIXED_BLOCK_DEPTH],
+				     wave_size);
+		unsigned min_waves_per_simd = DIV_ROUND_UP(min_waves_per_cu, 4);
+
+		max_vgprs = max_vgprs / min_waves_per_simd;
+		max_sgprs = MIN2(max_sgprs / min_waves_per_simd, max_sgprs_per_wave);
+
+		if (shader->config.num_sgprs > max_sgprs ||
+		    shader->config.num_vgprs > max_vgprs) {
+			fprintf(stderr, "LLVM failed to compile a shader correctly: "
+				"SGPR:VGPR usage is %u:%u, but the hw limit is %u:%u\n",
+				shader->config.num_sgprs, shader->config.num_vgprs,
+				max_sgprs, max_vgprs);
+
+			/* Just terminate the process, because dependent
+			 * shaders can hang due to bad input data, but use
+			 * the env var to allow shader-db to work.
+			 */
+			if (!debug_get_bool_option("SI_PASS_BAD_SHADERS", false))
+				abort();
+		}
+	}
 
 	/* Add the scratch offset to input SGPRs. */
 	if (shader->config.scratch_bytes_per_wave)
@@ -6743,7 +6936,7 @@ static bool si_compile_vs_prolog(struct si_screen *sscreen,
 
 	/* Create the function. */
 	si_create_function(&ctx, returns, num_returns, params,
-			   num_params, -1, last_sgpr);
+			   num_params, last_sgpr);
 	func = ctx.radeon_bld.main_fn;
 
 	/* Copy inputs to outputs. This should be no-op, as the registers match,
@@ -6783,7 +6976,7 @@ static bool si_compile_vs_prolog(struct si_screen *sscreen,
 	}
 
 	/* Compile. */
-	LLVMBuildRet(gallivm->builder, ret);
+	si_llvm_build_ret(&ctx, ret);
 	radeon_llvm_finalize_module(&ctx.radeon_bld);
 
 	if (si_compile_llvm(sscreen, &out->binary, &out->config, tm,
@@ -6829,8 +7022,7 @@ static bool si_compile_vs_epilog(struct si_screen *sscreen,
 		params[i] = ctx.f32;
 
 	/* Create the function. */
-	si_create_function(&ctx, NULL, 0, params, num_params,
-			   -1, -1);
+	si_create_function(&ctx, NULL, 0, params, num_params, -1);
 
 	/* Emit exports. */
 	if (key->vs_epilog.states.export_prim_id) {
@@ -6856,7 +7048,7 @@ static bool si_compile_vs_epilog(struct si_screen *sscreen,
 	}
 
 	/* Compile. */
-	LLVMBuildRet(gallivm->builder, ctx.return_value);
+	LLVMBuildRetVoid(gallivm->builder);
 	radeon_llvm_finalize_module(&ctx.radeon_bld);
 
 	if (si_compile_llvm(sscreen, &out->binary, &out->config, tm,
@@ -6972,7 +7164,7 @@ static bool si_compile_tcs_epilog(struct si_screen *sscreen,
 	struct lp_build_tgsi_context *bld_base = &ctx.radeon_bld.soa.bld_base;
 	LLVMTypeRef params[16];
 	LLVMValueRef func;
-	int last_array_pointer, last_sgpr, num_params;
+	int last_sgpr, num_params;
 	bool status = true;
 
 	si_init_shader_ctx(&ctx, sscreen, &shader, tm);
@@ -6981,7 +7173,6 @@ static bool si_compile_tcs_epilog(struct si_screen *sscreen,
 
 	/* Declare inputs. Only RW_BUFFERS and TESS_FACTOR_OFFSET are used. */
 	params[SI_PARAM_RW_BUFFERS] = const_array(ctx.v16i8, SI_NUM_RW_BUFFERS);
-	last_array_pointer = SI_PARAM_RW_BUFFERS;
 	params[SI_PARAM_CONST_BUFFERS] = ctx.i64;
 	params[SI_PARAM_SAMPLERS] = ctx.i64;
 	params[SI_PARAM_IMAGES] = ctx.i64;
@@ -7000,8 +7191,7 @@ static bool si_compile_tcs_epilog(struct si_screen *sscreen,
 	params[num_params++] = ctx.i32; /* LDS offset where tess factors should be loaded from */
 
 	/* Create the function. */
-	si_create_function(&ctx, NULL, 0, params, num_params,
-			   last_array_pointer, last_sgpr);
+	si_create_function(&ctx, NULL, 0, params, num_params, last_sgpr);
 	declare_tess_lds(&ctx);
 	func = ctx.radeon_bld.main_fn;
 
@@ -7011,7 +7201,7 @@ static bool si_compile_tcs_epilog(struct si_screen *sscreen,
 			      LLVMGetParam(func, last_sgpr + 3));
 
 	/* Compile. */
-	LLVMBuildRet(gallivm->builder, ctx.return_value);
+	LLVMBuildRetVoid(gallivm->builder);
 	radeon_llvm_finalize_module(&ctx.radeon_bld);
 
 	if (si_compile_llvm(sscreen, &out->binary, &out->config, tm,
@@ -7093,7 +7283,7 @@ static bool si_compile_ps_prolog(struct si_screen *sscreen,
 
 	/* Create the function. */
 	si_create_function(&ctx, params, num_returns, params,
-			   num_params, -1, last_sgpr);
+			   num_params, last_sgpr);
 	func = ctx.radeon_bld.main_fn;
 
 	/* Copy inputs to outputs. This should be no-op, as the registers match,
@@ -7123,6 +7313,55 @@ static bool si_compile_ps_prolog(struct si_screen *sscreen,
 		si_llvm_emit_polygon_stipple(&ctx, list, pos);
 	}
 
+	if (key->ps_prolog.states.bc_optimize_for_persp ||
+	    key->ps_prolog.states.bc_optimize_for_linear) {
+		unsigned i, base = key->ps_prolog.num_input_sgprs;
+		LLVMValueRef center[2], centroid[2], tmp, bc_optimize;
+
+		/* The shader should do: if (PRIM_MASK[31]) CENTROID = CENTER;
+		 * The hw doesn't compute CENTROID if the whole wave only
+		 * contains fully-covered quads.
+		 *
+		 * PRIM_MASK is after user SGPRs.
+		 */
+		bc_optimize = LLVMGetParam(func, SI_PS_NUM_USER_SGPR);
+		bc_optimize = LLVMBuildLShr(gallivm->builder, bc_optimize,
+					    LLVMConstInt(ctx.i32, 31, 0), "");
+		bc_optimize = LLVMBuildTrunc(gallivm->builder, bc_optimize,
+					     ctx.i1, "");
+
+		if (key->ps_prolog.states.bc_optimize_for_persp) {
+			/* Read PERSP_CENTER. */
+			for (i = 0; i < 2; i++)
+				center[i] = LLVMGetParam(func, base + 2 + i);
+			/* Read PERSP_CENTROID. */
+			for (i = 0; i < 2; i++)
+				centroid[i] = LLVMGetParam(func, base + 4 + i);
+			/* Select PERSP_CENTROID. */
+			for (i = 0; i < 2; i++) {
+				tmp = LLVMBuildSelect(gallivm->builder, bc_optimize,
+						      center[i], centroid[i], "");
+				ret = LLVMBuildInsertValue(gallivm->builder, ret,
+							   tmp, base + 4 + i, "");
+			}
+		}
+		if (key->ps_prolog.states.bc_optimize_for_linear) {
+			/* Read LINEAR_CENTER. */
+			for (i = 0; i < 2; i++)
+				center[i] = LLVMGetParam(func, base + 8 + i);
+			/* Read LINEAR_CENTROID. */
+			for (i = 0; i < 2; i++)
+				centroid[i] = LLVMGetParam(func, base + 10 + i);
+			/* Select LINEAR_CENTROID. */
+			for (i = 0; i < 2; i++) {
+				tmp = LLVMBuildSelect(gallivm->builder, bc_optimize,
+						      center[i], centroid[i], "");
+				ret = LLVMBuildInsertValue(gallivm->builder, ret,
+							   tmp, base + 10 + i, "");
+			}
+		}
+	}
+
 	/* Interpolate colors. */
 	for (i = 0; i < 2; i++) {
 		unsigned writemask = (key->ps_prolog.colors_read >> (i * 4)) & 0xf;
@@ -7139,8 +7378,11 @@ static bool si_compile_ps_prolog(struct si_screen *sscreen,
 			unsigned interp_vgpr = key->ps_prolog.num_input_sgprs +
 					       key->ps_prolog.color_interp_vgpr_index[i];
 
-			interp[0] = LLVMGetParam(func, interp_vgpr);
-			interp[1] = LLVMGetParam(func, interp_vgpr + 1);
+			/* Get the (i,j) updated by bc_optimize handling. */
+			interp[0] = LLVMBuildExtractValue(gallivm->builder, ret,
+							  interp_vgpr, "");
+			interp[1] = LLVMBuildExtractValue(gallivm->builder, ret,
+							  interp_vgpr + 1, "");
 			interp_ij = lp_build_gather_values(gallivm, interp, 2);
 			interp_ij = LLVMBuildBitCast(gallivm->builder, interp_ij,
 						     ctx.v2i32, "");
@@ -7169,9 +7411,9 @@ static bool si_compile_ps_prolog(struct si_screen *sscreen,
 	}
 
 	/* Force per-sample interpolation. */
-	if (key->ps_prolog.states.force_persample_interp) {
+	if (key->ps_prolog.states.force_persp_sample_interp) {
 		unsigned i, base = key->ps_prolog.num_input_sgprs;
-		LLVMValueRef persp_sample[2], linear_sample[2];
+		LLVMValueRef persp_sample[2];
 
 		/* Read PERSP_SAMPLE. */
 		for (i = 0; i < 2; i++)
@@ -7184,6 +7426,11 @@ static bool si_compile_ps_prolog(struct si_screen *sscreen,
 		for (i = 0; i < 2; i++)
 			ret = LLVMBuildInsertValue(gallivm->builder, ret,
 						   persp_sample[i], base + 4 + i, "");
+	}
+	if (key->ps_prolog.states.force_linear_sample_interp) {
+		unsigned i, base = key->ps_prolog.num_input_sgprs;
+		LLVMValueRef linear_sample[2];
+
 		/* Read LINEAR_SAMPLE. */
 		for (i = 0; i < 2; i++)
 			linear_sample[i] = LLVMGetParam(func, base + 6 + i);
@@ -7197,8 +7444,48 @@ static bool si_compile_ps_prolog(struct si_screen *sscreen,
 						   linear_sample[i], base + 10 + i, "");
 	}
 
+	/* Force center interpolation. */
+	if (key->ps_prolog.states.force_persp_center_interp) {
+		unsigned i, base = key->ps_prolog.num_input_sgprs;
+		LLVMValueRef persp_center[2];
+
+		/* Read PERSP_CENTER. */
+		for (i = 0; i < 2; i++)
+			persp_center[i] = LLVMGetParam(func, base + 2 + i);
+		/* Overwrite PERSP_SAMPLE. */
+		for (i = 0; i < 2; i++)
+			ret = LLVMBuildInsertValue(gallivm->builder, ret,
+						   persp_center[i], base + i, "");
+		/* Overwrite PERSP_CENTROID. */
+		for (i = 0; i < 2; i++)
+			ret = LLVMBuildInsertValue(gallivm->builder, ret,
+						   persp_center[i], base + 4 + i, "");
+	}
+	if (key->ps_prolog.states.force_linear_center_interp) {
+		unsigned i, base = key->ps_prolog.num_input_sgprs;
+		LLVMValueRef linear_center[2];
+
+		/* Read LINEAR_CENTER. */
+		for (i = 0; i < 2; i++)
+			linear_center[i] = LLVMGetParam(func, base + 8 + i);
+		/* Overwrite LINEAR_SAMPLE. */
+		for (i = 0; i < 2; i++)
+			ret = LLVMBuildInsertValue(gallivm->builder, ret,
+						   linear_center[i], base + 6 + i, "");
+		/* Overwrite LINEAR_CENTROID. */
+		for (i = 0; i < 2; i++)
+			ret = LLVMBuildInsertValue(gallivm->builder, ret,
+						   linear_center[i], base + 10 + i, "");
+	}
+
+	/* Tell LLVM to insert WQM instruction sequence when needed. */
+	if (key->ps_prolog.wqm) {
+		LLVMAddTargetDependentFunctionAttr(func,
+						   "amdgpu-ps-wqm-outputs", "");
+	}
+
 	/* Compile. */
-	LLVMBuildRet(gallivm->builder, ret);
+	si_llvm_build_ret(&ctx, ret);
 	radeon_llvm_finalize_module(&ctx.radeon_bld);
 
 	if (si_compile_llvm(sscreen, &out->binary, &out->config, tm,
@@ -7226,8 +7513,9 @@ static bool si_compile_ps_epilog(struct si_screen *sscreen,
 	struct lp_build_tgsi_context *bld_base = &ctx.radeon_bld.soa.bld_base;
 	LLVMTypeRef params[16+8*4+3];
 	LLVMValueRef depth = NULL, stencil = NULL, samplemask = NULL;
-	int last_array_pointer, last_sgpr, num_params, i;
+	int last_sgpr, num_params, i;
 	bool status = true;
+	struct si_ps_exports exp = {};
 
 	si_init_shader_ctx(&ctx, sscreen, &shader, tm);
 	ctx.type = PIPE_SHADER_FRAGMENT;
@@ -7240,7 +7528,6 @@ static bool si_compile_ps_epilog(struct si_screen *sscreen,
 	params[SI_PARAM_IMAGES] = ctx.i64;
 	params[SI_PARAM_SHADER_BUFFERS] = ctx.i64;
 	params[SI_PARAM_ALPHA_REF] = ctx.f32;
-	last_array_pointer = -1;
 	last_sgpr = SI_PARAM_ALPHA_REF;
 
 	/* Declare input VGPRs. */
@@ -7259,8 +7546,7 @@ static bool si_compile_ps_epilog(struct si_screen *sscreen,
 		params[i] = ctx.f32;
 
 	/* Create the function. */
-	si_create_function(&ctx, NULL, 0, params, num_params,
-			   last_array_pointer, last_sgpr);
+	si_create_function(&ctx, NULL, 0, params, num_params, last_sgpr);
 	/* Disable elimination of unused inputs. */
 	radeon_llvm_add_attribute(ctx.radeon_bld.main_fn,
 				  "InitialPSInputAddr", 0xffffff);
@@ -7299,7 +7585,7 @@ static bool si_compile_ps_epilog(struct si_screen *sscreen,
 
 		si_export_mrt_color(bld_base, color, mrt,
 				    num_params - 1,
-				    mrt == last_color_export);
+				    mrt == last_color_export, &exp);
 	}
 
 	/* Process depth, stencil, samplemask. */
@@ -7311,9 +7597,12 @@ static bool si_compile_ps_epilog(struct si_screen *sscreen,
 		samplemask = LLVMGetParam(ctx.radeon_bld.main_fn, vgpr++);
 
 	if (depth || stencil || samplemask)
-		si_export_mrt_z(bld_base, depth, stencil, samplemask);
+		si_export_mrt_z(bld_base, depth, stencil, samplemask, &exp);
 	else if (last_color_export == -1)
 		si_export_null(bld_base);
+
+	if (exp.num)
+		si_emit_ps_exports(&ctx, &exp);
 
 	/* Compile. */
 	LLVMBuildRetVoid(gallivm->builder);
@@ -7347,6 +7636,14 @@ static bool si_shader_select_ps_parts(struct si_screen *sscreen,
 	prolog_key.ps_prolog.colors_read = info->colors_read;
 	prolog_key.ps_prolog.num_input_sgprs = shader->info.num_input_sgprs;
 	prolog_key.ps_prolog.num_input_vgprs = shader->info.num_input_vgprs;
+	prolog_key.ps_prolog.wqm = info->uses_derivatives &&
+		(prolog_key.ps_prolog.colors_read ||
+		 prolog_key.ps_prolog.states.force_persp_sample_interp ||
+		 prolog_key.ps_prolog.states.force_linear_sample_interp ||
+		 prolog_key.ps_prolog.states.force_persp_center_interp ||
+		 prolog_key.ps_prolog.states.force_linear_center_interp ||
+		 prolog_key.ps_prolog.states.bc_optimize_for_persp ||
+		 prolog_key.ps_prolog.states.bc_optimize_for_linear);
 
 	if (info->colors_read) {
 		unsigned *color = shader->selector->color_attr_index;
@@ -7359,6 +7656,7 @@ static bool si_shader_select_ps_parts(struct si_screen *sscreen,
 		}
 
 		for (i = 0; i < 2; i++) {
+			unsigned interp = info->input_interpolate[color[i]];
 			unsigned location = info->input_interpolate_loc[color[i]];
 
 			if (!(info->colors_read & (0xf << i*4)))
@@ -7366,16 +7664,22 @@ static bool si_shader_select_ps_parts(struct si_screen *sscreen,
 
 			prolog_key.ps_prolog.color_attr_index[i] = color[i];
 
-			/* Force per-sample interpolation for the colors here. */
-			if (shader->key.ps.prolog.force_persample_interp)
-				location = TGSI_INTERPOLATE_LOC_SAMPLE;
+			if (shader->key.ps.prolog.flatshade_colors &&
+			    interp == TGSI_INTERPOLATE_COLOR)
+				interp = TGSI_INTERPOLATE_CONSTANT;
 
-			switch (info->input_interpolate[color[i]]) {
+			switch (interp) {
 			case TGSI_INTERPOLATE_CONSTANT:
 				prolog_key.ps_prolog.color_interp_vgpr_index[i] = -1;
 				break;
 			case TGSI_INTERPOLATE_PERSPECTIVE:
 			case TGSI_INTERPOLATE_COLOR:
+				/* Force the interpolation location for colors here. */
+				if (shader->key.ps.prolog.force_persp_sample_interp)
+					location = TGSI_INTERPOLATE_LOC_SAMPLE;
+				if (shader->key.ps.prolog.force_persp_center_interp)
+					location = TGSI_INTERPOLATE_LOC_CENTER;
+
 				switch (location) {
 				case TGSI_INTERPOLATE_LOC_SAMPLE:
 					prolog_key.ps_prolog.color_interp_vgpr_index[i] = 0;
@@ -7397,6 +7701,12 @@ static bool si_shader_select_ps_parts(struct si_screen *sscreen,
 				}
 				break;
 			case TGSI_INTERPOLATE_LINEAR:
+				/* Force the interpolation location for colors here. */
+				if (shader->key.ps.prolog.force_linear_sample_interp)
+					location = TGSI_INTERPOLATE_LOC_SAMPLE;
+				if (shader->key.ps.prolog.force_linear_center_interp)
+					location = TGSI_INTERPOLATE_LOC_CENTER;
+
 				switch (location) {
 				case TGSI_INTERPOLATE_LOC_SAMPLE:
 					prolog_key.ps_prolog.color_interp_vgpr_index[i] = 6;
@@ -7425,7 +7735,12 @@ static bool si_shader_select_ps_parts(struct si_screen *sscreen,
 
 	/* The prolog is a no-op if these aren't set. */
 	if (prolog_key.ps_prolog.colors_read ||
-	    prolog_key.ps_prolog.states.force_persample_interp ||
+	    prolog_key.ps_prolog.states.force_persp_sample_interp ||
+	    prolog_key.ps_prolog.states.force_linear_sample_interp ||
+	    prolog_key.ps_prolog.states.force_persp_center_interp ||
+	    prolog_key.ps_prolog.states.force_linear_center_interp ||
+	    prolog_key.ps_prolog.states.bc_optimize_for_persp ||
+	    prolog_key.ps_prolog.states.bc_optimize_for_linear ||
 	    prolog_key.ps_prolog.states.poly_stipple) {
 		shader->prolog =
 			si_get_shader_part(sscreen, &sscreen->ps_prologs,
@@ -7457,19 +7772,33 @@ static bool si_shader_select_ps_parts(struct si_screen *sscreen,
 	}
 
 	/* Set up the enable bits for per-sample shading if needed. */
-	if (shader->key.ps.prolog.force_persample_interp) {
-		if (G_0286CC_PERSP_CENTER_ENA(shader->config.spi_ps_input_ena) ||
-		    G_0286CC_PERSP_CENTROID_ENA(shader->config.spi_ps_input_ena)) {
-			shader->config.spi_ps_input_ena &= C_0286CC_PERSP_CENTER_ENA;
-			shader->config.spi_ps_input_ena &= C_0286CC_PERSP_CENTROID_ENA;
-			shader->config.spi_ps_input_ena |= S_0286CC_PERSP_SAMPLE_ENA(1);
-		}
-		if (G_0286CC_LINEAR_CENTER_ENA(shader->config.spi_ps_input_ena) ||
-		    G_0286CC_LINEAR_CENTROID_ENA(shader->config.spi_ps_input_ena)) {
-			shader->config.spi_ps_input_ena &= C_0286CC_LINEAR_CENTER_ENA;
-			shader->config.spi_ps_input_ena &= C_0286CC_LINEAR_CENTROID_ENA;
-			shader->config.spi_ps_input_ena |= S_0286CC_LINEAR_SAMPLE_ENA(1);
-		}
+	if (shader->key.ps.prolog.force_persp_sample_interp &&
+	    (G_0286CC_PERSP_CENTER_ENA(shader->config.spi_ps_input_ena) ||
+	     G_0286CC_PERSP_CENTROID_ENA(shader->config.spi_ps_input_ena))) {
+		shader->config.spi_ps_input_ena &= C_0286CC_PERSP_CENTER_ENA;
+		shader->config.spi_ps_input_ena &= C_0286CC_PERSP_CENTROID_ENA;
+		shader->config.spi_ps_input_ena |= S_0286CC_PERSP_SAMPLE_ENA(1);
+	}
+	if (shader->key.ps.prolog.force_linear_sample_interp &&
+	    (G_0286CC_LINEAR_CENTER_ENA(shader->config.spi_ps_input_ena) ||
+	     G_0286CC_LINEAR_CENTROID_ENA(shader->config.spi_ps_input_ena))) {
+		shader->config.spi_ps_input_ena &= C_0286CC_LINEAR_CENTER_ENA;
+		shader->config.spi_ps_input_ena &= C_0286CC_LINEAR_CENTROID_ENA;
+		shader->config.spi_ps_input_ena |= S_0286CC_LINEAR_SAMPLE_ENA(1);
+	}
+	if (shader->key.ps.prolog.force_persp_center_interp &&
+	    (G_0286CC_PERSP_SAMPLE_ENA(shader->config.spi_ps_input_ena) ||
+	     G_0286CC_PERSP_CENTROID_ENA(shader->config.spi_ps_input_ena))) {
+		shader->config.spi_ps_input_ena &= C_0286CC_PERSP_SAMPLE_ENA;
+		shader->config.spi_ps_input_ena &= C_0286CC_PERSP_CENTROID_ENA;
+		shader->config.spi_ps_input_ena |= S_0286CC_PERSP_CENTER_ENA(1);
+	}
+	if (shader->key.ps.prolog.force_linear_center_interp &&
+	    (G_0286CC_LINEAR_SAMPLE_ENA(shader->config.spi_ps_input_ena) ||
+	     G_0286CC_LINEAR_CENTROID_ENA(shader->config.spi_ps_input_ena))) {
+		shader->config.spi_ps_input_ena &= C_0286CC_LINEAR_SAMPLE_ENA;
+		shader->config.spi_ps_input_ena &= C_0286CC_LINEAR_CENTROID_ENA;
+		shader->config.spi_ps_input_ena |= S_0286CC_LINEAR_CENTER_ENA(1);
 	}
 
 	/* POW_W_FLOAT requires that one of the perspective weights is enabled. */
@@ -7622,4 +7951,6 @@ void si_shader_destroy(struct si_shader *shader)
 
 	if (!shader->is_binary_shared)
 		radeon_shader_binary_clean(&shader->binary);
+
+	free(shader->shader_log);
 }

@@ -353,7 +353,6 @@ static const struct u_resource_vtbl vc4_resource_vtbl = {
         .transfer_map             = vc4_resource_transfer_map,
         .transfer_flush_region    = u_default_transfer_flush_region,
         .transfer_unmap           = vc4_resource_transfer_unmap,
-        .transfer_inline_write    = u_default_transfer_inline_write,
 };
 
 static void
@@ -534,8 +533,8 @@ vc4_resource_from_handle(struct pipe_screen *pscreen,
         struct vc4_resource *rsc = vc4_resource_setup(pscreen, tmpl);
         struct pipe_resource *prsc = &rsc->base.b;
         struct vc4_resource_slice *slice = &rsc->slices[0];
-        uint32_t expected_stride = align(prsc->width0 / rsc->cpp,
-                                         vc4_utile_width(rsc->cpp));
+        uint32_t expected_stride =
+            align(prsc->width0, vc4_utile_width(rsc->cpp)) * rsc->cpp;
 
         if (!rsc)
                 return NULL;
@@ -552,7 +551,7 @@ vc4_resource_from_handle(struct pipe_screen *pscreen,
                                 handle->stride,
                                 expected_stride);
                 }
-                return NULL;
+                goto fail;
         }
 
         rsc->tiled = false;
@@ -877,7 +876,9 @@ vc4_update_shadow_baselevel_texture(struct pipe_context *pctx,
         if (shadow->writes == orig->writes && orig->bo->private)
                 return;
 
-        perf_debug("Updating shadow texture due to %s\n",
+        perf_debug("Updating %dx%d@%d shadow texture due to %s\n",
+                   orig->base.b.width0, orig->base.b.height0,
+                   view->u.tex.first_level,
                    view->u.tex.first_level ? "base level" : "raster layout");
 
         for (int i = 0; i <= shadow->base.b.last_level; i++) {
@@ -983,7 +984,8 @@ vc4_resource_context_init(struct pipe_context *pctx)
         pctx->transfer_map = u_transfer_map_vtbl;
         pctx->transfer_flush_region = u_transfer_flush_region_vtbl;
         pctx->transfer_unmap = u_transfer_unmap_vtbl;
-        pctx->transfer_inline_write = u_transfer_inline_write_vtbl;
+        pctx->buffer_subdata = u_default_buffer_subdata;
+        pctx->texture_subdata = u_default_texture_subdata;
         pctx->create_surface = vc4_create_surface;
         pctx->surface_destroy = vc4_surface_destroy;
         pctx->resource_copy_region = util_resource_copy_region;

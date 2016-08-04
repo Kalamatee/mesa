@@ -163,10 +163,9 @@ brw_codegen_wm_prog(struct brw_context *brw,
       }
    }
 
-   if (prog_data.base.total_scratch) {
-      brw_get_scratch_bo(brw, &brw->wm.base.scratch_bo,
-			 prog_data.base.total_scratch * brw->max_wm_threads);
-   }
+   brw_alloc_stage_scratch(brw, &brw->wm.base,
+                           prog_data.base.total_scratch,
+                           brw->max_wm_threads);
 
    if (unlikely(INTEL_DEBUG & DEBUG_WM))
       fprintf(stderr, "\n");
@@ -307,16 +306,15 @@ gen6_gather_workaround(GLenum internalformat)
 void
 brw_populate_sampler_prog_key_data(struct gl_context *ctx,
 				   const struct gl_program *prog,
-                                   unsigned sampler_count,
 				   struct brw_sampler_prog_key_data *key)
 {
    struct brw_context *brw = brw_context(ctx);
+   GLbitfield mask = prog->SamplersUsed;
 
-   for (int s = 0; s < sampler_count; s++) {
+   while (mask) {
+      const int s = u_bit_scan(&mask);
+
       key->swizzles[s] = SWIZZLE_NOOP;
-
-      if (!(prog->SamplersUsed & (1 << s)))
-	 continue;
 
       int unit_id = prog->SamplerUnits[s];
       const struct gl_texture_unit *unit = &ctx->Texture.Unit[unit_id];
@@ -507,8 +505,7 @@ brw_wm_populate_key(struct brw_context *brw, struct brw_wm_prog_key *key)
    key->clamp_fragment_color = ctx->Color._ClampFragmentColor;
 
    /* _NEW_TEXTURE */
-   brw_populate_sampler_prog_key_data(ctx, prog, brw->wm.base.sampler_count,
-                                      &key->tex);
+   brw_populate_sampler_prog_key_data(ctx, prog, &key->tex);
 
    /* _NEW_BUFFERS */
    key->nr_color_regions = ctx->DrawBuffer->_NumColorDrawBuffers;

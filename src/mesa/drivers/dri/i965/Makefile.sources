@@ -46,6 +46,7 @@ i965_compiler_FILES = \
 	brw_nir.c \
 	brw_nir_analyze_boolean_resolves.c \
 	brw_nir_attribute_workarounds.c \
+	brw_nir_intrinsics.c \
 	brw_nir_opt_peephole_ffma.c \
 	brw_packed_float.c \
 	brw_predicated_break.cpp \
@@ -132,7 +133,6 @@ i965_FILES = \
 	brw_gs_surface_state.c \
 	brw_link.cpp \
 	brw_lower_texture_gradients.cpp \
-	brw_lower_unnormalized_offset.cpp \
 	brw_meta_util.c \
 	brw_meta_util.h \
 	brw_misc_state.c \
@@ -162,7 +162,6 @@ i965_FILES = \
 	brw_tcs_surface_state.c \
 	brw_tes.c \
 	brw_tes_surface_state.c \
-	brw_tex.c \
 	brw_tex_layout.c \
 	brw_urb.c \
 	brw_vs.c \
@@ -186,7 +185,6 @@ i965_FILES = \
 	gen6_scissor_state.c \
 	gen6_sf_state.c \
 	gen6_sol.c \
-	gen6_surface_state.c \
 	gen6_urb.c \
 	gen6_viewport_state.c \
 	gen6_vs_state.c \

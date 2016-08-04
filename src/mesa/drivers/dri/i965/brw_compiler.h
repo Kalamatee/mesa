@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include "brw_device_info.h"
 #include "main/mtypes.h"
+#include "main/macros.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -402,6 +403,7 @@ struct brw_wm_prog_data {
    bool uses_src_depth;
    bool uses_src_w;
    bool uses_sample_mask;
+   bool has_side_effects;
    bool pulls_bary;
 
    /**
@@ -424,15 +426,28 @@ struct brw_wm_prog_data {
    int urb_setup[VARYING_SLOT_MAX];
 };
 
+struct brw_push_const_block {
+   unsigned dwords;     /* Dword count, not reg aligned */
+   unsigned regs;
+   unsigned size;       /* Bytes, register aligned */
+};
+
 struct brw_cs_prog_data {
    struct brw_stage_prog_data base;
 
    GLuint dispatch_grf_start_reg_16;
    unsigned local_size[3];
    unsigned simd_size;
+   unsigned threads;
    bool uses_barrier;
    bool uses_num_work_groups;
-   unsigned local_invocation_id_regs;
+   int thread_local_id_index;
+
+   struct {
+      struct brw_push_const_block cross_thread;
+      struct brw_push_const_block per_thread;
+      struct brw_push_const_block total;
+   } push;
 
    struct {
       /** @{
@@ -817,12 +832,37 @@ brw_compile_cs(const struct brw_compiler *compiler, void *log_data,
                unsigned *final_assembly_size,
                char **error_str);
 
-/**
- * Fill out local id payload for compute shader according to cs_prog_data.
- */
-void
-brw_cs_fill_local_id_payload(const struct brw_cs_prog_data *cs_prog_data,
-                             void *buffer, uint32_t threads, uint32_t stride);
+static inline uint32_t
+encode_slm_size(unsigned gen, uint32_t bytes)
+{
+   uint32_t slm_size = 0;
+
+   /* Shared Local Memory is specified as powers of two, and encoded in
+    * INTERFACE_DESCRIPTOR_DATA with the following representations:
+    *
+    * Size   | 0 kB | 1 kB | 2 kB | 4 kB | 8 kB | 16 kB | 32 kB | 64 kB |
+    * -------------------------------------------------------------------
+    * Gen7-8 |    0 | none | none |    1 |    2 |     4 |     8 |    16 |
+    * -------------------------------------------------------------------
+    * Gen9+  |    0 |    1 |    2 |    3 |    4 |     5 |     6 |     7 |
+    */
+   assert(bytes <= 64 * 1024);
+
+   if (bytes > 0) {
+      /* Shared Local Memory Size is specified as powers of two. */
+      slm_size = util_next_power_of_two(bytes);
+
+      if (gen >= 9) {
+         /* Use a minimum of 1kB; turn an exponent of 10 (1024 kB) into 1. */
+         slm_size = ffs(MAX2(slm_size, 1024)) - 10;
+      } else {
+         /* Use a minimum of 4kB; convert to the pre-Gen9 representation. */
+         slm_size = MAX2(slm_size, 4096) / 4096;
+      }
+   }
+
+   return slm_size;
+}
 
 #ifdef __cplusplus
 } /* extern "C" */

@@ -166,7 +166,6 @@ extern const struct brw_tracked_state gen8_wm_state;
 extern const struct brw_tracked_state gen8_raster_state;
 extern const struct brw_tracked_state gen8_sbe_state;
 extern const struct brw_tracked_state gen8_sf_state;
-extern const struct brw_tracked_state gen8_sol_state;
 extern const struct brw_tracked_state gen8_sf_clip_viewport;
 extern const struct brw_tracked_state gen8_vertices;
 extern const struct brw_tracked_state gen8_vf_topology;
@@ -264,12 +263,6 @@ void gen4_init_vtable_surface_functions(struct brw_context *brw);
 uint32_t brw_get_surface_tiling_bits(uint32_t tiling);
 uint32_t brw_get_surface_num_multisamples(unsigned num_samples);
 
-void brw_configure_w_tiled(const struct intel_mipmap_tree *mt,
-                           bool is_render_target,
-                           unsigned *width, unsigned *height,
-                           unsigned *pitch, uint32_t *tiling,
-                           unsigned *format);
-
 uint32_t brw_format_for_mesa_format(mesa_format mesa_format);
 
 GLuint translate_tex_target(GLenum target);
@@ -281,19 +274,37 @@ GLuint translate_tex_format(struct brw_context *brw,
 int brw_get_texture_swizzle(const struct gl_context *ctx,
                             const struct gl_texture_object *t);
 
+void brw_emit_surface_state(struct brw_context *brw,
+                            struct intel_mipmap_tree *mt,
+                            const struct isl_view *view,
+                            uint32_t mocs, bool for_gather,
+                            uint32_t *surf_offset, int surf_index,
+                            unsigned read_domains, unsigned write_domains);
+
+void brw_emit_buffer_surface_state(struct brw_context *brw,
+                                   uint32_t *out_offset,
+                                   drm_intel_bo *bo,
+                                   unsigned buffer_offset,
+                                   unsigned surface_format,
+                                   unsigned buffer_size,
+                                   unsigned pitch,
+                                   bool rw);
+
+void brw_update_texture_surface(struct gl_context *ctx,
+                                unsigned unit, uint32_t *surf_offset,
+                                bool for_gather, uint32_t plane);
+
+uint32_t brw_update_renderbuffer_surface(struct brw_context *brw,
+                                         struct gl_renderbuffer *rb,
+                                         bool layered, unsigned unit,
+                                         uint32_t surf_index);
+
 void brw_update_renderbuffer_surfaces(struct brw_context *brw,
                                       const struct gl_framebuffer *fb,
                                       uint32_t render_target_start,
                                       uint32_t *surf_offset);
 
 /* gen7_wm_surface_state.c */
-uint32_t gen7_surface_tiling_mode(uint32_t tiling);
-uint32_t gen7_surface_msaa_bits(unsigned num_samples, enum intel_msaa_layout l);
-void gen7_set_surface_mcs_info(struct brw_context *brw,
-                               uint32_t *surf,
-                               uint32_t surf_offset,
-                               const struct intel_mipmap_tree *mcs_mt,
-                               bool is_render_target);
 void gen7_check_surface_setup(uint32_t *surf, bool is_render_target);
 void gen7_init_vtable_surface_functions(struct brw_context *brw);
 
@@ -309,26 +320,11 @@ void gen8_upload_ps_extra(struct brw_context *brw,
 /* gen7_sol_state.c */
 void gen7_upload_3dstate_so_decl_list(struct brw_context *brw,
                                       const struct brw_vue_map *vue_map);
+void gen8_upload_3dstate_so_buffers(struct brw_context *brw);
 
 /* gen8_surface_state.c */
 
 void gen8_init_vtable_surface_functions(struct brw_context *brw);
-
-unsigned gen8_surface_tiling_mode(uint32_t tiling);
-unsigned gen8_vertical_alignment(const struct brw_context *brw,
-                                 const struct intel_mipmap_tree *mt,
-                                 uint32_t surf_type);
-unsigned gen8_horizontal_alignment(const struct brw_context *brw,
-                                   const struct intel_mipmap_tree *mt,
-                                   uint32_t surf_type);
-uint32_t *gen8_allocate_surface_state(struct brw_context *brw,
-                                      uint32_t *out_offset, int index);
-
-void gen8_emit_fast_clear_color(const struct brw_context *brw,
-                                const struct intel_mipmap_tree *mt,
-                                uint32_t *surf);
-uint32_t gen8_get_aux_mode(const struct brw_context *brw,
-                           const struct intel_mipmap_tree *mt);
 
 /* brw_sampler_state.c */
 void brw_emit_sampler_state(struct brw_context *brw,
@@ -471,6 +467,55 @@ is_drawing_lines(const struct brw_context *brw)
       }
    }
    return false;
+}
+
+static inline bool
+use_state_point_size(const struct brw_context *brw)
+{
+   const struct gl_context *ctx = &brw->ctx;
+
+   /* Section 14.4 (Points) of the OpenGL 4.5 specification says:
+    *
+    *    "If program point size mode is enabled, the derived point size is
+    *     taken from the (potentially clipped) shader built-in gl_PointSize
+    *     written by:
+    *
+    *        * the geometry shader, if active;
+    *        * the tessellation evaluation shader, if active and no
+    *          geometry shader is active;
+    *        * the vertex shader, otherwise
+    *
+    *    and clamped to the implementation-dependent point size range.  If
+    *    the value written to gl_PointSize is less than or equal to zero,
+    *    or if no value was written to gl_PointSize, results are undefined.
+    *    If program point size mode is disabled, the derived point size is
+    *    specified with the command
+    *
+    *       void PointSize(float size);
+    *
+    *    size specifies the requested size of a point.  The default value
+    *    is 1.0."
+    *
+    * The rules for GLES come from the ES 3.2, OES_geometry_point_size, and
+    * OES_tessellation_point_size specifications.  To summarize: if the last
+    * stage before rasterization is a GS or TES, then use gl_PointSize from
+    * the shader if written.  Otherwise, use 1.0.  If the last stage is a
+    * vertex shader, use gl_PointSize, or it is undefined.
+    *
+    * We can combine these rules into a single condition for both APIs.
+    * Using the state point size when the last shader stage doesn't write
+    * gl_PointSize satisfies GL's requirements, as it's undefined.  Because
+    * ES doesn't have a PointSize() command, the state point size will
+    * remain 1.0, satisfying the ES default value in the GS/TES case, and
+    * the VS case (1.0 works for "undefined").  Mesa sets the program point
+    * mode flag to always-enabled in ES, so we can safely check that, and
+    * it'll be ignored for ES.
+    *
+    * _NEW_PROGRAM | _NEW_POINT
+    * BRW_NEW_VUE_MAP_GEOM_OUT
+    */
+   return (!ctx->VertexProgram.PointSizeEnabled && !ctx->Point._Attenuated) ||
+          (brw->vue_map_geom_out.slots_valid & VARYING_BIT_PSIZ) == 0;
 }
 
 

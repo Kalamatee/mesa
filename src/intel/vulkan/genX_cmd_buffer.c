@@ -33,12 +33,6 @@ void
 genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
 {
    struct anv_device *device = cmd_buffer->device;
-   struct anv_bo *scratch_bo = NULL;
-
-   cmd_buffer->state.scratch_size =
-      anv_block_pool_size(&device->scratch_block_pool);
-   if (cmd_buffer->state.scratch_size > 0)
-      scratch_bo = &device->scratch_block_pool.bo;
 
 /* XXX: Do we need this on more than just BDW? */
 #if (GEN_GEN >= 8)
@@ -55,7 +49,7 @@ genX(cmd_buffer_emit_state_base_address)(struct anv_cmd_buffer *cmd_buffer)
 #endif
 
    anv_batch_emit(&cmd_buffer->batch, GENX(STATE_BASE_ADDRESS), sba) {
-      sba.GeneralStateBaseAddress = (struct anv_address) { scratch_bo, 0 };
+      sba.GeneralStateBaseAddress = (struct anv_address) { NULL, 0 };
       sba.GeneralStateMemoryObjectControlState = GENX(MOCS);
       sba.GeneralStateBaseAddressModifyEnable = true;
 
@@ -361,6 +355,47 @@ cmd_buffer_alloc_push_constants(struct anv_cmd_buffer *cmd_buffer)
    cmd_buffer->state.push_constants_dirty |= VK_SHADER_STAGE_ALL_GRAPHICS;
 }
 
+static void
+cmd_buffer_emit_descriptor_pointers(struct anv_cmd_buffer *cmd_buffer,
+                                    uint32_t stages)
+{
+   static const uint32_t sampler_state_opcodes[] = {
+      [MESA_SHADER_VERTEX]                      = 43,
+      [MESA_SHADER_TESS_CTRL]                   = 44, /* HS */
+      [MESA_SHADER_TESS_EVAL]                   = 45, /* DS */
+      [MESA_SHADER_GEOMETRY]                    = 46,
+      [MESA_SHADER_FRAGMENT]                    = 47,
+      [MESA_SHADER_COMPUTE]                     = 0,
+   };
+
+   static const uint32_t binding_table_opcodes[] = {
+      [MESA_SHADER_VERTEX]                      = 38,
+      [MESA_SHADER_TESS_CTRL]                   = 39,
+      [MESA_SHADER_TESS_EVAL]                   = 40,
+      [MESA_SHADER_GEOMETRY]                    = 41,
+      [MESA_SHADER_FRAGMENT]                    = 42,
+      [MESA_SHADER_COMPUTE]                     = 0,
+   };
+
+   anv_foreach_stage(s, stages) {
+      if (cmd_buffer->state.samplers[s].alloc_size > 0) {
+         anv_batch_emit(&cmd_buffer->batch,
+                        GENX(3DSTATE_SAMPLER_STATE_POINTERS_VS), ssp) {
+            ssp._3DCommandSubOpcode = sampler_state_opcodes[s];
+            ssp.PointertoVSSamplerState = cmd_buffer->state.samplers[s].offset;
+         }
+      }
+
+      /* Always emit binding table pointers if we're asked to, since on SKL
+       * this is what flushes push constants. */
+      anv_batch_emit(&cmd_buffer->batch,
+                     GENX(3DSTATE_BINDING_TABLE_POINTERS_VS), btp) {
+         btp._3DCommandSubOpcode = binding_table_opcodes[s];
+         btp.PointertoVSBindingTable = cmd_buffer->state.binding_tables[s].offset;
+      }
+   }
+}
+
 static uint32_t
 cmd_buffer_flush_push_constants(struct anv_cmd_buffer *cmd_buffer)
 {
@@ -462,14 +497,13 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
    cmd_buffer->state.vb_dirty &= ~vb_emit;
 
    if (cmd_buffer->state.dirty & ANV_CMD_DIRTY_PIPELINE) {
-      /* If somebody compiled a pipeline after starting a command buffer the
-       * scratch bo may have grown since we started this cmd buffer (and
-       * emitted STATE_BASE_ADDRESS).  If we're binding that pipeline now,
-       * reemit STATE_BASE_ADDRESS so that we use the bigger scratch bo. */
-      if (cmd_buffer->state.scratch_size < pipeline->total_scratch)
-         anv_cmd_buffer_emit_state_base_address(cmd_buffer);
-
       anv_batch_emit_batch(&cmd_buffer->batch, &pipeline->batch);
+
+      /* The exact descriptor layout is pulled from the pipeline, so we need
+       * to re-emit binding tables on every pipeline change.
+       */
+      cmd_buffer->state.descriptors_dirty |=
+         cmd_buffer->state.pipeline->active_stages;
 
       /* If the pipeline changed, we may need to re-allocate push constant
        * space in the URB.
@@ -508,7 +542,7 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
     */
    uint32_t dirty = 0;
    if (cmd_buffer->state.descriptors_dirty)
-      dirty = gen7_cmd_buffer_flush_descriptor_sets(cmd_buffer);
+      dirty = anv_cmd_buffer_flush_descriptor_sets(cmd_buffer);
 
    if (cmd_buffer->state.push_constants_dirty) {
 #if GEN_GEN >= 9
@@ -523,10 +557,16 @@ genX(cmd_buffer_flush_state)(struct anv_cmd_buffer *cmd_buffer)
    }
 
    if (dirty)
-      gen7_cmd_buffer_emit_descriptor_pointers(cmd_buffer, dirty);
+      cmd_buffer_emit_descriptor_pointers(cmd_buffer, dirty);
 
    if (cmd_buffer->state.dirty & ANV_CMD_DIRTY_DYNAMIC_VIEWPORT)
       gen8_cmd_buffer_emit_viewport(cmd_buffer);
+
+   if (cmd_buffer->state.dirty & (ANV_CMD_DIRTY_DYNAMIC_VIEWPORT |
+                                  ANV_CMD_DIRTY_PIPELINE)) {
+      gen8_cmd_buffer_emit_depth_viewport(cmd_buffer,
+                                          pipeline->depth_clamp_enable);
+   }
 
    if (cmd_buffer->state.dirty & ANV_CMD_DIRTY_DYNAMIC_SCISSOR)
       gen7_cmd_buffer_emit_scissor(cmd_buffer);
@@ -773,7 +813,7 @@ void genX(CmdDispatch)(
       ggw.SIMDSize                     = prog_data->simd_size / 16;
       ggw.ThreadDepthCounterMaximum    = 0;
       ggw.ThreadHeightCounterMaximum   = 0;
-      ggw.ThreadWidthCounterMaximum    = pipeline->cs_thread_width_max - 1;
+      ggw.ThreadWidthCounterMaximum    = prog_data->threads - 1;
       ggw.ThreadGroupIDXDimension      = x;
       ggw.ThreadGroupIDYDimension      = y;
       ggw.ThreadGroupIDZDimension      = z;
@@ -874,7 +914,7 @@ void genX(CmdDispatchIndirect)(
       ggw.SIMDSize                     = prog_data->simd_size / 16;
       ggw.ThreadDepthCounterMaximum    = 0;
       ggw.ThreadHeightCounterMaximum   = 0;
-      ggw.ThreadWidthCounterMaximum    = pipeline->cs_thread_width_max - 1;
+      ggw.ThreadWidthCounterMaximum    = prog_data->threads - 1;
       ggw.RightExecutionMask           = pipeline->cs_right_mask;
       ggw.BottomExecutionMask          = 0xffffffff;
    }
@@ -1024,11 +1064,11 @@ cmd_buffer_emit_depth_stencil(struct anv_cmd_buffer *cmd_buffer)
          db.DepthBufferObjectControlState = GENX(MOCS),
 
          db.SurfacePitch         = image->depth_surface.isl.row_pitch - 1;
-         db.Height               = fb->height - 1;
-         db.Width                = fb->width - 1;
-         db.LOD                  = 0;
-         db.Depth                = 1 - 1;
-         db.MinimumArrayElement  = 0;
+         db.Height               = image->extent.height - 1;
+         db.Width                = image->extent.width - 1;
+         db.LOD                  = iview->base_mip;
+         db.Depth                = image->array_size - 1; /* FIXME: 3-D */
+         db.MinimumArrayElement  = iview->base_layer;
 
 #if GEN_GEN >= 8
          db.SurfaceQPitch =
@@ -1072,12 +1112,7 @@ cmd_buffer_emit_depth_stencil(struct anv_cmd_buffer *cmd_buffer)
 #endif
          sb.StencilBufferObjectControlState = GENX(MOCS),
 
-         /* Stencil buffers have strange pitch. The PRM says:
-          *
-          *    The pitch must be set to 2x the value computed based on width,
-          *    as the stencil buffer is stored with two rows interleaved.
-          */
-         sb.SurfacePitch = 2 * image->stencil_surface.isl.row_pitch - 1,
+         sb.SurfacePitch = image->stencil_surface.isl.row_pitch - 1,
 
 #if GEN_GEN >= 8
          sb.SurfaceQPitch = isl_surf_get_array_pitch_el_rows(&image->stencil_surface.isl) >> 2,
@@ -1151,6 +1186,10 @@ void genX(CmdEndRenderPass)(
    ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
 
    anv_cmd_buffer_resolve_subpass(cmd_buffer);
+
+#ifndef NDEBUG
+   anv_dump_add_framebuffer(cmd_buffer, cmd_buffer->state.framebuffer);
+#endif
 }
 
 static void
@@ -1408,4 +1447,17 @@ void genX(CmdCopyQueryPoolResults)(
    }
 }
 
+#else
+void genX(CmdCopyQueryPoolResults)(
+    VkCommandBuffer                             commandBuffer,
+    VkQueryPool                                 queryPool,
+    uint32_t                                    firstQuery,
+    uint32_t                                    queryCount,
+    VkBuffer                                    destBuffer,
+    VkDeviceSize                                destOffset,
+    VkDeviceSize                                destStride,
+    VkQueryResultFlags                          flags)
+{
+   anv_finishme("Queries not yet supported on Ivy Bridge");
+}
 #endif

@@ -197,6 +197,7 @@ enum SWR_OUTER_TESSFACTOR_ID
 #define VERTEX_CLIPCULL_DIST_LO_SLOT 35 // VS writes lower 4 clip/cull dist
 #define VERTEX_CLIPCULL_DIST_HI_SLOT 36 // VS writes upper 4 clip/cull dist
 #define VERTEX_POINT_SIZE_SLOT 37       // VS writes point size here
+#define VERTEX_VIEWPORT_ARRAY_INDEX_SLOT 38
 // SoAoSoA
 struct simdvertex
 {
@@ -626,7 +627,7 @@ struct SWR_STREAMOUT_STATE
 
     // The stream masks specify which attributes are sent to which streams.
     // These masks help the FE to setup the pPrimData buffer that is passed
-    // the the Stream Output Shader (SOS) function.
+    // the Stream Output Shader (SOS) function.
     uint32_t streamMasks[MAX_SO_STREAMS];
 
     // Number of attributes, including position, per vertex that are streamed out.
@@ -674,6 +675,9 @@ struct SWR_GS_STATE
 
     // geometry shader emits PrimitiveID
     bool emitsPrimitiveID;
+
+    // geometry shader emits ViewportArrayIndex
+    bool emitsViewportArrayIndex;
 
     // if true, geometry shader emits a single stream, with separate cut buffer.
     // if false, geometry shader emits vertices for multiple streams to the stream buffer, with a separate StreamID buffer
@@ -757,7 +761,7 @@ enum SWR_MULTISAMPLE_COUNT
     SWR_MULTISAMPLE_4X,
     SWR_MULTISAMPLE_8X,
     SWR_MULTISAMPLE_16X,
-    SWR_MULTISAMPLE_TYPE_MAX
+    SWR_MULTISAMPLE_TYPE_COUNT
 };
 
 struct SWR_BLEND_STATE
@@ -868,7 +872,7 @@ enum SWR_MSAA_SAMPLE_PATTERN
 {
     SWR_MSAA_CENTER_PATTERN,
     SWR_MSAA_STANDARD_PATTERN,
-    SWR_MSAA_SAMPLE_PATTERN_MAX
+    SWR_MSAA_SAMPLE_PATTERN_COUNT
 };
 
 enum SWR_PIXEL_LOCATION
@@ -909,6 +913,7 @@ struct SWR_RASTSTATE
     uint32_t forcedSampleCount      : 1;
     uint32_t pixelOffset            : 1;
     uint32_t depthBiasPreAdjusted   : 1;    ///< depth bias constant is in float units, not per-format Z units
+    uint32_t conservativeRast       : 1;
 
     float pointSize;
     float lineWidth;
@@ -933,13 +938,34 @@ struct SWR_RASTSTATE
     uint8_t clipDistanceMask;
 };
 
+enum SWR_CONSTANT_SOURCE
+{
+    SWR_CONSTANT_SOURCE_CONST_0000,
+    SWR_CONSTANT_SOURCE_CONST_0001_FLOAT,
+    SWR_CONSTANT_SOURCE_CONST_1111_FLOAT,
+    SWR_CONSTANT_SOURCE_PRIM_ID
+};
+
+struct SWR_ATTRIB_SWIZZLE
+{
+    uint16_t sourceAttrib : 5;          // source attribute 
+    uint16_t constantSource : 2;        // constant source to apply
+    uint16_t componentOverrideMask : 4; // override component with constant source
+};
+
 // backend state
 struct SWR_BACKEND_STATE
 {
-    uint32_t constantInterpolationMask;
-    uint32_t pointSpriteTexCoordMask;
-    uint8_t numAttributes;
-    uint8_t numComponents[KNOB_NUM_ATTRIBUTES];
+    uint32_t constantInterpolationMask;     // bitmask indicating which attributes have constant interpolation
+    uint32_t pointSpriteTexCoordMask;       // bitmask indicating the attribute(s) which should be interpreted as tex coordinates
+
+    uint8_t numAttributes;                  // total number of attributes to send to backend (up to 32)
+    uint8_t numComponents[32];              // number of components to setup per attribute, this reduces some calculations for unneeded components
+
+    bool swizzleEnable;                 // when enabled, core will parse the swizzle map when 
+                                        // setting up attributes for the backend, otherwise
+                                        // all attributes up to numAttributes will be sent
+    SWR_ATTRIB_SWIZZLE swizzleMap[32];
 };
 
 
@@ -982,14 +1008,15 @@ enum SWR_SHADING_RATE
 {
     SWR_SHADING_RATE_PIXEL,
     SWR_SHADING_RATE_SAMPLE,
-    SWR_SHADING_RATE_MAX,
+    SWR_SHADING_RATE_COUNT,
 };
 
 enum SWR_INPUT_COVERAGE
 {
     SWR_INPUT_COVERAGE_NONE,
     SWR_INPUT_COVERAGE_NORMAL,
-    SWR_INPUT_COVERAGE_MAX,
+    SWR_INPUT_COVERAGE_INNER_CONSERVATIVE,
+    SWR_INPUT_COVERAGE_COUNT,
 };
 
 enum SWR_PS_POSITION_OFFSET
@@ -997,7 +1024,7 @@ enum SWR_PS_POSITION_OFFSET
     SWR_PS_POSITION_SAMPLE_NONE, 
     SWR_PS_POSITION_SAMPLE_OFFSET, 
     SWR_PS_POSITION_CENTROID_OFFSET,
-    SWR_PS_POSITION_OFFSET_MAX,
+    SWR_PS_POSITION_OFFSET_COUNT,
 };
 
 enum SWR_BARYCENTRICS_MASK
@@ -1005,7 +1032,6 @@ enum SWR_BARYCENTRICS_MASK
     SWR_BARYCENTRIC_PER_PIXEL_MASK = 0x1,
     SWR_BARYCENTRIC_CENTROID_MASK = 0x2,
     SWR_BARYCENTRIC_PER_SAMPLE_MASK = 0x4,
-    SWR_BARYCENTRICS_MASK_MAX = 0x8
 };
 
 // pixel shader state
@@ -1016,7 +1042,7 @@ struct SWR_PS_STATE
 
     // dword 2
     uint32_t killsPixel         : 1;    // pixel shader can kill pixels
-    uint32_t inputCoverage      : 1;    // type of input coverage PS uses
+    uint32_t inputCoverage      : 2;    // ps uses input coverage
     uint32_t writesODepth       : 1;    // pixel shader writes to depth
     uint32_t usesSourceDepth    : 1;    // pixel shader reads depth
     uint32_t shadingRate        : 2;    // shading per pixel / sample / coarse pixel

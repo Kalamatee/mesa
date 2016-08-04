@@ -70,6 +70,7 @@
 #include "tnl/t_pipeline.h"
 #include "util/ralloc.h"
 #include "util/debug.h"
+#include "isl/isl.h"
 
 /***************************************
  * Mesa's Driver Functions
@@ -166,6 +167,38 @@ intel_update_framebuffer(struct gl_context *ctx,
                                  fb->DefaultGeometry.NumSamples);
 }
 
+/* On Gen9 color buffers may be compressed by the hardware (lossless
+ * compression). There are, however, format restrictions and care needs to be
+ * taken that the sampler engine is capable for re-interpreting a buffer with
+ * format different the buffer was originally written with.
+ *
+ * For example, SRGB formats are not compressible and the sampler engine isn't
+ * capable of treating RGBA_UNORM as SRGB_ALPHA. In such a case the underlying
+ * color buffer needs to be resolved so that the sampling surface can be
+ * sampled as non-compressed (i.e., without the auxiliary MCS buffer being
+ * set).
+ */
+static bool
+intel_texture_view_requires_resolve(struct brw_context *brw,
+                                    struct intel_texture_object *intel_tex)
+{
+   if (brw->gen < 9 ||
+       !intel_miptree_is_lossless_compressed(brw, intel_tex->mt))
+     return false;
+
+   const uint32_t brw_format = brw_format_for_mesa_format(intel_tex->_Format);
+
+   if (isl_format_supports_lossless_compression(brw->intelScreen->devinfo,
+                                                brw_format))
+      return false;
+
+   perf_debug("Incompatible sampling format (%s) for rbc (%s)\n",
+              _mesa_get_format_name(intel_tex->_Format),
+              _mesa_get_format_name(intel_tex->mt->format));
+
+   return true;
+}
+
 static void
 intel_update_state(struct gl_context * ctx, GLuint new_state)
 {
@@ -198,15 +231,17 @@ intel_update_state(struct gl_context * ctx, GLuint new_state)
       /* Sampling engine understands lossless compression and resolving
        * those surfaces should be skipped for performance reasons.
        */
-      intel_miptree_resolve_color(brw, tex_obj->mt,
-                                  INTEL_MIPTREE_IGNORE_CCS_E);
+      const int flags = intel_texture_view_requires_resolve(brw, tex_obj) ?
+                           0 : INTEL_MIPTREE_IGNORE_CCS_E;
+      intel_miptree_resolve_color(brw, tex_obj->mt, flags);
       brw_render_cache_set_check_flush(brw, tex_obj->mt->bo);
    }
 
    /* Resolve color for each active shader image. */
    for (unsigned i = 0; i < MESA_SHADER_STAGES; i++) {
-      const struct gl_shader *shader = ctx->_Shader->CurrentProgram[i] ?
-         ctx->_Shader->CurrentProgram[i]->_LinkedShaders[i] : NULL;
+      const struct gl_linked_shader *shader =
+         ctx->_Shader->CurrentProgram[i] ?
+            ctx->_Shader->CurrentProgram[i]->_LinkedShaders[i] : NULL;
 
       if (unlikely(shader && shader->NumImages)) {
          for (unsigned j = 0; j < shader->NumImages; j++) {
@@ -433,7 +468,16 @@ brw_initialize_context_constants(struct brw_context *brw)
    ctx->Const.MaxImageUnits = MAX_IMAGE_UNITS;
    ctx->Const.MaxRenderbufferSize = 8192;
    ctx->Const.MaxTextureLevels = MIN2(14 /* 8192 */, MAX_TEXTURE_LEVELS);
-   ctx->Const.Max3DTextureLevels = 12; /* 2048 */
+
+   /* On Sandy Bridge and prior, the "Render Target View Extent" field of
+    * RENDER_SURFACE_STATE is only 9 bits so the largest 3-D texture we can do
+    * a layered render into has a depth of 512.  On Iron Lake and earlier, we
+    * don't support layered rendering and we use manual offsetting to render
+    * into the different layers so this doesn't matter.  On Sandy Bridge,
+    * however, we do support layered rendering so this is a problem.
+    */
+   ctx->Const.Max3DTextureLevels = brw->gen == 6 ? 10 /* 512 */ : 12; /* 2048 */
+
    ctx->Const.MaxCubeTextureLevels = 14; /* 8192 */
    ctx->Const.MaxArrayTextureLayers = brw->gen >= 7 ? 2048 : 512;
    ctx->Const.MaxTextureMbytes = 1536;
@@ -565,6 +609,8 @@ brw_initialize_context_constants(struct brw_context *brw)
       ctx->Const.MaxClipPlanes = 8;
 
    ctx->Const.LowerTessLevel = true;
+   ctx->Const.LowerTCSPatchVerticesIn = brw->gen >= 8;
+   ctx->Const.LowerTESPatchVerticesIn = true;
    ctx->Const.PrimitiveRestartForPatches = true;
 
    ctx->Const.Program[MESA_SHADER_VERTEX].MaxNativeInstructions = 16 * 1024;
@@ -769,6 +815,9 @@ brw_process_driconf_options(struct brw_context *brw)
 
    brw->precompile = driQueryOptionb(&brw->optionCache, "shader_precompile");
 
+   if (driQueryOptionb(&brw->optionCache, "precise_trig"))
+      brw->intelScreen->compiler->precise_trig = true;
+
    ctx->Const.ForceGLSLExtensionsWarn =
       driQueryOptionb(options, "force_glsl_extensions_warn");
 
@@ -777,6 +826,8 @@ brw_process_driconf_options(struct brw_context *brw)
 
    ctx->Const.AllowGLSLExtensionDirectiveMidShader =
       driQueryOptionb(options, "allow_glsl_extension_directive_midshader");
+
+   ctx->Const.GLSLZeroInit = driQueryOptionb(options, "glsl_zero_init");
 
    brw->dual_color_blend_by_location =
       driQueryOptionb(options, "dual_color_blend_by_location");
@@ -844,6 +895,8 @@ brwCreateContext(gl_api api,
 
    brw->must_use_separate_stencil = devinfo->must_use_separate_stencil;
    brw->has_swizzling = screen->hw_has_swizzling;
+
+   isl_device_init(&brw->isl_dev, devinfo, screen->hw_has_swizzling);
 
    brw->vs.base.stage = MESA_SHADER_VERTEX;
    brw->tcs.base.stage = MESA_SHADER_TESS_CTRL;
@@ -1063,6 +1116,10 @@ intelDestroyContext(__DRIcontext * driContextPriv)
    drm_intel_bo_unreference(brw->curbe.curbe_bo);
    if (brw->vs.base.scratch_bo)
       drm_intel_bo_unreference(brw->vs.base.scratch_bo);
+   if (brw->tcs.base.scratch_bo)
+      drm_intel_bo_unreference(brw->tcs.base.scratch_bo);
+   if (brw->tes.base.scratch_bo)
+      drm_intel_bo_unreference(brw->tes.base.scratch_bo);
    if (brw->gs.base.scratch_bo)
       drm_intel_bo_unreference(brw->gs.base.scratch_bo);
    if (brw->wm.base.scratch_bo)
@@ -1608,6 +1665,7 @@ intel_update_image_buffers(struct brw_context *brw, __DRIdrawable *drawable)
    struct __DRIimageList images;
    unsigned int format;
    uint32_t buffer_mask = 0;
+   int ret;
 
    front_rb = intel_get_renderbuffer(fb, BUFFER_FRONT_LEFT);
    back_rb = intel_get_renderbuffer(fb, BUFFER_BACK_LEFT);
@@ -1627,12 +1685,14 @@ intel_update_image_buffers(struct brw_context *brw, __DRIdrawable *drawable)
    if (back_rb)
       buffer_mask |= __DRI_IMAGE_BUFFER_BACK;
 
-   (*screen->image.loader->getBuffers) (drawable,
-                                        driGLFormatToImageFormat(format),
-                                        &drawable->dri2.stamp,
-                                        drawable->loaderPrivate,
-                                        buffer_mask,
-                                        &images);
+   ret = screen->image.loader->getBuffers(drawable,
+                                          driGLFormatToImageFormat(format),
+                                          &drawable->dri2.stamp,
+                                          drawable->loaderPrivate,
+                                          buffer_mask,
+                                          &images);
+   if (!ret)
+      return;
 
    if (images.image_mask & __DRI_IMAGE_BUFFER_FRONT) {
       drawable->w = images.front->width;

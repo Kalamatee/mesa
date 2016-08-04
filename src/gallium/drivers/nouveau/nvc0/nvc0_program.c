@@ -346,6 +346,15 @@ nvc0_tcp_gen_header(struct nvc0_program *tcp, struct nv50_ir_prog_info *info)
 
    nvc0_vtgp_gen_header(tcp, info);
 
+   if (info->target >= NVISA_GM107_CHIPSET) {
+      /* On GM107+, the number of output patch components has moved in the TCP
+       * header, but it seems like blob still also uses the old position.
+       * Also, the high 8-bits are located inbetween the min/max parallel
+       * field and has to be set after updating the outputs. */
+      tcp->hdr[3] = (opcs & 0x0f) << 28;
+      tcp->hdr[4] |= (opcs & 0xf0) << 16;
+   }
+
    nvc0_tp_get_tess_mode(tcp, info);
 
    return 0;
@@ -555,29 +564,25 @@ nvc0_program_translate(struct nvc0_program *prog, uint16_t chipset,
 
    info->io.genUserClip = prog->vp.num_ucps;
    info->io.auxCBSlot = 15;
+   info->io.msInfoCBSlot = 15;
    info->io.ucpBase = NVC0_CB_AUX_UCP_INFO;
    info->io.drawInfoBase = NVC0_CB_AUX_DRAW_INFO;
+   info->io.msInfoBase = NVC0_CB_AUX_MS_INFO;
+   info->io.bufInfoBase = NVC0_CB_AUX_BUF_INFO(0);
+   info->io.suInfoBase = NVC0_CB_AUX_SU_INFO(0);
+   if (chipset >= NVISA_GK104_CHIPSET) {
+      info->io.texBindBase = NVC0_CB_AUX_TEX_INFO(0);
+   }
 
    if (prog->type == PIPE_SHADER_COMPUTE) {
       if (chipset >= NVISA_GK104_CHIPSET) {
          info->io.auxCBSlot = 7;
-         info->io.texBindBase = NVC0_CB_AUX_TEX_INFO(0);
-         info->prop.cp.gridInfoBase = NVC0_CB_AUX_GRID_INFO;
+         info->io.msInfoCBSlot = 7;
          info->io.uboInfoBase = NVC0_CB_AUX_UBO_INFO(0);
       }
-      info->io.msInfoCBSlot = 0;
-      info->io.msInfoBase = NVC0_CB_AUX_MS_INFO;
-      info->io.bufInfoBase = NVC0_CB_AUX_BUF_INFO(0);
-      info->io.suInfoBase = NVC0_CB_AUX_SU_INFO(0);
+      info->prop.cp.gridInfoBase = NVC0_CB_AUX_GRID_INFO(0);
    } else {
-      if (chipset >= NVISA_GK104_CHIPSET) {
-         info->io.texBindBase = NVC0_CB_AUX_TEX_INFO(0);
-      }
       info->io.sampleInfoBase = NVC0_CB_AUX_SAMPLE_INFO;
-      info->io.bufInfoBase = NVC0_CB_AUX_BUF_INFO(0);
-      info->io.suInfoBase = NVC0_CB_AUX_SU_INFO(0);
-      info->io.msInfoCBSlot = 15;
-      info->io.msInfoBase = 0; /* TODO */
    }
 
    info->assignSlots = nvc0_program_assign_varying_slots;
@@ -752,7 +757,8 @@ nvc0_program_upload_code(struct nvc0_context *nvc0, struct nvc0_program *prog)
    if (prog->fixups) {
       nv50_ir_apply_fixups(prog->fixups, prog->code,
                            prog->fp.force_persample_interp,
-                           prog->fp.flatshade);
+                           prog->fp.flatshade,
+                           0 /* alphatest */);
       for (int i = 0; i < 2; i++) {
          unsigned mask = prog->fp.color_interp[i] >> 4;
          unsigned interp = prog->fp.color_interp[i] & 3;

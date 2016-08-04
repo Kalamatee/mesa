@@ -44,6 +44,7 @@
 #include "glformats.h"
 #include "texstore.h"
 #include "transformfeedback.h"
+#include "varray.h"
 
 
 /* Debug flags */
@@ -1199,11 +1200,13 @@ _mesa_multi_bind_lookup_bufferobj(struct gl_context *ctx,
  */
 static void
 unbind(struct gl_context *ctx,
-       struct gl_buffer_object **ptr,
+       struct gl_vertex_array_object *vao, unsigned index,
        struct gl_buffer_object *obj)
 {
-   if (*ptr == obj) {
-      _mesa_reference_buffer_object(ctx, ptr, ctx->Shared->NullBufferObj);
+   if (vao->VertexBinding[index].BufferObj == obj) {
+      _mesa_bind_vertex_buffer(ctx, vao, index, ctx->Shared->NullBufferObj,
+                               vao->VertexBinding[index].Offset,
+                               vao->VertexBinding[index].Stride);
    }
 }
 
@@ -1302,7 +1305,7 @@ _mesa_DeleteBuffers(GLsizei n, const GLuint *ids)
 
          /* unbind any vertex pointers bound to this buffer */
          for (j = 0; j < ARRAY_SIZE(vao->VertexBinding); j++) {
-            unbind(ctx, &vao->VertexBinding[j].BufferObj, bufObj);
+            unbind(ctx, vao, j, bufObj);
          }
 
          if (ctx->Array.ArrayBufferObj == bufObj) {
@@ -1765,7 +1768,7 @@ _mesa_buffer_sub_data(struct gl_context *ctx, struct gl_buffer_object *bufObj,
                       const char *func)
 {
    if (!buffer_object_subdata_range_good(ctx, bufObj, offset, size,
-                                         false, func)) {
+                                         true, func)) {
       /* error already recorded */
       return;
    }

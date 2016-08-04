@@ -51,6 +51,32 @@ def hash(name):
 
     return h
 
+def get_platform_guard_macro(name):
+    if "Xlib" in name:
+        return "VK_USE_PLATFORM_XLIB_KHR"
+    elif "Xcb" in name:
+        return "VK_USE_PLATFORM_XCB_KHR"
+    elif "Wayland" in name:
+        return "VK_USE_PLATFORM_WAYLAND_KHR"
+    elif "Mir" in name:
+        return "VK_USE_PLATFORM_MIR_KHR"
+    elif "Android" in name:
+        return "VK_USE_PLATFORM_ANDROID_KHR"
+    elif "Win32" in name:
+        return "VK_USE_PLATFORM_WIN32_KHR"
+    else:
+        return None
+
+def print_guard_start(name):
+    guard = get_platform_guard_macro(name)
+    if guard is not None:
+        print "#ifdef {0}".format(guard)
+
+def print_guard_end(name):
+    guard = get_platform_guard_macro(name)
+    if guard is not None:
+        print "#endif // {0}".format(guard)
+
 opt_header = False
 opt_code = False
 
@@ -86,7 +112,15 @@ if opt_header:
     print "      struct {"
 
     for type, name, args, num, h in entrypoints:
-        print "         %s (*%s)%s;" % (type, name, args)
+        guard = get_platform_guard_macro(name)
+        if guard is not None:
+            print "#ifdef {0}".format(guard)
+            print "         PFN_vk{0} {0};".format(name)
+            print "#else"
+            print "         void *{0};".format(name)
+            print "#endif"
+        else:
+            print "         PFN_vk{0} {0};".format(name)
     print "      };\n"
     print "   };\n"
     print "};\n"
@@ -94,12 +128,14 @@ if opt_header:
     print "void anv_set_dispatch_devinfo(const struct brw_device_info *info);\n"
 
     for type, name, args, num, h in entrypoints:
+        print_guard_start(name)
         print "%s anv_%s%s;" % (type, name, args)
         print "%s gen7_%s%s;" % (type, name, args)
         print "%s gen75_%s%s;" % (type, name, args)
         print "%s gen8_%s%s;" % (type, name, args)
         print "%s gen9_%s%s;" % (type, name, args)
         print "%s anv_validate_%s%s;" % (type, name, args)
+        print_guard_end(name)
     exit()
 
 
@@ -167,10 +203,14 @@ print "};\n"
 
 for layer in [ "anv", "validate", "gen7", "gen75", "gen8", "gen9" ]:
     for type, name, args, num, h in entrypoints:
+        print_guard_start(name)
         print "%s %s_%s%s __attribute__ ((weak));" % (type, layer, name, args)
+        print_guard_end(name)
     print "\nconst struct anv_dispatch_table %s_layer = {" % layer
     for type, name, args, num, h in entrypoints:
+        print_guard_start(name)
         print "   .%s = %s_%s," % (name, layer, name)
+        print_guard_end(name)
     print "};\n"
 
 print """
@@ -242,8 +282,10 @@ anv_resolve_entrypoint(uint32_t index)
 # lets the resolver look it up in the table.
 
 for type, name, args, num, h in entrypoints:
+    print_guard_start(name)
     print "static void *resolve_%s(void) { return anv_resolve_entrypoint(%d); }" % (name, num)
     print "%s vk%s%s\n   __attribute__ ((ifunc (\"resolve_%s\"), visibility (\"default\")));\n" % (type, name, args, name)
+    print_guard_end(name)
 
 
 # Now generate the hash table used for entry point look up.  This is a

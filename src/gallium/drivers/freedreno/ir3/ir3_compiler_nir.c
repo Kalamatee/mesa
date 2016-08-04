@@ -181,7 +181,7 @@ compile_init(struct ir3_compiler *compiler,
 		nir_print_shader(ctx->s, stdout);
 	}
 
-	so->first_driver_param = so->first_immediate = ctx->s->num_uniforms;
+	so->first_driver_param = so->first_immediate = align(ctx->s->num_uniforms, 4);
 
 	/* Layout of constant registers:
 	 *
@@ -1146,7 +1146,7 @@ static void add_sysval_input(struct ir3_compile *ctx, gl_system_value slot,
 	so->inputs[n].slot = slot;
 	so->inputs[n].compmask = 1;
 	so->inputs[n].regid = r;
-	so->inputs[n].interpolate = INTERP_QUALIFIER_FLAT;
+	so->inputs[n].interpolate = INTERP_MODE_FLAT;
 	so->total_in++;
 
 	ctx->ir->ninputs = MAX2(ctx->ir->ninputs, r + 1);
@@ -2055,7 +2055,7 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 				 * we need to do flat vs smooth shading depending on
 				 * rast state:
 				 */
-				if (in->data.interpolation == INTERP_QUALIFIER_NONE) {
+				if (in->data.interpolation == INTERP_MODE_NONE) {
 					switch (slot) {
 					case VARYING_SLOT_COL0:
 					case VARYING_SLOT_COL1:
@@ -2069,7 +2069,7 @@ setup_input(struct ir3_compile *ctx, nir_variable *in)
 				}
 
 				if (ctx->flat_bypass) {
-					if ((so->inputs[n].interpolate == INTERP_QUALIFIER_FLAT) ||
+					if ((so->inputs[n].interpolate == INTERP_MODE_FLAT) ||
 							(so->inputs[n].rasterflat && ctx->so->key.rasterflat))
 						use_ldlv = true;
 				}
@@ -2188,16 +2188,7 @@ static void
 emit_instructions(struct ir3_compile *ctx)
 {
 	unsigned ninputs, noutputs;
-	nir_function_impl *fxn = NULL;
-
-	/* Find the main function: */
-	nir_foreach_function(function, ctx->s) {
-		compile_assert(ctx, strcmp(function->name, "main") == 0);
-		compile_assert(ctx, function->impl);
-		fxn = function->impl;
-		break;
-	}
-
+	nir_function_impl *fxn = nir_shader_get_entrypoint(ctx->s)->impl;
 
 	ninputs  = (max_drvloc(&ctx->s->inputs) + 1) * 4;
 	noutputs = (max_drvloc(&ctx->s->outputs) + 1) * 4;

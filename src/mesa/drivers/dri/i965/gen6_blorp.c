@@ -30,58 +30,49 @@
 #include "brw_state.h"
 
 #include "brw_blorp.h"
+#include "vbo/vbo.h"
+#include "brw_draw.h"
 
 static void
-gen6_blorp_emit_vertex_buffer_state(struct brw_context *brw,
-                                    unsigned num_elems,
-                                    unsigned vbo_size,
-                                    uint32_t vertex_offset)
+gen6_blorp_emit_input_varying_data(struct brw_context *brw,
+                                   const struct brw_blorp_params *params,
+                                   unsigned *offset,
+                                   unsigned *size)
 {
-   /* 3DSTATE_VERTEX_BUFFERS */
-   const int num_buffers = 1;
-   const int batch_length = 1 + 4 * num_buffers;
+   const unsigned vec4_size_in_bytes = 4 * sizeof(float);
+   const unsigned max_num_varyings =
+      DIV_ROUND_UP(sizeof(params->wm_inputs), vec4_size_in_bytes);
+   const unsigned num_varyings = params->wm_prog_data->num_varying_inputs;
 
-   uint32_t dw0 = GEN6_VB0_ACCESS_VERTEXDATA |
-                  (num_elems * sizeof(float)) << BRW_VB0_PITCH_SHIFT;
+   *size = num_varyings * vec4_size_in_bytes;
 
-   if (brw->gen >= 7)
-      dw0 |= GEN7_VB0_ADDRESS_MODIFYENABLE;
+   const float *const inputs_src = (const float *)&params->wm_inputs;
+   float *inputs = (float *)brw_state_batch(brw, AUB_TRACE_VERTEX_BUFFER,
+                                            *size, 32, offset);
 
-   switch (brw->gen) {
-   case 7:
-      dw0 |= GEN7_MOCS_L3 << 16;
-      break;
-   case 8:
-      dw0 |= BDW_MOCS_WB << 16;
-      break;
-   case 9:
-      dw0 |= SKL_MOCS_WB << 16;
-      break;
+   /* Walk over the attribute slots, determine if the attribute is used by
+    * the program and when necessary copy the values from the input storage to
+    * the vertex data buffer.
+    */
+   for (unsigned i = 0; i < max_num_varyings; i++) {
+      const gl_varying_slot attr = VARYING_SLOT_VAR0 + i;
+
+      if (!(params->wm_prog_data->inputs_read & BITFIELD64_BIT(attr)))
+         continue;
+
+      memcpy(inputs, inputs_src + i * 4, vec4_size_in_bytes);
+
+      inputs += 4;
    }
-
-   BEGIN_BATCH(batch_length);
-   OUT_BATCH((_3DSTATE_VERTEX_BUFFERS << 16) | (batch_length - 2));
-   OUT_BATCH(dw0);
-   if (brw->gen >= 8) {
-      OUT_RELOC64(brw->batch.bo, I915_GEM_DOMAIN_VERTEX, 0, vertex_offset);
-      OUT_BATCH(vbo_size);
-   } else {
-      /* start address */
-      OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_VERTEX, 0,
-                vertex_offset);
-      /* end address */
-      OUT_RELOC(brw->batch.bo, I915_GEM_DOMAIN_VERTEX, 0,
-                vertex_offset + vbo_size - 1);
-      OUT_BATCH(0);
-   }
-   ADVANCE_BATCH();
 }
 
-void
-gen6_blorp_emit_vertices(struct brw_context *brw,
-                         const struct brw_blorp_params *params)
+static void
+gen6_blorp_emit_vertex_data(struct brw_context *brw,
+                            const struct brw_blorp_params *params)
 {
    uint32_t vertex_offset;
+   uint32_t const_data_offset = 0;
+   unsigned const_data_size = 0;
 
    /* Setup VBO for the rectangle primitive..
     *
@@ -109,6 +100,11 @@ gen6_blorp_emit_vertices(struct brw_context *brw,
     *   dw6: Vertex Position Z.
     *   dw7: Vertex Position W.
     *
+    *   dw8: Flat vertex input 0
+    *   dw9: Flat vertex input 1
+    *   ...
+    *   dwn: Flat vertex input n - 8
+    *
     * For details, see the Sandybridge PRM, Volume 2, Part 1, Section 1.5.1
     * "Vertex URB Entry (VUE) Formats".
     *
@@ -116,38 +112,79 @@ gen6_blorp_emit_vertices(struct brw_context *brw,
     * zero and W to one. Header words dw0-3 are all zero. There is no need to
     * include the fixed values in the vertex buffer. Vertex fetcher can be
     * instructed to fill vertex elements with constant values of one and zero
-    * instead of reading them from the buffer. See the vertex element setup
-    * below.
+    * instead of reading them from the buffer.
+    * Flat inputs are program constants that are not interpolated. Moreover
+    * their values will be the same between vertices.
+    *
+    * See the vertex element setup below.
     */
-   {
-      float *vertex_data;
+   const float vertices[] = {
+      /* v0 */ (float)params->x0, (float)params->y1,
+      /* v1 */ (float)params->x1, (float)params->y1,
+      /* v2 */ (float)params->x0, (float)params->y0,
+   };
 
-      const float vertices[] = {
-         /* v0 */ (float)params->x0, (float)params->y1,
-         /* v1 */ (float)params->x1, (float)params->y1,
-         /* v2 */ (float)params->x0, (float)params->y0,
-      };
+   float *const vertex_data = (float *)brw_state_batch(
+                                          brw, AUB_TRACE_VERTEX_BUFFER,
+                                          sizeof(vertices), 32,
+                                          &vertex_offset);
+   memcpy(vertex_data, vertices, sizeof(vertices));
 
-      vertex_data = (float *) brw_state_batch(brw, AUB_TRACE_VERTEX_BUFFER,
-                                              sizeof(vertices), 32,
-                                              &vertex_offset);
-      memcpy(vertex_data, vertices, sizeof(vertices));
+   if (params->wm_prog_data && params->wm_prog_data->num_varying_inputs)
+      gen6_blorp_emit_input_varying_data(brw, params,
+                                         &const_data_offset,
+                                         &const_data_size);
 
-      const unsigned blorp_num_vue_elems = 2;
-      gen6_blorp_emit_vertex_buffer_state(brw, blorp_num_vue_elems,
-                                          sizeof(vertices), vertex_offset);
+   /* 3DSTATE_VERTEX_BUFFERS */
+   const int num_buffers = 1 + (const_data_size > 0);
+   const int batch_length = 1 + 4 * num_buffers;
+
+   BEGIN_BATCH(batch_length);
+   OUT_BATCH((_3DSTATE_VERTEX_BUFFERS << 16) | (batch_length - 2));
+
+   const unsigned blorp_num_vue_elems = 2;
+   const unsigned stride = blorp_num_vue_elems * sizeof(float);
+   EMIT_VERTEX_BUFFER_STATE(brw, 0 /* buffer_nr */, brw->batch.bo,
+                            vertex_offset, vertex_offset + sizeof(vertices),
+                            stride, 0 /* steprate */);
+
+   if (const_data_size) {
+      /* Tell vertex fetcher not to advance the pointer in the buffer when
+       * moving to the next vertex. This will effectively provide the same
+       * data for all the vertices. For flat inputs only the data provided
+       * for the first provoking vertex actually matters.
+       */
+      const unsigned stride_zero = 0;
+      EMIT_VERTEX_BUFFER_STATE(brw, 1 /* buffer_nr */, brw->batch.bo,
+                               const_data_offset,
+                               const_data_offset + const_data_size,
+                               stride_zero, 0 /* step_rate */);
    }
+
+   ADVANCE_BATCH();
+}
+
+void
+gen6_blorp_emit_vertices(struct brw_context *brw,
+                         const struct brw_blorp_params *params)
+{
+   gen6_blorp_emit_vertex_data(brw, params);
+
+   const unsigned num_varyings =
+      params->wm_prog_data ? params->wm_prog_data->num_varying_inputs : 0;
+   const unsigned num_elements = 2 + num_varyings;
+   const int batch_length = 1 + 2 * num_elements;
+
+   BEGIN_BATCH(batch_length);
 
    /* 3DSTATE_VERTEX_ELEMENTS
     *
     * Fetch dwords 0 - 7 from each VUE. See the comments above where
-    * the vertex_bo is filled with data.
+    * the vertex_bo is filled with data. First element contains dwords
+    * for the VUE header, second the actual position values and the
+    * remaining contain the flat inputs.
     */
    {
-      const int num_elements = 2;
-      const int batch_length = 1 + 2 * num_elements;
-
-      BEGIN_BATCH(batch_length);
       OUT_BATCH((_3DSTATE_VERTEX_ELEMENTS << 16) | (batch_length - 2));
       /* Element 0 */
       OUT_BATCH(GEN6_VE0_VALID |
@@ -165,8 +202,21 @@ gen6_blorp_emit_vertices(struct brw_context *brw,
                 BRW_VE1_COMPONENT_STORE_SRC << BRW_VE1_COMPONENT_1_SHIFT |
                 BRW_VE1_COMPONENT_STORE_0 << BRW_VE1_COMPONENT_2_SHIFT |
                 BRW_VE1_COMPONENT_STORE_1_FLT << BRW_VE1_COMPONENT_3_SHIFT);
-      ADVANCE_BATCH();
    }
+
+   for (unsigned i = 0; i < num_varyings; ++i) {
+      /* Element 2 + i */
+      OUT_BATCH(1 << GEN6_VE0_INDEX_SHIFT |
+                GEN6_VE0_VALID |
+                BRW_SURFACEFORMAT_R32G32B32A32_FLOAT << BRW_VE0_FORMAT_SHIFT |
+                (i * 4 * sizeof(float)) << BRW_VE0_SRC_OFFSET_SHIFT);
+      OUT_BATCH(BRW_VE1_COMPONENT_STORE_SRC << BRW_VE1_COMPONENT_0_SHIFT |
+                BRW_VE1_COMPONENT_STORE_SRC << BRW_VE1_COMPONENT_1_SHIFT |
+                BRW_VE1_COMPONENT_STORE_SRC << BRW_VE1_COMPONENT_2_SHIFT |
+                BRW_VE1_COMPONENT_STORE_SRC << BRW_VE1_COMPONENT_3_SHIFT);
+   }
+
+   ADVANCE_BATCH();
 }
 
 
@@ -298,98 +348,6 @@ gen6_blorp_emit_cc_state_pointers(struct brw_context *brw,
    OUT_BATCH(depthstencil_offset | 1); /* DEPTH_STENCIL_STATE offset */
    OUT_BATCH(cc_state_offset | 1); /* COLOR_CALC_STATE offset */
    ADVANCE_BATCH();
-}
-
-
-/* WM push constants */
-uint32_t
-gen6_blorp_emit_wm_constants(struct brw_context *brw,
-                             const struct brw_blorp_params *params)
-{
-   uint32_t wm_push_const_offset;
-
-   uint32_t *constants = brw_state_batch(brw, AUB_TRACE_WM_CONSTANTS,
-                                         sizeof(params->wm_push_consts),
-                                         32, &wm_push_const_offset);
-
-   const uint32_t *push_consts = (const uint32_t *)&params->wm_push_consts;
-   for (unsigned i = 0; i < params->wm_prog_data->nr_params; i++)
-      constants[i] = push_consts[params->wm_prog_data->param[i]];
-
-   return wm_push_const_offset;
-}
-
-
-/* SURFACE_STATE for renderbuffer or texture surface (see
- * brw_update_renderbuffer_surface and brw_update_texture_surface)
- */
-static uint32_t
-gen6_blorp_emit_surface_state(struct brw_context *brw,
-                              const struct brw_blorp_params *params,
-                              const struct brw_blorp_surface_info *surface,
-                              uint32_t read_domains, uint32_t write_domain)
-{
-   uint32_t wm_surf_offset;
-   uint32_t width = surface->width;
-   uint32_t height = surface->height;
-   if (surface->num_samples > 1) {
-      /* Since gen6 uses INTEL_MSAA_LAYOUT_IMS, width and height are measured
-       * in samples.  But SURFACE_STATE wants them in pixels, so we need to
-       * divide them each by 2.
-       */
-      width /= 2;
-      height /= 2;
-   }
-   struct intel_mipmap_tree *mt = surface->mt;
-   uint32_t tile_x, tile_y;
-
-   uint32_t *surf = (uint32_t *)
-      brw_state_batch(brw, AUB_TRACE_SURFACE_STATE, 6 * 4, 32,
-                      &wm_surf_offset);
-
-   surf[0] = (BRW_SURFACE_2D << BRW_SURFACE_TYPE_SHIFT |
-              BRW_SURFACE_MIPMAPLAYOUT_BELOW << BRW_SURFACE_MIPLAYOUT_SHIFT |
-              BRW_SURFACE_CUBEFACE_ENABLES |
-              surface->brw_surfaceformat << BRW_SURFACE_FORMAT_SHIFT);
-
-   /* reloc */
-   surf[1] = (brw_blorp_compute_tile_offsets(surface, &tile_x, &tile_y) +
-              mt->bo->offset64);
-
-   surf[2] = (0 << BRW_SURFACE_LOD_SHIFT |
-              (width - 1) << BRW_SURFACE_WIDTH_SHIFT |
-              (height - 1) << BRW_SURFACE_HEIGHT_SHIFT);
-
-   uint32_t tiling = surface->map_stencil_as_y_tiled
-      ? BRW_SURFACE_TILED | BRW_SURFACE_TILED_Y
-      : brw_get_surface_tiling_bits(mt->tiling);
-   uint32_t pitch_bytes = mt->pitch;
-   if (surface->map_stencil_as_y_tiled)
-      pitch_bytes *= 2;
-   surf[3] = (tiling |
-              0 << BRW_SURFACE_DEPTH_SHIFT |
-              (pitch_bytes - 1) << BRW_SURFACE_PITCH_SHIFT);
-
-   surf[4] = brw_get_surface_num_multisamples(surface->num_samples);
-
-   /* Note that the low bits of these fields are missing, so
-    * there's the possibility of getting in trouble.
-    */
-   assert(tile_x % 4 == 0);
-   assert(tile_y % 2 == 0);
-   surf[5] = ((tile_x / 4) << BRW_SURFACE_X_OFFSET_SHIFT |
-              (tile_y / 2) << BRW_SURFACE_Y_OFFSET_SHIFT |
-              (surface->mt->valign == 4 ?
-               BRW_SURFACE_VERTICAL_ALIGN_ENABLE : 0));
-
-   /* Emit relocation to surface contents */
-   drm_intel_bo_emit_reloc(brw->batch.bo,
-                           wm_surf_offset + 4,
-                           mt->bo,
-                           surf[1] - mt->bo->offset64,
-                           read_domains, write_domain);
-
-   return wm_surf_offset;
 }
 
 
@@ -597,16 +555,24 @@ static void
 gen6_blorp_emit_sf_config(struct brw_context *brw,
                           const struct brw_blorp_params *params)
 {
+   const unsigned num_varyings =
+      params->wm_prog_data ? params->wm_prog_data->num_varying_inputs : 0;
+   const unsigned urb_read_length =
+      brw_blorp_get_urb_length(params->wm_prog_data);
+
    BEGIN_BATCH(20);
    OUT_BATCH(_3DSTATE_SF << 16 | (20 - 2));
-   OUT_BATCH(params->num_varyings << GEN6_SF_NUM_OUTPUTS_SHIFT |
-             1 << GEN6_SF_URB_ENTRY_READ_LENGTH_SHIFT |
+   OUT_BATCH(num_varyings << GEN6_SF_NUM_OUTPUTS_SHIFT |
+             urb_read_length << GEN6_SF_URB_ENTRY_READ_LENGTH_SHIFT |
              BRW_SF_URB_ENTRY_READ_OFFSET <<
                 GEN6_SF_URB_ENTRY_READ_OFFSET_SHIFT);
    OUT_BATCH(0); /* dw2 */
    OUT_BATCH(params->dst.num_samples > 1 ? GEN6_SF_MSRAST_ON_PATTERN : 0);
-   for (int i = 0; i < 16; ++i)
+   for (int i = 0; i < 13; ++i)
       OUT_BATCH(0);
+   OUT_BATCH(params->wm_prog_data ? params->wm_prog_data->flat_inputs : 0);
+   OUT_BATCH(0);
+   OUT_BATCH(0);
    ADVANCE_BATCH();
 }
 
@@ -650,7 +616,9 @@ gen6_blorp_emit_wm_config(struct brw_context *brw,
    dw5 |= GEN6_WM_LINE_END_CAP_AA_WIDTH_0_5;
    dw5 |= (brw->max_wm_threads - 1) << GEN6_WM_MAX_THREADS_SHIFT;
    dw6 |= 0 << GEN6_WM_BARYCENTRIC_INTERPOLATION_MODE_SHIFT; /* No interp */
-   dw6 |= 0 << GEN6_WM_NUM_SF_OUTPUTS_SHIFT; /* No inputs from SF */
+   dw6 |= (params->wm_prog_data ? prog_data->num_varying_inputs : 0) <<
+          GEN6_WM_NUM_SF_OUTPUTS_SHIFT;
+
    if (params->wm_prog_data) {
       dw5 |= GEN6_WM_DISPATCH_ENABLE; /* We are rendering */
 
@@ -692,32 +660,6 @@ gen6_blorp_emit_wm_config(struct brw_context *brw,
    OUT_BATCH(dw6);
    OUT_BATCH(0); /* kernel 1 pointer */
    OUT_BATCH(ksp2);
-   ADVANCE_BATCH();
-}
-
-
-static void
-gen6_blorp_emit_constant_ps(struct brw_context *brw,
-                            const struct brw_blorp_params *params,
-                            uint32_t wm_push_const_offset)
-{
-   /* Make sure the push constants fill an exact integer number of
-    * registers.
-    */
-   assert(sizeof(struct brw_blorp_wm_push_constants) % 32 == 0);
-
-   /* There must be at least one register worth of push constant data. */
-   assert(BRW_BLORP_NUM_PUSH_CONST_REGS > 0);
-
-   /* Enable push constant buffer 0. */
-   BEGIN_BATCH(5);
-   OUT_BATCH(_3DSTATE_CONSTANT_PS << 16 |
-             GEN6_CONSTANT_BUFFER_0_ENABLE |
-             (5 - 2));
-   OUT_BATCH(wm_push_const_offset + (BRW_BLORP_NUM_PUSH_CONST_REGS - 1));
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   OUT_BATCH(0);
    ADVANCE_BATCH();
 }
 
@@ -990,7 +932,6 @@ gen6_blorp_exec(struct brw_context *brw,
    uint32_t cc_blend_state_offset = 0;
    uint32_t cc_state_offset = 0;
    uint32_t depthstencil_offset;
-   uint32_t wm_push_const_offset = 0;
    uint32_t wm_bind_bo_offset = 0;
 
    /* Emit workaround flushes when we switch from drawing to blorping. */
@@ -1014,16 +955,16 @@ gen6_blorp_exec(struct brw_context *brw,
    if (params->wm_prog_data) {
       uint32_t wm_surf_offset_renderbuffer;
       uint32_t wm_surf_offset_texture = 0;
-      wm_push_const_offset = gen6_blorp_emit_wm_constants(brw, params);
+
       intel_miptree_used_for_rendering(params->dst.mt);
       wm_surf_offset_renderbuffer =
-         gen6_blorp_emit_surface_state(brw, params, &params->dst,
-                                       I915_GEM_DOMAIN_RENDER,
-                                       I915_GEM_DOMAIN_RENDER);
+         brw_blorp_emit_surface_state(brw, &params->dst,
+                                      I915_GEM_DOMAIN_RENDER,
+                                      I915_GEM_DOMAIN_RENDER, true);
       if (params->src.mt) {
          wm_surf_offset_texture =
-            gen6_blorp_emit_surface_state(brw, params, &params->src,
-                                          I915_GEM_DOMAIN_SAMPLER, 0);
+            brw_blorp_emit_surface_state(brw, &params->src,
+                                         I915_GEM_DOMAIN_SAMPLER, 0, false);
       }
       wm_bind_bo_offset =
          gen6_blorp_emit_binding_table(brw,
@@ -1040,10 +981,7 @@ gen6_blorp_exec(struct brw_context *brw,
    gen6_blorp_emit_gs_disable(brw, params);
    gen6_blorp_emit_clip_disable(brw);
    gen6_blorp_emit_sf_config(brw, params);
-   if (params->wm_prog_data)
-      gen6_blorp_emit_constant_ps(brw, params, wm_push_const_offset);
-   else
-      gen6_blorp_emit_constant_ps_disable(brw, params);
+   gen6_blorp_emit_constant_ps_disable(brw, params);
    gen6_blorp_emit_wm_config(brw, params);
    if (params->wm_prog_data)
       gen6_blorp_emit_binding_table_pointers(brw, wm_bind_bo_offset);

@@ -68,6 +68,7 @@
 #include "st_draw.h"
 #include "st_extensions.h"
 #include "st_gen_mipmap.h"
+#include "st_pbo.h"
 #include "st_program.h"
 #include "st_vdpau.h"
 #include "st_texture.h"
@@ -89,7 +90,8 @@ static void st_Enable(struct gl_context * ctx, GLenum cap, GLboolean state)
 
    switch (cap) {
    case GL_DEBUG_OUTPUT:
-      st_enable_debug_output(st, state);
+   case GL_DEBUG_OUTPUT_SYNCHRONOUS:
+      st_update_debug_callback(st);
       break;
    default:
       break;
@@ -128,20 +130,99 @@ void st_invalidate_state(struct gl_context * ctx, GLbitfield new_state)
 {
    struct st_context *st = st_context(ctx);
 
-   /* Replace _NEW_FRAG_CLAMP with ST_NEW_FRAGMENT_PROGRAM for the fallback. */
-   if (st->clamp_frag_color_in_shader && (new_state & _NEW_FRAG_CLAMP)) {
-      new_state &= ~_NEW_FRAG_CLAMP;
-      st->dirty.st |= ST_NEW_FRAGMENT_PROGRAM;
+   if (new_state & _NEW_BUFFERS) {
+      st->dirty |= ST_NEW_DSA |
+                   ST_NEW_FB_STATE |
+                   ST_NEW_SAMPLE_MASK |
+                   ST_NEW_SAMPLE_SHADING |
+                   ST_NEW_FS_STATE |
+                   ST_NEW_POLY_STIPPLE |
+                   ST_NEW_VIEWPORT |
+                   ST_NEW_RASTERIZER |
+                   ST_NEW_SCISSOR |
+                   ST_NEW_WINDOW_RECTANGLES;
+   } else {
+      /* These set a subset of flags set by _NEW_BUFFERS, so we only have to
+       * check them when _NEW_BUFFERS isn't set.
+       */
+      if (new_state & (_NEW_DEPTH |
+                       _NEW_STENCIL))
+         st->dirty |= ST_NEW_DSA;
+
+      if (new_state & _NEW_PROGRAM)
+         st->dirty |= ST_NEW_RASTERIZER;
+
+      if (new_state & _NEW_SCISSOR)
+         st->dirty |= ST_NEW_RASTERIZER |
+                      ST_NEW_SCISSOR |
+                      ST_NEW_WINDOW_RECTANGLES;
+
+      if (new_state & _NEW_FOG)
+         st->dirty |= ST_NEW_FS_STATE;
+
+      if (new_state & _NEW_POLYGONSTIPPLE)
+         st->dirty |= ST_NEW_POLY_STIPPLE;
+
+      if (new_state & _NEW_VIEWPORT)
+         st->dirty |= ST_NEW_VIEWPORT;
+
+      if (new_state & _NEW_FRAG_CLAMP) {
+         if (st->clamp_frag_color_in_shader)
+            st->dirty |= ST_NEW_FS_STATE;
+         else
+            st->dirty |= ST_NEW_RASTERIZER;
+      }
    }
+
+   if (new_state & _NEW_MULTISAMPLE) {
+      st->dirty |= ST_NEW_BLEND |
+                   ST_NEW_SAMPLE_MASK |
+                   ST_NEW_SAMPLE_SHADING |
+                   ST_NEW_RASTERIZER |
+                   ST_NEW_FS_STATE;
+   } else {
+      /* These set a subset of flags set by _NEW_MULTISAMPLE, so we only
+       * have to check them when _NEW_MULTISAMPLE isn't set.
+       */
+      if (new_state & (_NEW_LIGHT |
+                       _NEW_LINE |
+                       _NEW_POINT |
+                       _NEW_POLYGON |
+                       _NEW_TRANSFORM))
+         st->dirty |= ST_NEW_RASTERIZER;
+   }
+
+   if (new_state & (_NEW_PROJECTION |
+                    _NEW_TRANSFORM))
+      st->dirty |= ST_NEW_CLIP_STATE;
+
+   if (new_state & _NEW_COLOR)
+      st->dirty |= ST_NEW_BLEND |
+                   ST_NEW_DSA;
+
+   if (new_state & _NEW_PIXEL)
+      st->dirty |= ST_NEW_PIXEL_TRANSFER;
+
+   if (new_state & _NEW_TEXTURE)
+      st->dirty |= ST_NEW_SAMPLER_VIEWS |
+                   ST_NEW_SAMPLERS |
+                   ST_NEW_IMAGE_UNITS;
+
+   if (new_state & _NEW_CURRENT_ATTRIB)
+      st->dirty |= ST_NEW_VERTEX_ARRAYS;
+
+   if (new_state & _NEW_PROGRAM_CONSTANTS)
+      st->dirty |= ST_NEW_CONSTANTS;
 
    /* Update the vertex shader if ctx->Light._ClampVertexColor was changed. */
-   if (st->clamp_vert_color_in_shader && (new_state & _NEW_LIGHT)) {
-      st->dirty.st |= ST_NEW_VERTEX_PROGRAM;
-   }
+   if (st->clamp_vert_color_in_shader && (new_state & _NEW_LIGHT))
+      st->dirty |= ST_NEW_VS_STATE;
 
-   /* Invalidate render and compute pipelines. */
-   st->dirty.mesa |= new_state;
-   st->dirty_cp.mesa |= new_state;
+   /* Which shaders are dirty will be determined manually. */
+   if (new_state & _NEW_PROGRAM) {
+      st->gfx_shaders_may_be_dirty = true;
+      st->compute_shader_may_be_dirty = true;
+   }
 
    /* This is the only core Mesa module we depend upon.
     * No longer use swrast, swsetup, tnl.
@@ -162,7 +243,7 @@ st_destroy_context_priv(struct st_context *st)
    st_destroy_drawpix(st);
    st_destroy_drawtex(st);
    st_destroy_perfmon(st);
-   st_destroy_pbo_upload(st);
+   st_destroy_pbo_helpers(st);
 
    for (shader = 0; shader < ARRAY_SIZE(st->state.sampler_views); shader++) {
       for (i = 0; i < ARRAY_SIZE(st->state.sampler_views[0]); i++) {
@@ -182,6 +263,9 @@ st_destroy_context_priv(struct st_context *st)
    /* free glDrawPixels cache data */
    free(st->drawpix_cache.image);
    pipe_resource_reference(&st->drawpix_cache.texture, NULL);
+
+   /* free glReadPixels cache data */
+   st_invalidate_readpix_cache(st);
 
    cso_destroy_context(st->cso_context);
    free( st );
@@ -209,11 +293,7 @@ st_create_context_priv( struct gl_context *ctx, struct pipe_context *pipe,
    /* state tracker needs the VBO module */
    _vbo_CreateContext(ctx);
 
-   /* Initialize render and compute pipelines flags */
-   st->dirty.mesa = ~0;
-   st->dirty.st = ~0;
-   st->dirty_cp.mesa = ~0;
-   st->dirty_cp.st = ~0;
+   st->dirty = ST_ALL_STATES_MASK;
 
    /* Create upload manager for vertex data for glBitmap, glDrawPixels,
     * glClear, etc.
@@ -237,7 +317,7 @@ st_create_context_priv( struct gl_context *ctx, struct pipe_context *pipe,
    st_init_atoms( st );
    st_init_clear(st);
    st_init_draw( st );
-   st_init_pbo_upload(st);
+   st_init_pbo_helpers(st);
 
    /* Choose texture target for glDrawPixels, glBitmap, renderbuffers */
    if (pipe->screen->get_param(pipe->screen, PIPE_CAP_NPOT_TEXTURES))
@@ -369,6 +449,7 @@ st_create_context_priv( struct gl_context *ctx, struct pipe_context *pipe,
    st->shader_has_one_variant[MESA_SHADER_TESS_CTRL] = st->has_shareable_shaders;
    st->shader_has_one_variant[MESA_SHADER_TESS_EVAL] = st->has_shareable_shaders;
    st->shader_has_one_variant[MESA_SHADER_GEOMETRY] = st->has_shareable_shaders;
+   st->shader_has_one_variant[MESA_SHADER_COMPUTE] = st->has_shareable_shaders;
 
    _mesa_compute_version(ctx);
 
@@ -411,8 +492,12 @@ struct st_context *st_create_context(gl_api api, struct pipe_context *pipe,
    memset(&funcs, 0, sizeof(funcs));
    st_init_driver_functions(pipe->screen, &funcs);
 
-   ctx = _mesa_create_context(api, visual, shareCtx, &funcs);
-   if (!ctx) {
+   ctx = calloc(1, sizeof(struct gl_context));
+   if (!ctx)
+      return NULL;
+
+   if (!_mesa_initialize_context(ctx, api, visual, shareCtx, &funcs)) {
+      free(ctx);
       return NULL;
    }
 

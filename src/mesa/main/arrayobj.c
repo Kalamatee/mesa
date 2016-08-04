@@ -52,6 +52,7 @@
 #include "mtypes.h"
 #include "varray.h"
 #include "main/dispatch.h"
+#include "util/bitscan.h"
 
 
 /**
@@ -342,12 +343,11 @@ _mesa_update_vao_client_arrays(struct gl_context *ctx,
    GLbitfield64 arrays = vao->NewArrays;
 
    while (arrays) {
+      const int attrib = u_bit_scan64(&arrays);
+
       struct gl_client_array *client_array;
       struct gl_vertex_attrib_array *attrib_array;
       struct gl_vertex_buffer_binding *buffer_binding;
-
-      GLint attrib = ffsll(arrays) - 1;
-      arrays ^= BITFIELD64_BIT(attrib);
 
       attrib_array = &vao->VertexAttrib[attrib];
       buffer_binding = &vao->VertexBinding[attrib_array->VertexBinding];
@@ -356,6 +356,41 @@ _mesa_update_vao_client_arrays(struct gl_context *ctx,
       _mesa_update_client_array(ctx, client_array, attrib_array,
                                 buffer_binding);
    }
+}
+
+
+bool
+_mesa_all_varyings_in_vbos(const struct gl_vertex_array_object *vao)
+{
+   /* Walk those enabled arrays that have the default vbo attached */
+   GLbitfield64 mask = vao->_Enabled & ~vao->VertexAttribBufferMask;
+
+   while (mask) {
+      /* Do not use u_bit_scan64 as we can walk multiple
+       * attrib arrays at once
+       */
+      const int i = ffsll(mask) - 1;
+      const struct gl_vertex_attrib_array *attrib_array =
+         &vao->VertexAttrib[i];
+      const struct gl_vertex_buffer_binding *buffer_binding =
+         &vao->VertexBinding[attrib_array->VertexBinding];
+
+      /* Only enabled arrays shall appear in the _Enabled bitmask */
+      assert(attrib_array->Enabled);
+      /* We have already masked out vao->VertexAttribBufferMask  */
+      assert(!_mesa_is_bufferobj(buffer_binding->BufferObj));
+
+      /* Bail out once we find the first non vbo with a non zero stride */
+      if (buffer_binding->Stride != 0)
+         return false;
+
+      /* Note that we cannot use the xor variant since the _BoundArray mask
+       * may contain array attributes that are bound but not enabled.
+       */
+      mask &= ~buffer_binding->_BoundArrays;
+   }
+
+   return true;
 }
 
 

@@ -25,8 +25,6 @@
  *
  **************************************************************************/
 
-#if defined(HAVE_DRI3)
-
 #include <fcntl.h>
 
 #include <X11/Xlib-xcb.h>
@@ -68,6 +66,7 @@ struct vl_dri3_screen
 
    uint32_t width, height, depth;
 
+   xcb_present_event_t eid;
    xcb_special_event_t *special_event;
 
    struct vl_dri3_buffer *back_buffers[BACK_BUFFER_NUM];
@@ -91,6 +90,7 @@ dri3_free_front_buffer(struct vl_dri3_screen *scrn,
 {
    xcb_sync_destroy_fence(scrn->conn, buffer->sync_fence);
    xshmfence_unmap_shm(buffer->shm_fence);
+   pipe_resource_reference(&buffer->texture, NULL);
    FREE(buffer);
 }
 
@@ -323,7 +323,6 @@ dri3_set_drawable(struct vl_dri3_screen *scrn, Drawable drawable)
    xcb_get_geometry_reply_t *geom_reply;
    xcb_void_cookie_t cookie;
    xcb_generic_error_t *error;
-   xcb_present_event_t peid;
    bool ret = true;
 
    assert(drawable);
@@ -346,12 +345,16 @@ dri3_set_drawable(struct vl_dri3_screen *scrn, Drawable drawable)
    if (scrn->special_event) {
       xcb_unregister_for_special_event(scrn->conn, scrn->special_event);
       scrn->special_event = NULL;
+      cookie = xcb_present_select_input_checked(scrn->conn, scrn->eid,
+                                                scrn->drawable,
+                                                XCB_PRESENT_EVENT_MASK_NO_EVENT);
+      xcb_discard_reply(scrn->conn, cookie.sequence);
    }
 
    scrn->is_pixmap = false;
-   peid = xcb_generate_id(scrn->conn);
+   scrn->eid = xcb_generate_id(scrn->conn);
    cookie =
-      xcb_present_select_input_checked(scrn->conn, peid, scrn->drawable,
+      xcb_present_select_input_checked(scrn->conn, scrn->eid, scrn->drawable,
                       XCB_PRESENT_EVENT_MASK_CONFIGURE_NOTIFY |
                       XCB_PRESENT_EVENT_MASK_COMPLETE_NOTIFY |
                       XCB_PRESENT_EVENT_MASK_IDLE_NOTIFY);
@@ -360,12 +363,17 @@ dri3_set_drawable(struct vl_dri3_screen *scrn, Drawable drawable)
    if (error) {
       if (error->error_code != BadWindow)
          ret = false;
-      else
+      else {
          scrn->is_pixmap = true;
+         if (scrn->front_buffer) {
+            dri3_free_front_buffer(scrn, scrn->front_buffer);
+            scrn->front_buffer = NULL;
+         }
+      }
       free(error);
    } else
       scrn->special_event =
-         xcb_register_for_special_xge(scrn->conn, &xcb_present_id, peid, 0);
+         xcb_register_for_special_xge(scrn->conn, &xcb_present_id, scrn->eid, 0);
 
    dri3_flush_present_events(scrn);
 
@@ -605,8 +613,15 @@ vl_dri3_screen_destroy(struct vl_screen *vscreen)
       }
    }
 
-   if (scrn->special_event)
+   if (scrn->special_event) {
+      xcb_void_cookie_t cookie =
+         xcb_present_select_input_checked(scrn->conn, scrn->eid,
+                                          scrn->drawable,
+                                          XCB_PRESENT_EVENT_MASK_NO_EVENT);
+
+      xcb_discard_reply(scrn->conn, cookie.sequence);
       xcb_unregister_for_special_event(scrn->conn, scrn->special_event);
+   }
    scrn->base.pscreen->destroy(scrn->base.pscreen);
    pipe_loader_release(&scrn->base.dev, 1);
    FREE(scrn);
@@ -706,5 +721,3 @@ free_screen:
    FREE(scrn);
    return NULL;
 }
-
-#endif // defined(HAVE_DRI3)

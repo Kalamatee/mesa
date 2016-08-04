@@ -34,13 +34,16 @@
 
 #include "pipe/p_screen.h"
 #include "util/u_memory.h"
+#include "os/os_thread.h"
 
-typedef uint32_t u32;
+#include "freedreno_batch_cache.h"
 
 struct fd_bo;
 
 struct fd_screen {
 	struct pipe_screen base;
+
+	pipe_mutex lock;
 
 	/* it would be tempting to use pipe_reference here, but that
 	 * really doesn't work well if it isn't the first member of
@@ -58,6 +61,7 @@ struct fd_screen {
 	uint32_t chip_id;        /* coreid:8 majorrev:8 minorrev:8 patch:8 */
 	uint32_t max_freq;
 	uint32_t max_rts;        /* max # of render targets */
+	bool has_timestamp;
 
 	void *compiler;          /* currently unused for a2xx */
 
@@ -65,6 +69,10 @@ struct fd_screen {
 	struct fd_pipe *pipe;
 
 	int64_t cpu_gpu_time_delta;
+
+	struct fd_batch_cache batch_cache;
+
+	bool reorder;
 };
 
 static inline struct fd_screen *

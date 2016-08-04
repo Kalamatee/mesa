@@ -90,6 +90,13 @@ nvc0_screen_is_format_supported(struct pipe_screen *pscreen,
                  PIPE_BIND_LINEAR |
                  PIPE_BIND_SHARED);
 
+   if (bindings & PIPE_BIND_SHADER_IMAGE && sample_count > 1 &&
+       nouveau_screen(pscreen)->class_3d >= GM107_3D_CLASS) {
+      /* MS images are currently unsupported on Maxwell because they have to
+       * be handled explicitly. */
+      return false;
+   }
+
    return (( nvc0_format_table[format].usage |
             nvc0_vertex_format[format].usage) & bindings) == bindings;
 }
@@ -157,6 +164,8 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
       return PIPE_ENDIAN_LITTLE;
    case PIPE_CAP_MAX_SHADER_PATCH_VARYINGS:
       return 30;
+   case PIPE_CAP_MAX_WINDOW_RECTANGLES:
+      return NVC0_MAX_WINDOW_RECTANGLES;
 
    /* supported caps */
    case PIPE_CAP_TEXTURE_MIRROR_CLAMP:
@@ -230,11 +239,13 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_CULL_DISTANCE:
    case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
+   case PIPE_CAP_TGSI_VOTE:
+   case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
       return 1;
+   case PIPE_CAP_COMPUTE:
+      return (class_3d < GP100_3D_CLASS);
    case PIPE_CAP_SEAMLESS_CUBE_MAP_PER_TEXTURE:
       return (class_3d >= NVE4_3D_CLASS) ? 1 : 0;
-   case PIPE_CAP_COMPUTE:
-      return 1;
    case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
       return nouveau_screen(pscreen)->vram_domain & NOUVEAU_BO_VRAM ? 1 : 0;
 
@@ -261,6 +272,7 @@ nvc0_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
    case PIPE_CAP_PCI_BUS:
    case PIPE_CAP_PCI_DEVICE:
    case PIPE_CAP_PCI_FUNCTION:
+   case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -296,11 +308,8 @@ nvc0_screen_get_shader_param(struct pipe_screen *pscreen, unsigned shader,
    case PIPE_SHADER_GEOMETRY:
    case PIPE_SHADER_FRAGMENT:
    case PIPE_SHADER_COMPUTE:
-      break;
    case PIPE_SHADER_TESS_CTRL:
    case PIPE_SHADER_TESS_EVAL:
-      if (class_3d >= GM107_3D_CLASS)
-         return 0;
       break;
    default:
       return 0;
@@ -654,6 +663,8 @@ nvc0_screen_init_compute(struct nvc0_screen *screen)
    case 0x110:
    case 0x120:
       return nve4_screen_compute_setup(screen, screen->base.pushbuf);
+   case 0x130:
+      return 0;
    default:
       return -1;
    }
@@ -716,6 +727,7 @@ nvc0_screen_create(struct nouveau_device *dev)
    case 0x100:
    case 0x110:
    case 0x120:
+   case 0x130:
       break;
    default:
       return NULL;
@@ -728,10 +740,8 @@ nvc0_screen_create(struct nouveau_device *dev)
    pscreen->destroy = nvc0_screen_destroy;
 
    ret = nouveau_screen_init(&screen->base, dev);
-   if (ret) {
-      nvc0_screen_destroy(pscreen);
-      return NULL;
-   }
+   if (ret)
+      FAIL_SCREEN_INIT("Base screen init failed: %d\n", ret);
    chan = screen->base.channel;
    push = screen->base.pushbuf;
    push->user_priv = screen;
@@ -784,6 +794,7 @@ nvc0_screen_create(struct nouveau_device *dev)
    PUSH_DATA (push, screen->nvsw->handle);
 
    switch (dev->chipset & ~0xf) {
+   case 0x130:
    case 0x120:
    case 0x110:
    case 0x100:
@@ -836,6 +847,9 @@ nvc0_screen_create(struct nouveau_device *dev)
    PUSH_DATA (push, screen->fence.bo->offset + 16);
 
    switch (dev->chipset & ~0xf) {
+   case 0x130:
+      obj_class = GP100_3D_CLASS;
+      break;
    case 0x120:
       obj_class = GM200_3D_CLASS;
       break;
@@ -957,7 +971,7 @@ nvc0_screen_create(struct nouveau_device *dev)
       /* TIC and TSC entries for each unit (nve4+ only) */
       /* auxiliary constants (6 user clip planes, base instance id) */
       BEGIN_NVC0(push, NVC0_3D(CB_SIZE), 3);
-      PUSH_DATA (push, 2048);
+      PUSH_DATA (push, NVC0_CB_AUX_SIZE);
       PUSH_DATAh(push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(i));
       PUSH_DATA (push, screen->uniform_bo->offset + NVC0_CB_AUX_INFO(i));
       BEGIN_NVC0(push, NVC0_3D(CB_BIND(i)), 1);
@@ -972,6 +986,26 @@ nvc0_screen_create(struct nouveau_device *dev)
          BEGIN_NVC0(push, NVC0_3D(TEX_LIMITS(i)), 1);
          PUSH_DATA (push, 0x54);
       }
+
+      /* MS sample coordinate offsets: these do not work with _ALT modes ! */
+      BEGIN_1IC0(push, NVC0_3D(CB_POS), 1 + 2 * 8);
+      PUSH_DATA (push, NVC0_CB_AUX_MS_INFO);
+      PUSH_DATA (push, 0); /* 0 */
+      PUSH_DATA (push, 0);
+      PUSH_DATA (push, 1); /* 1 */
+      PUSH_DATA (push, 0);
+      PUSH_DATA (push, 0); /* 2 */
+      PUSH_DATA (push, 1);
+      PUSH_DATA (push, 1); /* 3 */
+      PUSH_DATA (push, 1);
+      PUSH_DATA (push, 2); /* 4 */
+      PUSH_DATA (push, 0);
+      PUSH_DATA (push, 3); /* 5 */
+      PUSH_DATA (push, 0);
+      PUSH_DATA (push, 2); /* 6 */
+      PUSH_DATA (push, 1);
+      PUSH_DATA (push, 3); /* 7 */
+      PUSH_DATA (push, 1);
    }
    BEGIN_NVC0(push, NVC0_3D(LINKED_TSC), 1);
    PUSH_DATA (push, 0);

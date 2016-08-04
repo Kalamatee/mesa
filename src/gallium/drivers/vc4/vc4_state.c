@@ -375,7 +375,7 @@ vc4_vertex_state_bind(struct pipe_context *pctx, void *hwcso)
 
 static void
 vc4_set_constant_buffer(struct pipe_context *pctx, uint shader, uint index,
-                        struct pipe_constant_buffer *cb)
+                        const struct pipe_constant_buffer *cb)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
         struct vc4_constbuf_stateobj *so = &vc4->constbuf[shader];
@@ -482,8 +482,6 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
 static struct vc4_texture_stateobj *
 vc4_get_stage_tex(struct vc4_context *vc4, unsigned shader)
 {
-        vc4->dirty |= VC4_DIRTY_TEXSTATE;
-
         switch (shader) {
         case PIPE_SHADER_FRAGMENT:
                 vc4->dirty |= VC4_DIRTY_FRAGTEX;
@@ -575,12 +573,10 @@ vc4_sampler_states_bind(struct pipe_context *pctx,
                 if (hwcso[i])
                         new_nr = i + 1;
                 stage_tex->samplers[i] = hwcso[i];
-                stage_tex->dirty_samplers |= (1 << i);
         }
 
         for (; i < stage_tex->num_samplers; i++) {
                 stage_tex->samplers[i] = NULL;
-                stage_tex->dirty_samplers |= (1 << i);
         }
 
         stage_tex->num_samplers = new_nr;
@@ -590,7 +586,7 @@ static struct pipe_sampler_view *
 vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
                         const struct pipe_sampler_view *cso)
 {
-        struct vc4_sampler_view *so = malloc(sizeof(*so));
+        struct vc4_sampler_view *so = CALLOC_STRUCT(vc4_sampler_view);
         struct vc4_resource *rsc = vc4_resource(prsc);
 
         if (!so)
@@ -607,7 +603,8 @@ vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
          * Also, Raspberry Pi doesn't support sampling from raster textures,
          * so we also have to copy to a temporary then.
          */
-        if (cso->u.tex.first_level ||
+        if ((cso->u.tex.first_level &&
+             (cso->u.tex.first_level != cso->u.tex.last_level)) ||
             rsc->vc4_format == VC4_TEXTURE_TYPE_RGBA32R) {
                 struct vc4_resource *shadow_parent = vc4_resource(prsc);
                 struct pipe_resource tmpl = shadow_parent->base.b;
@@ -630,6 +627,8 @@ vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
                 clone->writes = shadow_parent->writes - 1;
 
                 assert(clone->vc4_format != VC4_TEXTURE_TYPE_RGBA32R);
+        } else if (cso->u.tex.first_level) {
+                so->force_first_level = true;
         }
         so->base.texture = prsc;
         so->base.reference.count = 1;
@@ -638,7 +637,9 @@ vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
         so->texture_p0 =
                 (VC4_SET_FIELD(rsc->slices[0].offset >> 12, VC4_TEX_P0_OFFSET) |
                  VC4_SET_FIELD(rsc->vc4_format & 15, VC4_TEX_P0_TYPE) |
-                 VC4_SET_FIELD(cso->u.tex.last_level -
+                 VC4_SET_FIELD(so->force_first_level ?
+                               cso->u.tex.last_level :
+                               cso->u.tex.last_level -
                                cso->u.tex.first_level, VC4_TEX_P0_MIPLVLS) |
                  VC4_SET_FIELD(cso->target == PIPE_TEXTURE_CUBE,
                                VC4_TEX_P0_CMMODE));
@@ -670,18 +671,14 @@ vc4_set_sampler_views(struct pipe_context *pctx, unsigned shader,
 
         assert(start == 0);
 
-        vc4->dirty |= VC4_DIRTY_TEXSTATE;
-
         for (i = 0; i < nr; i++) {
                 if (views[i])
                         new_nr = i + 1;
                 pipe_sampler_view_reference(&stage_tex->textures[i], views[i]);
-                stage_tex->dirty_samplers |= (1 << i);
         }
 
         for (; i < stage_tex->num_textures; i++) {
                 pipe_sampler_view_reference(&stage_tex->textures[i], NULL);
-                stage_tex->dirty_samplers |= (1 << i);
         }
 
         stage_tex->num_textures = new_nr;

@@ -75,6 +75,8 @@ static const struct debug_named_value debug_options[] = {
 		{"flush",     FD_DBG_FLUSH,  "Force flush after every draw"},
 		{"deqp",      FD_DBG_DEQP,   "Enable dEQP hacks"},
 		{"nir",       FD_DBG_NIR,    "Prefer NIR as native IR"},
+		{"reorder",   FD_DBG_REORDER,"Enable reordering for draws/blits"},
+		{"bstat",     FD_DBG_BSTAT,  "Print batch stats at context destroy"},
 		DEBUG_NAMED_VALUE_END
 };
 
@@ -109,8 +111,18 @@ fd_screen_get_device_vendor(struct pipe_screen *pscreen)
 static uint64_t
 fd_screen_get_timestamp(struct pipe_screen *pscreen)
 {
-	int64_t cpu_time = os_time_get() * 1000;
-	return cpu_time + fd_screen(pscreen)->cpu_gpu_time_delta;
+	struct fd_screen *screen = fd_screen(pscreen);
+
+	if (screen->has_timestamp) {
+		uint64_t n;
+		fd_pipe_get_param(screen->pipe, FD_TIMESTAMP, &n);
+		debug_assert(screen->max_freq > 0);
+		return n * 1000000000 / screen->max_freq;
+	} else {
+		int64_t cpu_time = os_time_get() * 1000;
+		return cpu_time + screen->cpu_gpu_time_delta;
+	}
+
 }
 
 static void
@@ -123,6 +135,10 @@ fd_screen_destroy(struct pipe_screen *pscreen)
 
 	if (screen->dev)
 		fd_device_del(screen->dev);
+
+	fd_bc_fini(&screen->batch_cache);
+
+	pipe_mutex_destroy(screen->lock);
 
 	free(screen);
 }
@@ -156,11 +172,13 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_VERTEX_BUFFER_OFFSET_4BYTE_ALIGNED_ONLY:
 	case PIPE_CAP_VERTEX_BUFFER_STRIDE_4BYTE_ALIGNED_ONLY:
 	case PIPE_CAP_VERTEX_ELEMENT_SRC_OFFSET_4BYTE_ALIGNED_ONLY:
-	case PIPE_CAP_USER_CONSTANT_BUFFERS:
 	case PIPE_CAP_BUFFER_MAP_PERSISTENT_COHERENT:
 	case PIPE_CAP_VERTEXID_NOBASE:
 	case PIPE_CAP_STRING_MARKER:
 		return 1;
+
+	case PIPE_CAP_USER_CONSTANT_BUFFERS:
+		return is_a4xx(screen) ? 0 : 1;
 
 	case PIPE_CAP_SHADER_STENCIL_EXPORT:
 	case PIPE_CAP_TGSI_TEXCOORD:
@@ -214,7 +232,7 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return is_a4xx(screen);
 
 	case PIPE_CAP_CONSTANT_BUFFER_OFFSET_ALIGNMENT:
-		return 256;
+		return 64;
 
 	case PIPE_CAP_GLSL_FEATURE_LEVEL:
 		if (glsl120)
@@ -262,6 +280,10 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 	case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
 	case PIPE_CAP_CULL_DISTANCE:
 	case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
+	case PIPE_CAP_TGSI_VOTE:
+	case PIPE_CAP_MAX_WINDOW_RECTANGLES:
+	case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
+	case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
 		return 0;
 
 	case PIPE_CAP_MAX_VIEWPORTS:
@@ -316,11 +338,11 @@ fd_screen_get_param(struct pipe_screen *pscreen, enum pipe_cap param)
 		return is_a3xx(screen) ? 1 : 0;
 
 	/* Queries. */
-	case PIPE_CAP_QUERY_TIMESTAMP:
 	case PIPE_CAP_QUERY_BUFFER_OBJECT:
 		return 0;
 	case PIPE_CAP_OCCLUSION_QUERY:
 		return is_a3xx(screen) || is_a4xx(screen);
+	case PIPE_CAP_QUERY_TIMESTAMP:
 	case PIPE_CAP_QUERY_TIME_ELAPSED:
 		/* only a4xx, requires new enough kernel so we know max_freq: */
 		return (screen->max_freq > 0) && is_a4xx(screen);
@@ -589,6 +611,8 @@ fd_screen_create(struct fd_device *dev)
 		screen->max_freq = 0;
 	} else {
 		screen->max_freq = val;
+		if (fd_pipe_get_param(screen->pipe, FD_TIMESTAMP, &val) == 0)
+			screen->has_timestamp = true;
 	}
 
 	if (fd_pipe_get_param(screen->pipe, FD_GPU_ID, &val)) {
@@ -643,6 +667,18 @@ fd_screen_create(struct fd_device *dev)
 		debug_printf("unsupported GPU: a%03d\n", screen->gpu_id);
 		goto fail;
 	}
+
+	/* NOTE: don't enable reordering on a2xx, since completely untested.
+	 * Also, don't enable if we have too old of a kernel to support
+	 * growable cmdstream buffers, since memory requirement for cmdstream
+	 * buffers would be too much otherwise.
+	 */
+	if ((screen->gpu_id >= 300) && (fd_device_version(dev) >= FD_VERSION_UNLIMITED_CMDS))
+		screen->reorder = !!(fd_mesa_debug & FD_DBG_REORDER);
+
+	fd_bc_init(&screen->batch_cache);
+
+	pipe_mutex_init(screen->lock);
 
 	pscreen->destroy = fd_screen_destroy;
 	pscreen->get_param = fd_screen_get_param;

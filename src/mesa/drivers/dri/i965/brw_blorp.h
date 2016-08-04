@@ -179,17 +179,40 @@ struct brw_blorp_coord_transform
    float offset;
 };
 
-struct brw_blorp_wm_push_constants
+/**
+ * Bounding rectangle telling pixel discard which pixels are not to be
+ * touched. This is needed in when surfaces are configured as something else
+ * what they really are:
+ *
+ *    - writing W-tiled stencil as Y-tiled
+ *    - writing interleaved multisampled as single sampled.
+ *
+ * See blorp_nir_discard_if_outside_rect().
+ */
+struct brw_blorp_discard_rect
 {
-   uint32_t dst_x0;
-   uint32_t dst_x1;
-   uint32_t dst_y0;
-   uint32_t dst_y1;
-   /* Top right coordinates of the rectangular grid used for scaled blitting */
-   float rect_grid_x1;
-   float rect_grid_y1;
-   struct brw_blorp_coord_transform x_transform;
-   struct brw_blorp_coord_transform y_transform;
+   uint32_t x0;
+   uint32_t x1;
+   uint32_t y0;
+   uint32_t y1;
+};
+
+/**
+ * Grid needed for blended and scaled blits of integer formats, see
+ * blorp_nir_manual_blend_bilinear().
+ */
+struct brw_blorp_rect_grid
+{
+   float x1;
+   float y1;
+   float pad[2];
+};
+
+struct brw_blorp_wm_inputs
+{
+   struct brw_blorp_discard_rect discard_rect;
+   struct brw_blorp_rect_grid rect_grid;
+   struct brw_blorp_coord_transform coord_transform[2];
 
    /* Minimum layer setting works for all the textures types but texture_3d
     * for which the setting has no effect. Use the z-coordinate instead.
@@ -197,15 +220,8 @@ struct brw_blorp_wm_push_constants
    uint32_t src_z;
 
    /* Pad out to an integral number of registers */
-   uint32_t pad[5];
+   uint32_t pad[3];
 };
-
-#define BRW_BLORP_NUM_PUSH_CONSTANT_DWORDS \
-   (sizeof(struct brw_blorp_wm_push_constants) / 4)
-
-/* Every 32 bytes of push constant data constitutes one GEN register. */
-static const unsigned int BRW_BLORP_NUM_PUSH_CONST_REGS =
-   sizeof(struct brw_blorp_wm_push_constants) / 32;
 
 struct brw_blorp_prog_data
 {
@@ -223,14 +239,27 @@ struct brw_blorp_prog_data
     */
    bool persample_msaa_dispatch;
 
-   /* The compiler will re-arrange push constants and store the upload order
-    * here. Given an index 'i' in the final upload buffer, param[i] gives the
-    * index in the uniform store. In other words, the value to be uploaded can
-    * be found by brw_blorp_params::wm_push_consts[param[i]].
+   /**
+    * Mask of which FS inputs are marked flat by the shader source.  This is
+    * needed for setting up 3DSTATE_SF/SBE.
     */
-   uint8_t nr_params;
-   uint8_t param[BRW_BLORP_NUM_PUSH_CONSTANT_DWORDS];
+   uint32_t flat_inputs;
+   unsigned num_varying_inputs;
+   GLbitfield64 inputs_read;
 };
+
+static inline unsigned
+brw_blorp_get_urb_length(const struct brw_blorp_prog_data *prog_data)
+{
+   if (prog_data == NULL)
+      return 1;
+
+   /* From the BSpec: 3D Pipeline - Strips and Fans - 3DSTATE_SBE
+    *
+    * read_length = ceiling((max_source_attr+1)/2)
+    */
+   return MAX2((prog_data->num_varying_inputs + 1) / 2, 1);
+}
 
 struct brw_blorp_params
 {
@@ -248,8 +277,7 @@ struct brw_blorp_params
       unsigned resolve_type;
    };
    bool color_write_disable[4];
-   struct brw_blorp_wm_push_constants wm_push_consts;
-   unsigned num_varyings;
+   struct brw_blorp_wm_inputs wm_inputs;
    unsigned num_draw_buffers;
    unsigned num_layers;
    uint32_t wm_prog_kernel;
@@ -372,6 +400,12 @@ brw_blorp_compile_nir_shader(struct brw_context *brw, struct nir_shader *nir,
                              struct brw_blorp_prog_data *prog_data,
                              unsigned *program_size);
 
+uint32_t
+brw_blorp_emit_surface_state(struct brw_context *brw,
+                             const struct brw_blorp_surface_info *surface,
+                             uint32_t read_domains, uint32_t write_domain,
+                             bool is_render_target);
+
 void
 gen6_blorp_init(struct brw_context *brw);
 
@@ -419,7 +453,8 @@ gen6_blorp_emit_sampler_state(struct brw_context *brw,
                               unsigned tex_filter, unsigned max_lod,
                               bool non_normalized_coords);
 void
-gen7_blorp_emit_urb_config(struct brw_context *brw);
+gen7_blorp_emit_urb_config(struct brw_context *brw,
+                           const struct brw_blorp_params *params);
 
 void
 gen7_blorp_emit_blend_state_pointer(struct brw_context *brw,

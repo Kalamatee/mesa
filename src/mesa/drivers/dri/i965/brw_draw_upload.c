@@ -695,20 +695,22 @@ brw_prepare_shader_draw_parameters(struct brw_context *brw)
 /**
  * Emit a VERTEX_BUFFER_STATE entry (part of 3DSTATE_VERTEX_BUFFERS).
  */
-static uint32_t *
-emit_vertex_buffer_state(struct brw_context *brw,
-                         unsigned buffer_nr,
-                         drm_intel_bo *bo,
-                         unsigned bo_ending_address,
-                         unsigned bo_offset,
-                         unsigned stride,
-                         unsigned step_rate,
-                         uint32_t *__map)
+uint32_t *
+brw_emit_vertex_buffer_state(struct brw_context *brw,
+                             unsigned buffer_nr,
+                             drm_intel_bo *bo,
+                             unsigned start_offset,
+                             unsigned end_offset,
+                             unsigned stride,
+                             unsigned step_rate,
+                             uint32_t *__map)
 {
    struct gl_context *ctx = &brw->ctx;
    uint32_t dw0;
 
-   if (brw->gen >= 6) {
+   if (brw->gen >= 8) {
+      dw0 = buffer_nr << GEN6_VB0_INDEX_SHIFT;
+   } else if (brw->gen >= 6) {
       dw0 = (buffer_nr << GEN6_VB0_INDEX_SHIFT) |
             (step_rate ? GEN6_VB0_ACCESS_INSTANCEDATA
                        : GEN6_VB0_ACCESS_VERTEXDATA);
@@ -721,24 +723,53 @@ emit_vertex_buffer_state(struct brw_context *brw,
    if (brw->gen >= 7)
       dw0 |= GEN7_VB0_ADDRESS_MODIFYENABLE;
 
-   if (brw->gen == 7)
+   switch (brw->gen) {
+   case 7:
       dw0 |= GEN7_MOCS_L3 << 16;
+      break;
+   case 8:
+      dw0 |= BDW_MOCS_WB << 16;
+      break;
+   case 9:
+      dw0 |= SKL_MOCS_WB << 16;
+      break;
+   }
 
    WARN_ONCE(stride >= (brw->gen >= 5 ? 2048 : 2047),
              "VBO stride %d too large, bad rendering may occur\n",
              stride);
    OUT_BATCH(dw0 | (stride << BRW_VB0_PITCH_SHIFT));
-   OUT_RELOC(bo, I915_GEM_DOMAIN_VERTEX, 0, bo_offset);
-   if (brw->gen >= 5) {
-      OUT_RELOC(bo, I915_GEM_DOMAIN_VERTEX, 0, bo_ending_address);
+   if (brw->gen >= 8) {
+      OUT_RELOC64(bo, I915_GEM_DOMAIN_VERTEX, 0, start_offset);
+      /* From the BSpec: 3D Pipeline Stages - 3D Pipeline Geometry -
+       *                 Vertex Fetch (VF) Stage - State
+       *
+       * Instead of "VBState.StartingBufferAddress + VBState.MaxIndex x
+       * VBState.BufferPitch", the address of the byte immediately beyond the
+       * last valid byte of the buffer is determined by
+       * "VBState.StartingBufferAddress + VBState.BufferSize".
+       */
+      OUT_BATCH(end_offset - start_offset);
+   } else if (brw->gen >= 5) {
+      OUT_RELOC(bo, I915_GEM_DOMAIN_VERTEX, 0, start_offset);
+      /* From the BSpec: 3D Pipeline Stages - 3D Pipeline Geometry -
+       *                 Vertex Fetch (VF) Stage - State
+       *
+       *  Instead of "VBState.StartingBufferAddress + VBState.MaxIndex x
+       *  VBState.BufferPitch", the address of the byte immediately beyond the
+       *  last valid byte of the buffer is determined by
+       *  "VBState.EndAddress + 1".
+       */
+      OUT_RELOC(bo, I915_GEM_DOMAIN_VERTEX, 0, end_offset - 1);
+      OUT_BATCH(step_rate);
    } else {
+      OUT_RELOC(bo, I915_GEM_DOMAIN_VERTEX, 0, start_offset);
       OUT_BATCH(0);
+      OUT_BATCH(step_rate);
    }
-   OUT_BATCH(step_rate);
 
    return __map;
 }
-#define EMIT_VERTEX_BUFFER_STATE(...) __map = emit_vertex_buffer_state(__VA_ARGS__, __map)
 
 static void
 brw_emit_vertices(struct brw_context *brw)
@@ -813,18 +844,17 @@ brw_emit_vertices(struct brw_context *brw)
           */
          unsigned padding =
             (brw->gen <= 7 && !brw->is_baytrail && !brw->is_haswell) * 2;
-         EMIT_VERTEX_BUFFER_STATE(brw, i, buffer->bo,
-                                  buffer->offset + buffer->size + padding - 1,
-                                  buffer->offset, buffer->stride,
-                                  buffer->step_rate);
+         EMIT_VERTEX_BUFFER_STATE(brw, i, buffer->bo, buffer->offset,
+                                  buffer->offset + buffer->size + padding,
+                                  buffer->stride, buffer->step_rate);
 
       }
 
       if (uses_draw_params) {
          EMIT_VERTEX_BUFFER_STATE(brw, brw->vb.nr_buffers,
                                   brw->draw.draw_params_bo,
-                                  brw->draw.draw_params_bo->size - 1,
                                   brw->draw.draw_params_offset,
+                                  brw->draw.draw_params_bo->size,
                                   0,  /* stride */
                                   0); /* step rate */
       }
@@ -832,8 +862,8 @@ brw_emit_vertices(struct brw_context *brw)
       if (brw->vs.prog_data->uses_drawid) {
          EMIT_VERTEX_BUFFER_STATE(brw, brw->vb.nr_buffers + 1,
                                   brw->draw.draw_id_bo,
-                                  brw->draw.draw_id_bo->size - 1,
                                   brw->draw.draw_id_offset,
+                                  brw->draw.draw_id_bo->size,
                                   0,  /* stride */
                                   0); /* step rate */
       }

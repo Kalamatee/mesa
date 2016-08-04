@@ -426,7 +426,7 @@ static void virgl_hw_set_index_buffer(struct pipe_context *ctx,
 
 static void virgl_set_constant_buffer(struct pipe_context *ctx,
                                      uint shader, uint index,
-                                     struct pipe_constant_buffer *buf)
+                                     const struct pipe_constant_buffer *buf)
 {
    struct virgl_context *vctx = virgl_context(ctx);
 
@@ -900,7 +900,6 @@ struct pipe_context *virgl_context_create(struct pipe_screen *pscreen,
    vctx->base.set_vertex_buffers = virgl_set_vertex_buffers;
    vctx->base.set_index_buffer = virgl_set_index_buffer;
    vctx->base.set_constant_buffer = virgl_set_constant_buffer;
-   vctx->base.transfer_inline_write = virgl_transfer_inline_write;
 
    vctx->base.create_vs_state = virgl_create_vs_state;
    vctx->base.create_gs_state = virgl_create_gs_state;

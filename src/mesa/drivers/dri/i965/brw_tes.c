@@ -150,7 +150,8 @@ brw_codegen_tes_prog(struct brw_context *brw,
     * padding around uniform values below vec4 size, so the worst case is that
     * every uniform is a float which gets padded to the size of a vec4.
     */
-   struct gl_shader *tes = shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL];
+   struct gl_linked_shader *tes =
+      shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL];
    int param_count = nir->num_uniforms / 4;
 
    prog_data.base.base.param =
@@ -214,11 +215,9 @@ brw_codegen_tes_prog(struct brw_context *brw,
    }
 
    /* Scratch space is used for register spilling */
-   if (prog_data.base.base.total_scratch) {
-      brw_get_scratch_bo(brw, &stage_state->scratch_bo,
-			 prog_data.base.base.total_scratch *
-                         brw->max_ds_threads);
-   }
+   brw_alloc_stage_scratch(brw, stage_state,
+                           prog_data.base.base.total_scratch,
+                           brw->max_ds_threads);
 
    brw_upload_cache(&brw->cache, BRW_CACHE_TES_PROG,
                     key, sizeof(*key),
@@ -264,8 +263,7 @@ brw_upload_tes_prog(struct brw_context *brw,
    key.patch_inputs_read = per_patch_slots;
 
    /* _NEW_TEXTURE */
-   brw_populate_sampler_prog_key_data(ctx, prog, stage_state->sampler_count,
-                                      &key.tex);
+   brw_populate_sampler_prog_key_data(ctx, prog, &key.tex);
 
    if (!brw_search_cache(&brw->cache, BRW_CACHE_TES_PROG,
                          &key, sizeof(key),

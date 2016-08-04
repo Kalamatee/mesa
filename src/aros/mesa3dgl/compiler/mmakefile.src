@@ -3,16 +3,13 @@
 #   Build Mesa3DGL private libcompiler.a
 #
 
-include $(TOP)/config/make.cfg
+include $(SRCDIR)/config/aros.cfg
 
 CUR_MESADIR := src/compiler
 include $(SRCDIR)/$(CURDIR)/../mesa.cfg
 include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
 
-#MM- mesa3dgl-linklibs : mesa3dgl-linklibs-compiler
-
-USER_CFLAGS := \
-            $(USER_CFLAGS) -D__STDC_CONSTANT_MACROS
+#MM- mesa3dgl-linklibs : mesa3d-linklib-compiler
 
 USER_INCLUDES := \
             $(USER_INCLUDES) \
@@ -29,10 +26,10 @@ USER_INCLUDES := \
             -iquote $(top_srcdir)/src/gallium/include \
             -iquote $(top_srcdir)/src/gallium/auxiliary
 
-OLDUSER_INCLUDES := \
-            -I$(top_srcdir)/include \
-            -I$(top_srcdir)/include/GL \
-            -iquote $(top_srcdir)/src \
+# disable necessary warnings
+NOWARN_FLAGS := -Wno-return-type -Wno-maybe-uninitialized -Wno-sign-compare -Wno-misleading-indentation -Wno-strict-aliasing
+USER_CFLAGS += $(NOWARN_FLAGS)
+USER_CXXFLAGS += $(NOWARN_FLAGS)
 
 define local-l-or-ll-to-c-or-cpp
 	@mkdir -p $(dir $@)
@@ -129,8 +126,7 @@ MESA3DGL_GLSL_SOURCES_C := \
 MESA3DGL_GLSL_SOURCES_CXX :=  \
             $(MESA3DGL_GLSL_GENERATED_CXX_SOURCES:.cpp=) \
             $(MESA3DGL_GLSL_CXX_SOURCES:.cpp=) \
-            $(top_srcdir)/src/aros/emul_cpp
-
+            $(top_mesa3dgldir)/src/aros/emul_cpp
 
 MESA3DGL_GLCPP_GENERATED_FILES := $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(LIBGLCPP_GENERATED_FILES))
 MESA3DGL_GLCPP_GENERATED_C_SOURCES := $(filter %.c, $(MESA3DGL_GLCPP_GENERATED_FILES))
@@ -149,10 +145,10 @@ LIBCOMPILER_C_SOURCES := $(LIBCOMPILER_C_FILES:.c=)
 LIBCOMPILER_CXX_SOURCES := $(LIBCOMPILER_CXX_FILES:.cpp=)
 
 #MM
-mesa3dgl-linklibs-compiler-generate : $(MESA3DGL_GLSL_GENERATED_CXX_FILES) $(MESA3DGL_GLCPP_GENERATED_FILES) $(MESA3DGL_NIR_GENERATED_FILES)
+mesa3d-linklib-compiler-generate : $(MESA3DGL_GLSL_GENERATED_CXX_FILES) $(MESA3DGL_GLCPP_GENERATED_FILES) $(MESA3DGL_NIR_GENERATED_FILES)
 
-#MM mesa3dgl-linklibs-compiler : mesa3dgl-linklibs-compiler-generate
+#MM mesa3d-linklib-compiler : mesa3d-linklib-compiler-generate
 
-%build_linklib mmake=mesa3dgl-linklibs-compiler libname=compiler libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_GLSL_SOURCES_C) $(MESA3DGL_GLCPP_SOURCES_C) $(LIBCOMPILER_C_SOURCES)" cxxfiles="$(MESA3DGL_GLSL_SOURCES_CXX) $(LIBCOMPILER_CXX_SOURCES)"
+%build_linklib mmake=mesa3d-linklib-compiler libname=compiler libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_GLSL_SOURCES_C) $(MESA3DGL_GLCPP_SOURCES_C) $(LIBCOMPILER_C_SOURCES)" cxxfiles="$(MESA3DGL_GLSL_SOURCES_CXX) $(LIBCOMPILER_CXX_SOURCES)"
 
 %common

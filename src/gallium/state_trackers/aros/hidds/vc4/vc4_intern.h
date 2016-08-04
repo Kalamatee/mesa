@@ -14,9 +14,6 @@
 // The object instance data is used as our winsys wrapper
 struct HiddGalliumVC4Data
 {
-#if (0)
-    struct sw_winsys vc4_ws;
-#endif
     OOP_Object *vc4_obj;
 };
 

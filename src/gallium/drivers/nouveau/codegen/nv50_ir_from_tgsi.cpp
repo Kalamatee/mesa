@@ -408,6 +408,7 @@ static nv50_ir::SVSemantic translateSysVal(uint sysval)
    case TGSI_SEMANTIC_BASEVERTEX: return nv50_ir::SV_BASEVERTEX;
    case TGSI_SEMANTIC_BASEINSTANCE: return nv50_ir::SV_BASEINSTANCE;
    case TGSI_SEMANTIC_DRAWID:     return nv50_ir::SV_DRAWID;
+   case TGSI_SEMANTIC_WORK_DIM:   return nv50_ir::SV_WORK_DIM;
    default:
       assert(0);
       return nv50_ir::SV_CLOCK;
@@ -507,6 +508,8 @@ static nv50_ir::ImgFormat translateImgFormat(uint format)
    FMT_CASE(R8G8_SNORM, RG8_SNORM);
    FMT_CASE(R16_SNORM, R16_SNORM);
    FMT_CASE(R8_SNORM, R8_SNORM);
+
+   FMT_CASE(B8G8R8A8_UNORM, BGRA8);
    }
 
    assert(!"Unexpected format");
@@ -548,6 +551,9 @@ nv50_ir::DataType Instruction::inferSrcType() const
    case TGSI_OPCODE_UBFE:
    case TGSI_OPCODE_UMSB:
    case TGSI_OPCODE_UP2H:
+   case TGSI_OPCODE_VOTE_ALL:
+   case TGSI_OPCODE_VOTE_ANY:
+   case TGSI_OPCODE_VOTE_EQ:
       return nv50_ir::TYPE_U32;
    case TGSI_OPCODE_I2F:
    case TGSI_OPCODE_I2D:
@@ -835,6 +841,10 @@ static nv50_ir::operation translateOpcode(uint opcode)
    NV50_IR_OPCODE_CASE(IMSB, BFIND);
    NV50_IR_OPCODE_CASE(UMSB, BFIND);
 
+   NV50_IR_OPCODE_CASE(VOTE_ALL, VOTE);
+   NV50_IR_OPCODE_CASE(VOTE_ANY, VOTE);
+   NV50_IR_OPCODE_CASE(VOTE_EQ, VOTE);
+
    NV50_IR_OPCODE_CASE(END, EXIT);
 
    default:
@@ -861,6 +871,9 @@ static uint16_t opcodeToSubOp(uint opcode)
    case TGSI_OPCODE_IMUL_HI:
    case TGSI_OPCODE_UMUL_HI:
       return NV50_IR_SUBOP_MUL_HIGH;
+   case TGSI_OPCODE_VOTE_ALL: return NV50_IR_SUBOP_VOTE_ALL;
+   case TGSI_OPCODE_VOTE_ANY: return NV50_IR_SUBOP_VOTE_ANY;
+   case TGSI_OPCODE_VOTE_EQ: return NV50_IR_SUBOP_VOTE_UNI;
    default:
       return 0;
    }
@@ -995,13 +1008,14 @@ bool Source::scanSource()
 
    if (info->type == PIPE_SHADER_FRAGMENT) {
       info->prop.fp.writesDepth = scan.writes_z;
-      info->prop.fp.usesDiscard = scan.uses_kill;
+      info->prop.fp.usesDiscard = scan.uses_kill || info->io.alphaRefBase;
    } else
    if (info->type == PIPE_SHADER_GEOMETRY) {
       info->prop.gp.instanceCount = 1; // default value
    }
 
    info->io.viewportId = -1;
+   info->prop.cp.numThreads = 1;
 
    info->immd.data = (uint32_t *)MALLOC(scan.immediate_count * 16);
    info->immd.type = (ubyte *)MALLOC(scan.immediate_count * sizeof(ubyte));
@@ -1105,7 +1119,7 @@ void Source::scanProperty(const struct tgsi_full_property *prop)
    case TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH:
    case TGSI_PROPERTY_CS_FIXED_BLOCK_HEIGHT:
    case TGSI_PROPERTY_CS_FIXED_BLOCK_DEPTH:
-      // we don't care
+      info->prop.cp.numThreads *= prop->u[0].Data;
       break;
    case TGSI_PROPERTY_NUM_CLIPDIST_ENABLED:
       info->io.clipDistances = prop->u[0].Data;
@@ -2377,6 +2391,9 @@ Converter::getImageCoords(std::vector<Value *> &coords, int r, int s)
 
    for (int c = 0; c < arg; ++c)
       coords.push_back(fetchSrc(s, c));
+
+   if (t.isMS())
+      coords.push_back(fetchSrc(s, 3));
 }
 
 // For raw loads, granularity is 4 byte.
@@ -2735,8 +2752,8 @@ Converter::handleINTERP(Value *dst[4])
    Value *offset = NULL, *ptr = NULL, *w = NULL;
    Symbol *sym[4] = { NULL };
    bool linear;
-   operation op;
-   int c, mode;
+   operation op = OP_NOP;
+   int c, mode = 0;
 
    tgsi::Instruction::SrcRegister src = tgsi.getSrc(0);
 
@@ -3186,6 +3203,17 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
          mkCmp(op, tgsi.getSetCond(), dstTy, dst0[c], srcTy, src0, src1);
       }
       break;
+   case TGSI_OPCODE_VOTE_ALL:
+   case TGSI_OPCODE_VOTE_ANY:
+   case TGSI_OPCODE_VOTE_EQ:
+      val0 = new_LValue(func, FILE_PREDICATE);
+      FOR_EACH_DST_ENABLED_CHANNEL(0, c, tgsi) {
+         mkCmp(OP_SET, CC_NE, TYPE_U32, val0, TYPE_U32, fetchSrc(0, c), zero);
+         mkOp1(op, dstTy, val0, val0)
+            ->subOp = tgsi::opcodeToSubOp(tgsi.getOpcode());
+         mkCvt(OP_CVT, TYPE_U32, dst0[c], TYPE_U8, val0);
+      }
+      break;
    case TGSI_OPCODE_KILL_IF:
       val0 = new_LValue(func, FILE_PREDICATE);
       mask = 0;
@@ -3597,7 +3625,9 @@ Converter::handleInstruction(const struct tgsi_full_instruction *insn)
          src0 = fetchSrc(0, pos);
          src1 = fetchSrc(0, pos + 1);
          mkOp2(OP_MERGE, TYPE_U64, dreg, src0, src1);
-         mkCvt(OP_CVT, dstTy, dst0[c], srcTy, dreg);
+         Instruction *cvt = mkCvt(OP_CVT, dstTy, dst0[c], srcTy, dreg);
+         if (!isFloatType(dstTy))
+            cvt->rnd = ROUND_Z;
          pos += 2;
       }
       break;
@@ -3790,6 +3820,28 @@ Converter::handleUserClipPlanes()
 void
 Converter::exportOutputs()
 {
+   if (info->io.alphaRefBase) {
+      for (unsigned int i = 0; i < info->numOutputs; ++i) {
+         if (info->out[i].sn != TGSI_SEMANTIC_COLOR ||
+             info->out[i].si != 0)
+            continue;
+         const unsigned int c = 3;
+         if (!oData.exists(sub.cur->values, i, c))
+            continue;
+         Value *val = oData.load(sub.cur->values, i, c, NULL);
+         if (!val)
+            continue;
+
+         Symbol *ref = mkSymbol(FILE_MEMORY_CONST, info->io.auxCBSlot,
+                                TYPE_U32, info->io.alphaRefBase);
+         Value *pred = new_LValue(func, FILE_PREDICATE);
+         mkCmp(OP_SET, CC_TR, TYPE_U32, pred, TYPE_F32, val,
+               mkLoadv(TYPE_U32, ref, NULL))
+            ->subOp = 1;
+         mkOp(OP_DISCARD, TYPE_NONE, NULL)->setPredicate(CC_NOT_P, pred);
+      }
+   }
+
    for (unsigned int i = 0; i < info->numOutputs; ++i) {
       for (unsigned int c = 0; c < 4; ++c) {
          if (!oData.exists(sub.cur->values, i, c))

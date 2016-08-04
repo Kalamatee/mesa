@@ -322,8 +322,10 @@ swr_destroy(struct pipe_context *pipe)
 
    swr_destroy_scratch_buffers(ctx);
 
+   /* Only update screen->pipe if current context is being destroyed */
    assert(screen);
-   screen->pipe = NULL;
+   if (screen->pipe == pipe)
+      screen->pipe = NULL;
 
    FREE(ctx);
 }
@@ -346,7 +348,6 @@ struct pipe_context *
 swr_create_context(struct pipe_screen *p_screen, void *priv, unsigned flags)
 {
    struct swr_context *ctx = CALLOC_STRUCT(swr_context);
-   struct swr_screen *screen = swr_screen(p_screen);
    ctx->blendJIT =
       new std::unordered_map<BLEND_COMPILE_STATE, PFN_BLEND_JIT_FUNC>;
 
@@ -366,7 +367,6 @@ swr_create_context(struct pipe_screen *p_screen, void *priv, unsigned flags)
    if (ctx->swrContext == NULL)
       goto fail;
 
-   screen->pipe = &ctx->pipe;
    ctx->pipe.screen = p_screen;
    ctx->pipe.destroy = swr_destroy;
    ctx->pipe.priv = priv;
@@ -376,7 +376,8 @@ swr_create_context(struct pipe_screen *p_screen, void *priv, unsigned flags)
    ctx->pipe.transfer_unmap = swr_transfer_unmap;
 
    ctx->pipe.transfer_flush_region = u_default_transfer_flush_region;
-   ctx->pipe.transfer_inline_write = u_default_transfer_inline_write;
+   ctx->pipe.buffer_subdata = u_default_buffer_subdata;
+   ctx->pipe.texture_subdata = u_default_texture_subdata;
 
    ctx->pipe.resource_copy_region = swr_resource_copy;
    ctx->pipe.render_condition = swr_render_condition;

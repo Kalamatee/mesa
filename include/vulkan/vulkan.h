@@ -3676,6 +3676,38 @@ VKAPI_ATTR VkBool32 VKAPI_CALL vkGetPhysicalDeviceWin32PresentationSupportKHR(
 #endif
 #endif /* VK_USE_PLATFORM_WIN32_KHR */
 
+#ifdef VK_USE_PLATFORM_AROS_KHR
+#define VK_KHR_aros_surface 1
+#include <windows.h>
+
+#define VK_KHR_AROS_SURFACE_SPEC_VERSION 5
+#define VK_KHR_AROS_SURFACE_EXTENSION_NAME "VK_KHR_aros_surface"
+
+typedef VkFlags VkAROSSurfaceCreateFlagsKHR;
+
+typedef struct VkAROSSurfaceCreateInfoKHR {
+    VkStructureType                 sType;
+    const void*                     pNext;
+    VkAROSSurfaceCreateFlagsKHR    flags;
+} VkAROSSurfaceCreateInfoKHR;
+
+
+typedef VkResult (VKAPI_PTR *PFN_vkCreateAROSSurfaceKHR)(VkInstance instance, const VkAROSSurfaceCreateInfoKHR* pCreateInfo, const VkAllocationCallbacks* pAllocator, VkSurfaceKHR* pSurface);
+typedef VkBool32 (VKAPI_PTR *PFN_vkGetPhysicalDeviceAROSPresentationSupportKHR)(VkPhysicalDevice physicalDevice, uint32_t queueFamilyIndex);
+
+#ifndef VK_NO_PROTOTYPES
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateAROSSurfaceKHR(
+    VkInstance                                  instance,
+    const VkAROSSurfaceCreateInfoKHR*          pCreateInfo,
+    const VkAllocationCallbacks*                pAllocator,
+    VkSurfaceKHR*                               pSurface);
+
+VKAPI_ATTR VkBool32 VKAPI_CALL vkGetPhysicalDeviceAROSPresentationSupportKHR(
+    VkPhysicalDevice                            physicalDevice,
+    uint32_t                                    queueFamilyIndex);
+#endif
+#endif /* VK_USE_PLATFORM_AROS_KHR */
+
 #define VK_KHR_sampler_mirror_clamp_to_edge 1
 #define VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_SPEC_VERSION 1
 #define VK_KHR_SAMPLER_MIRROR_CLAMP_TO_EDGE_EXTENSION_NAME "VK_KHR_sampler_mirror_clamp_to_edge"

@@ -59,10 +59,11 @@ struct RelocInfo
 };
 
 struct FixupData {
-   FixupData(bool force, bool flat) :
-      force_persample_interp(force), flatshade(flat) {}
+   FixupData(bool force, bool flat, uint8_t alphatest) :
+      force_persample_interp(force), flatshade(flat), alphatest(alphatest) {}
    bool force_persample_interp;
    bool flatshade;
+   uint8_t alphatest;
 };
 
 struct FixupEntry;
@@ -172,7 +173,9 @@ public:
    // The address chosen is supplied to the relocation routine.
    virtual void getBuiltinCode(const uint32_t **code, uint32_t *size) const = 0;
 
-   virtual void parseDriverInfo(const struct nv50_ir_prog_info *info) { }
+   virtual void parseDriverInfo(const struct nv50_ir_prog_info *info) {
+      threads = info->prop.cp.numThreads;
+   }
 
    virtual bool runLegalizePass(Program *, CGStage stage) const = 0;
 
@@ -248,6 +251,7 @@ public:
 
 protected:
    uint32_t chipset;
+   uint32_t threads;
 
    DataFile nativeFileMap[DATA_FILE_COUNT];
 

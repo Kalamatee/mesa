@@ -3,14 +3,14 @@
 #   Generate libgalliumauxiliary.a
 #
 
-include $(TOP)/config/make.cfg
+include $(SRCDIR)/config/aros.cfg
 
 CUR_MESADIR := src/gallium/auxiliary
 include $(SRCDIR)/$(CURDIR)/../mesa.cfg
 include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
 
-#MM- mesa3dgl-linklibs : mesa3dgl-linklibs-galliumauxiliary
-#MM mesa3dgl-linklibs-galliumauxiliary : workbench-libs-dxtn-includes mesa3dgl-linklibs-compiler
+#MM- mesa3dgl-linklibs : mesa3d-linklib-galliumauxiliary
+#MM mesa3d-linklib-galliumauxiliary : workbench-libs-dxtn-includes mesa3d-linklib-compiler
 
 MESA3DGL_GALLIUM_AUXILIARY_C_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(filter %.c, $(C_SOURCES) $(NIR_SOURCES))))
 
@@ -26,13 +26,16 @@ MESA3DGL_GALLIUM_AUXILIARY_SOURCES_C := \
 USER_INCLUDES := \
             $(USER_INCLUDES) \
             -iquote $(top_srcdir)/src/gallium/include \
-            -iquote $(top_srcdir)/src/gallium/auxiliary \
-            -iquote $(top_srcdir)/src/gallium/auxiliary/util \
-            -iquote $(top_srcdir)/src/gallium/auxiliary/indices \
+            -iquote $(top_srcdir)/$(CUR_MESADIR) \
+            -iquote $(top_srcdir)/$(CUR_MESADIR)/util \
+            -iquote $(top_srcdir)/$(CUR_MESADIR)/indices \
             -iquote $(top_builddir)/src/compiler/nir
 
-USER_CFLAGS := $(USER_CFLAGS)
-##-DHAVE_LLVM=0x0209 -D__STDC_CONSTANT_MACROS
+# disable necessary warnings
+NOWARN_FLAGS := -Wno-strict-aliasing -Wno-unused-variable -Wno-unused-value -Wno-return-type -Wno-maybe-uninitialized
+USER_CFLAGS += $(NOWARN_FLAGS)
+USER_CXXFLAGS += $(NOWARN_FLAGS)
+##USER_CFLAGS += -DHAVE_LLVM=0x0209
 
 $(top_builddir)/$(CUR_MESADIR)/util/u_format_table.c: $(top_srcdir)/$(CUR_MESADIR)/util/u_format_table.py
 	@mkdir -p $(dir $@)
@@ -50,9 +53,9 @@ $(top_builddir)/$(CUR_MESADIR)/indices/u_unfilled_gen.c: $(top_srcdir)/$(CUR_MES
 	@$(PYTHON) $(PYTHON_FLAGS) $(top_srcdir)/$(CUR_MESADIR)/indices/u_unfilled_gen.py > $@
 
 #MM
-mesa3dgl-linklibs-galliumauxiliary-generated : $(GALLIUM_AUXILIARY_GENERATED_SOURCES)
+mesa3d-linklib-galliumauxiliary-generated : $(GALLIUM_AUXILIARY_GENERATED_SOURCES)
 
-%build_linklib mmake=mesa3dgl-linklibs-galliumauxiliary libname=galliumauxiliary \
+%build_linklib mmake=mesa3d-linklib-galliumauxiliary libname=galliumauxiliary \
     libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) \
     files="$(MESA3DGL_GALLIUM_AUXILIARY_SOURCES_C)"
 

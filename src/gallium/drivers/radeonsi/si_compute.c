@@ -27,7 +27,6 @@
 #include "util/u_upload_mgr.h"
 #include "radeon/r600_pipe_common.h"
 #include "radeon/radeon_elf_util.h"
-#include "radeon/radeon_llvm_util.h"
 
 #include "radeon/r600_cs.h"
 #include "si_pipe.h"
@@ -164,8 +163,7 @@ static void si_initialize_compute(struct si_context *sctx)
 	radeon_emit(cs, 0);
 	radeon_emit(cs, 0);
 
-	radeon_set_sh_reg_seq(cs, R_00B854_COMPUTE_RESOURCE_LIMITS, 3);
-	radeon_emit(cs, 0);
+	radeon_set_sh_reg_seq(cs, R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0, 2);
 	/* R_00B858_COMPUTE_STATIC_THREAD_MGMT_SE0 / SE1 */
 	radeon_emit(cs, S_00B858_SH0_CU_EN(0xffff) | S_00B858_SH1_CU_EN(0xffff));
 	radeon_emit(cs, S_00B85C_SH0_CU_EN(0xffff) | S_00B85C_SH1_CU_EN(0xffff));
@@ -208,9 +206,7 @@ static bool si_setup_compute_scratch_buffer(struct si_context *sctx,
 		scratch_bo_size = sctx->compute_scratch_buffer->b.b.width0;
 
 	if (scratch_bo_size < scratch_needed) {
-		pipe_resource_reference(
-			(struct pipe_resource**)&sctx->compute_scratch_buffer,
-			NULL);
+		r600_resource_reference(&sctx->compute_scratch_buffer, NULL);
 
 		sctx->compute_scratch_buffer =
 				si_resource_create_custom(&sctx->screen->b.b,
@@ -308,6 +304,8 @@ static bool si_switch_compute_shader(struct si_context *sctx,
 
 	sctx->cs_shader_state.emitted_program = program;
 	sctx->cs_shader_state.offset = offset;
+	sctx->cs_shader_state.uses_scratch =
+		config->scratch_bytes_per_wave != 0;
 
 	return true;
 }
@@ -359,7 +357,7 @@ static void si_upload_compute_input(struct si_context *sctx,
 	radeon_emit(cs, S_008F04_BASE_ADDRESS_HI (kernel_args_va >> 32) |
 	                S_008F04_STRIDE(0));
 
-	pipe_resource_reference((struct pipe_resource**)&input_buffer, NULL);
+	r600_resource_reference(&input_buffer, NULL);
 }
 
 static void si_setup_tgsi_grid(struct si_context *sctx,
@@ -401,6 +399,11 @@ static void si_emit_dispatch_packets(struct si_context *sctx,
 {
 	struct radeon_winsys_cs *cs = sctx->b.gfx.cs;
 	bool render_cond_bit = sctx->b.render_cond && !sctx->b.render_cond_force_off;
+	unsigned waves_per_threadgroup =
+		DIV_ROUND_UP(info->block[0] * info->block[1] * info->block[2], 64);
+
+	radeon_set_sh_reg(cs, R_00B854_COMPUTE_RESOURCE_LIMITS,
+			  S_00B854_SIMD_DEST_CNTL(waves_per_threadgroup % 4 == 0));
 
 	radeon_set_sh_reg_seq(cs, R_00B81C_COMPUTE_NUM_THREAD_X, 3);
 	radeon_emit(cs, S_00B81C_NUM_THREAD_FULL(info->block[0]));
@@ -441,6 +444,21 @@ static void si_launch_grid(
 	struct si_context *sctx = (struct si_context*)ctx;
 	struct si_compute *program = sctx->cs_shader_state.program;
 	int i;
+	/* HW bug workaround when CS threadgroups > 256 threads and async
+	 * compute isn't used, i.e. only one compute job can run at a time.
+	 * If async compute is possible, the threadgroup size must be limited
+	 * to 256 threads on all queues to avoid the bug.
+	 * Only SI and certain CIK chips are affected.
+	 */
+	bool cs_regalloc_hang =
+		(sctx->b.chip_class == SI ||
+		 sctx->b.family == CHIP_BONAIRE ||
+		 sctx->b.family == CHIP_KABINI) &&
+		info->block[0] * info->block[1] * info->block[2] > 256;
+
+	if (cs_regalloc_hang)
+		sctx->b.flags |= SI_CONTEXT_PS_PARTIAL_FLUSH |
+				 SI_CONTEXT_CS_PARTIAL_FLUSH;
 
 	si_decompress_compute_textures(sctx);
 
@@ -487,6 +505,13 @@ static void si_launch_grid(
 	si_emit_dispatch_packets(sctx, info);
 
 	si_ce_post_draw_synchronization(sctx);
+
+	sctx->b.num_compute_calls++;
+	if (sctx->cs_shader_state.uses_scratch)
+		sctx->b.num_spill_compute_calls++;
+
+	if (cs_regalloc_hang)
+		sctx->b.flags |= SI_CONTEXT_CS_PARTIAL_FLUSH;
 }
 
 

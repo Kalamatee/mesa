@@ -33,10 +33,10 @@ lib_LTLIBRARIES = libvulkan_intel.la
 check_LTLIBRARIES = libvulkan-test.la
 
 PER_GEN_LIBS = \
-   libanv-gen7.la \
-   libanv-gen75.la \
-   libanv-gen8.la \
-   libanv-gen9.la
+	libanv-gen7.la \
+	libanv-gen75.la \
+	libanv-gen8.la \
+	libanv-gen9.la
 
 noinst_LTLIBRARIES = $(PER_GEN_LIBS)
 
@@ -82,7 +82,6 @@ VULKAN_SOURCES = \
 
 VULKAN_LIB_DEPS =
 
-
 if HAVE_PLATFORM_X11
 AM_CPPFLAGS += \
 	$(XCB_DRI3_CFLAGS) \
@@ -124,17 +123,19 @@ VULKAN_LIB_DEPS += \
 nodist_EXTRA_libvulkan_intel_la_SOURCES = dummy.cpp
 libvulkan_intel_la_SOURCES = $(VULKAN_GEM_FILES)
 
-VULKAN_ENTRYPOINT_CPPFLAGS = \
-	-DVK_USE_PLATFORM_XCB_KHR \
-	-DVK_USE_PLATFORM_WAYLAND_KHR
-
 anv_entrypoints.h : anv_entrypoints_gen.py $(vulkan_include_HEADERS)
-	$(AM_V_GEN)$(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) $(top_srcdir)/include/vulkan/vulkan_intel.h |\
+	$(AM_V_GEN) cat $(vulkan_include_HEADERS) |\
 	$(PYTHON2) $(srcdir)/anv_entrypoints_gen.py header > $@
 
 anv_entrypoints.c : anv_entrypoints_gen.py $(vulkan_include_HEADERS)
-	$(AM_V_GEN)$(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) $(top_srcdir)/include/vulkan/vulkan_intel.h |\
+	$(AM_V_GEN) cat $(vulkan_include_HEADERS) |\
 	$(PYTHON2) $(srcdir)/anv_entrypoints_gen.py code > $@
+
+.PHONY: anv_timestamp.h
+
+anv_timestamp.h:
+	@echo "Updating anv_timestamp.h"
+	$(AM_V_GEN) echo "#define ANV_TIMESTAMP \"$(TIMESTAMP_CMD)\"" > $@
 
 BUILT_SOURCES = $(VULKAN_GENERATED_FILES)
 CLEANFILES = $(BUILT_SOURCES) dev_icd.json

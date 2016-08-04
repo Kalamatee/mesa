@@ -37,6 +37,7 @@
 #include "main/enums.h"
 #include "main/formats.h"
 #include "main/glformats.h"
+#include "main/texcompress.h"
 #include "main/texgetimage.h"
 #include "main/teximage.h"
 #include "main/texstore.h"
@@ -1062,23 +1063,23 @@ struct format_mapping
 
 
 #define DEFAULT_RGBA_FORMATS \
-      PIPE_FORMAT_B8G8R8A8_UNORM, \
       PIPE_FORMAT_R8G8B8A8_UNORM, \
+      PIPE_FORMAT_B8G8R8A8_UNORM, \
       PIPE_FORMAT_A8R8G8B8_UNORM, \
       PIPE_FORMAT_A8B8G8R8_UNORM, \
       0
 
 #define DEFAULT_RGB_FORMATS \
-      PIPE_FORMAT_B8G8R8X8_UNORM, \
       PIPE_FORMAT_R8G8B8X8_UNORM, \
+      PIPE_FORMAT_B8G8R8X8_UNORM, \
       PIPE_FORMAT_X8R8G8B8_UNORM, \
       PIPE_FORMAT_X8B8G8R8_UNORM, \
       PIPE_FORMAT_B5G6R5_UNORM, \
       DEFAULT_RGBA_FORMATS
 
 #define DEFAULT_SRGBA_FORMATS \
-      PIPE_FORMAT_B8G8R8A8_SRGB, \
       PIPE_FORMAT_R8G8B8A8_SRGB, \
+      PIPE_FORMAT_B8G8R8A8_SRGB, \
       PIPE_FORMAT_A8R8G8B8_SRGB, \
       PIPE_FORMAT_A8B8G8R8_SRGB, \
       0
@@ -1169,8 +1170,8 @@ static const struct format_mapping format_map[] = {
    /* basic Alpha formats */
    {
       { GL_ALPHA12, GL_ALPHA16, 0 },
-      { PIPE_FORMAT_A16_UNORM, PIPE_FORMAT_A8_UNORM,
-        DEFAULT_RGBA_FORMATS }
+      { PIPE_FORMAT_A16_UNORM, PIPE_FORMAT_R16G16B16A16_UNORM,
+        PIPE_FORMAT_A8_UNORM, DEFAULT_RGBA_FORMATS }
    },
    {
       { GL_ALPHA, GL_ALPHA4, GL_ALPHA8, GL_COMPRESSED_ALPHA, 0 },
@@ -1180,7 +1181,8 @@ static const struct format_mapping format_map[] = {
    /* basic Luminance formats */
    {
       { GL_LUMINANCE12, GL_LUMINANCE16, 0 },
-      { PIPE_FORMAT_L16_UNORM, PIPE_FORMAT_L8_UNORM, DEFAULT_RGB_FORMATS }
+      { PIPE_FORMAT_L16_UNORM, PIPE_FORMAT_R16G16B16A16_UNORM,
+        PIPE_FORMAT_L8_UNORM, DEFAULT_RGB_FORMATS }
    },
    {
       { 1, GL_LUMINANCE, GL_LUMINANCE4, GL_LUMINANCE8, 0 },
@@ -1191,8 +1193,8 @@ static const struct format_mapping format_map[] = {
    {
       { GL_LUMINANCE12_ALPHA4, GL_LUMINANCE12_ALPHA12,
         GL_LUMINANCE16_ALPHA16, 0},
-      { PIPE_FORMAT_L16A16_UNORM, PIPE_FORMAT_L8A8_UNORM,
-        DEFAULT_RGBA_FORMATS }
+      { PIPE_FORMAT_L16A16_UNORM, PIPE_FORMAT_R16G16B16A16_UNORM,
+        PIPE_FORMAT_L8A8_UNORM, DEFAULT_RGBA_FORMATS }
    },
    {
       { 2, GL_LUMINANCE_ALPHA, GL_LUMINANCE6_ALPHA2, GL_LUMINANCE8_ALPHA8, 0 },
@@ -1207,7 +1209,8 @@ static const struct format_mapping format_map[] = {
    /* basic Intensity formats */
    {
       { GL_INTENSITY12, GL_INTENSITY16, 0 },
-      { PIPE_FORMAT_I16_UNORM, PIPE_FORMAT_I8_UNORM, DEFAULT_RGBA_FORMATS }
+      { PIPE_FORMAT_I16_UNORM, PIPE_FORMAT_R16G16B16A16_UNORM,
+        PIPE_FORMAT_I8_UNORM, DEFAULT_RGBA_FORMATS }
    },
    {
       { GL_INTENSITY, GL_INTENSITY4, GL_INTENSITY8,
@@ -2282,6 +2285,12 @@ st_ChooseTextureFormat(struct gl_context *ctx, GLenum target,
    }
 
    if (pFormat == PIPE_FORMAT_NONE) {
+      /* lie about using etc1/etc2 natively if we do decoding tricks */
+      mFormat = _mesa_glenum_to_compressed_format(internalFormat);
+      if ((mFormat == MESA_FORMAT_ETC1_RGB8 && !st->has_etc1) ||
+          (_mesa_is_format_etc2(mFormat) && !st->has_etc2))
+          return mFormat;
+
       /* no luck at all */
       return MESA_FORMAT_NONE;
    }

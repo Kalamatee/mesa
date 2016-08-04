@@ -107,7 +107,7 @@ _mesa_init_pipeline(struct gl_context *ctx)
  * Callback for deleting a pipeline object.  Called by _mesa_HashDeleteAll().
  */
 static void
-delete_pipelineobj_cb(GLuint id, void *data, void *userData)
+delete_pipelineobj_cb(UNUSED GLuint id, void *data, void *userData)
 {
    struct gl_pipeline_object *obj = (struct gl_pipeline_object *) data;
    struct gl_context *ctx = (struct gl_context *) userData;
@@ -470,9 +470,6 @@ _mesa_bind_pipeline(struct gl_context *ctx,
 
       for (i = 0; i < MESA_SHADER_STAGES; i++)
          _mesa_shader_program_init_subroutine_defaults(ctx->_Shader->CurrentProgram[i]);
-
-      if (ctx->Driver.UseProgram)
-         ctx->Driver.UseProgram(ctx, NULL);
    }
 }
 
@@ -929,8 +926,21 @@ _mesa_validate_program_pipeline(struct gl_context* ctx,
     * application has created a debug context.
     */
    if ((_mesa_is_gles(ctx) || (ctx->Const.ContextFlags & GL_CONTEXT_FLAG_DEBUG_BIT)) &&
-       !_mesa_validate_pipeline_io(pipe))
-      return GL_FALSE;
+       !_mesa_validate_pipeline_io(pipe)) {
+      if (_mesa_is_gles(ctx))
+         return GL_FALSE;
+
+      static GLuint msg_id = 0;
+
+      _mesa_gl_debug(ctx, &msg_id,
+                     MESA_DEBUG_SOURCE_API,
+                     MESA_DEBUG_TYPE_PORTABILITY,
+                     MESA_DEBUG_SEVERITY_MEDIUM,
+                     "glValidateProgramPipeline: pipeline %u does not meet "
+                     "strict OpenGL ES 3.1 requirements and may not be "
+                     "portable across desktop hardware\n",
+                     pipe->Name);
+   }
 
    pipe->Validated = GL_TRUE;
    return GL_TRUE;

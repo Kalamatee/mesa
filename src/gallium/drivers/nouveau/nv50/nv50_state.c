@@ -416,6 +416,11 @@ nv50_zsa_state_create(struct pipe_context *pipe,
       SB_DATA    (so, 0);
    }
 
+   SB_BEGIN_3D(so, CB_ADDR, 1);
+   SB_DATA    (so, NV50_CB_AUX_ALPHATEST_OFFSET << (8 - 2) | NV50_CB_AUX);
+   SB_BEGIN_3D(so, CB_DATA(0), 1);
+   SB_DATA    (so, fui(cso->alpha.ref_value));
+
    assert(so->size <= ARRAY_SIZE(so->state));
    return (void *)so;
 }
@@ -842,7 +847,7 @@ nv50_cp_state_bind(struct pipe_context *pipe, void *hwcso)
 
 static void
 nv50_set_constant_buffer(struct pipe_context *pipe, uint shader, uint index,
-                         struct pipe_constant_buffer *cb)
+                         const struct pipe_constant_buffer *cb)
 {
    struct nv50_context *nv50 = nv50_context(pipe);
    struct pipe_resource *res = cb ? cb->buffer : NULL;
@@ -856,9 +861,10 @@ nv50_set_constant_buffer(struct pipe_context *pipe, uint shader, uint index,
    if (nv50->constbuf[s][i].user)
       nv50->constbuf[s][i].u.buf = NULL;
    else
-   if (nv50->constbuf[s][i].u.buf)
+   if (nv50->constbuf[s][i].u.buf) {
       nouveau_bufctx_reset(nv50->bufctx_3d, NV50_BIND_3D_CB(s, i));
-
+      nv04_resource(nv50->constbuf[s][i].u.buf)->cb_bindings[s] &= ~(1 << i);
+   }
    pipe_resource_reference(&nv50->constbuf[s][i].u.buf, res);
 
    nv50->constbuf[s][i].user = (cb && cb->user_buffer) ? true : false;
@@ -998,6 +1004,22 @@ nv50_set_viewport_states(struct pipe_context *pipe,
       nv50->viewports_dirty |= 1 << (start_slot + i);
       nv50->dirty_3d |= NV50_NEW_3D_VIEWPORT;
    }
+}
+
+static void
+nv50_set_window_rectangles(struct pipe_context *pipe,
+                           boolean include,
+                           unsigned num_rectangles,
+                           const struct pipe_scissor_state *rectangles)
+{
+   struct nv50_context *nv50 = nv50_context(pipe);
+
+   nv50->window_rect.inclusive = include;
+   nv50->window_rect.rects = MIN2(num_rectangles, NV50_MAX_WINDOW_RECTANGLES);
+   memcpy(nv50->window_rect.rect, rectangles,
+          sizeof(struct pipe_scissor_state) * nv50->window_rect.rects);
+
+   nv50->dirty_3d |= NV50_NEW_3D_WINDOW_RECTS;
 }
 
 static void
@@ -1298,6 +1320,7 @@ nv50_init_state_functions(struct nv50_context *nv50)
    pipe->set_polygon_stipple = nv50_set_polygon_stipple;
    pipe->set_scissor_states = nv50_set_scissor_states;
    pipe->set_viewport_states = nv50_set_viewport_states;
+   pipe->set_window_rectangles = nv50_set_window_rectangles;
 
    pipe->create_vertex_elements_state = nv50_vertex_state_create;
    pipe->delete_vertex_elements_state = nv50_vertex_state_delete;

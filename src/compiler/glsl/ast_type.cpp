@@ -600,8 +600,8 @@ ast_type_qualifier::merge_in_qualifier(YYLTYPE *loc,
 bool
 ast_type_qualifier::validate_flags(YYLTYPE *loc,
                                    _mesa_glsl_parse_state *state,
-                                   const char *message,
-                                   const ast_type_qualifier &allowed_flags)
+                                   const ast_type_qualifier &allowed_flags,
+                                   const char *message, const char *name)
 {
    ast_type_qualifier bad;
    bad.flags.i = this->flags.i & ~allowed_flags.flags.i;
@@ -609,11 +609,11 @@ ast_type_qualifier::validate_flags(YYLTYPE *loc,
       return true;
 
    _mesa_glsl_error(loc, state,
-                    "%s:"
+                    "%s '%s':"
                     "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s"
                     "%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s%s"
-                    "%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
-                    message,
+                    "%s%s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+                    message, name,
                     bad.flags.q.invariant ? " invariant" : "",
                     bad.flags.q.precise ? " precise" : "",
                     bad.flags.q.constant ? " constant" : "",
@@ -633,6 +633,7 @@ ast_type_qualifier::validate_flags(YYLTYPE *loc,
                     bad.flags.q.origin_upper_left ? " origin_upper_left" : "",
                     bad.flags.q.pixel_center_integer ? " pixel_center_integer" : "",
                     bad.flags.q.explicit_align ? " align" : "",
+                    bad.flags.q.explicit_component ? " component" : "",
                     bad.flags.q.explicit_location ? " location" : "",
                     bad.flags.q.explicit_index ? " index" : "",
                     bad.flags.q.explicit_binding ? " binding" : "",
@@ -678,7 +679,8 @@ bool
 ast_layout_expression::process_qualifier_constant(struct _mesa_glsl_parse_state *state,
                                                   const char *qual_indentifier,
                                                   unsigned *value,
-                                                  bool can_be_zero)
+                                                  bool can_be_zero,
+                                                  bool must_match)
 {
    int min_value = 0;
    bool first_pass = true;
@@ -687,8 +689,8 @@ ast_layout_expression::process_qualifier_constant(struct _mesa_glsl_parse_state 
    if (!can_be_zero)
       min_value = 1;
 
-   for (exec_node *node = layout_const_expressions.head;
-           !node->is_tail_sentinel(); node = node->next) {
+   for (exec_node *node = layout_const_expressions.get_head_raw();
+        !node->is_tail_sentinel(); node = node->next) {
 
       exec_list dummy_instructions;
       ast_node *const_expression = exec_node_data(ast_node, node, link);
@@ -716,12 +718,14 @@ ast_layout_expression::process_qualifier_constant(struct _mesa_glsl_parse_state 
        *  in a single declaration, the last occurrence overrides the
        *  former occurrence(s)."
        */
-      if (!state->has_420pack() && !first_pass && *value != const_int->value.u[0]) {
-         YYLTYPE loc = const_expression->get_location();
-         _mesa_glsl_error(&loc, state, "%s layout qualifier does not "
-		          "match previous declaration (%d vs %d)",
-                          qual_indentifier, *value, const_int->value.i[0]);
-         return false;
+      if (!first_pass) {
+         if ((must_match || !state->has_420pack()) && *value != const_int->value.u[0]) {
+            YYLTYPE loc = const_expression->get_location();
+            _mesa_glsl_error(&loc, state, "%s layout qualifier does not "
+                             "match previous declaration (%d vs %d)",
+                             qual_indentifier, *value, const_int->value.i[0]);
+            return false;
+         }
       } else {
          first_pass = false;
          *value = const_int->value.u[0];

@@ -79,6 +79,17 @@ objects. They all follow simple, one-method binding calls, e.g.
   should be the same as the number of set viewports and can be up to
   PIPE_MAX_VIEWPORTS.
 * ``set_viewport_states``
+* ``set_window_rectangles`` sets the window rectangles to be used for
+  rendering, as defined by GL_EXT_window_rectangles. There are two
+  modes - include and exclude, which define whether the supplied
+  rectangles are to be used for including fragments or excluding
+  them. All of the rectangles are ORed together, so in exclude mode,
+  any fragment inside any rectangle would be culled, while in include
+  mode, any fragment outside all rectangles would be culled. xmin/ymin
+  are inclusive, while xmax/ymax are exclusive (same as scissor states
+  above). Note that this only applies to draws, not clears or
+  blits. (Blits have their own way to pass the requisite rectangles
+  in.)
 * ``set_tess_state`` configures the default tessellation parameters:
   * ``default_outer_level`` is the default value for the outer tessellation
     levels. This corresponds to GL's ``PATCH_DEFAULT_OUTER_LEVEL``.
@@ -223,7 +234,7 @@ include several layers), this surface need not be bound to the framebuffer.
 
 ``clear_depth_stencil`` clears a single depth, stencil or depth/stencil surface
 with the specified depth and stencil values (for combined depth/stencil buffers,
-is is also possible to only clear one or the other part). While it is only
+it is also possible to only clear one or the other part). While it is only
 possible to clear one surface at a time (which can include several layers),
 this surface need not be bound to the framebuffer.
 
@@ -452,6 +463,16 @@ Flushing
 
 ``flush``
 
+PIPE_FLUSH_END_OF_FRAME: Whether the flush marks the end of frame.
+
+PIPE_FLUSH_DEFERRED: It is not required to flush right away, but it is required
+to return a valid fence. The behavior of fence_finish or any other call isn't
+changed. The only side effect can be that fence_finish will wait a little
+longer. No guidance is given as to how drivers should implement fence_finish
+with deferred flushes. If some drivers can't do deferred flushes safely, they
+should just ignore the flag.
+
+
 
 ``flush_resource``
 
@@ -492,9 +513,9 @@ This can be considered the equivalent of a CPU memcpy.
 
 ``blit`` blits a region of a resource to a region of another resource, including
 scaling, format conversion, and up-/downsampling, as well as a destination clip
-rectangle (scissors). It can also optionally honor the current render condition
-(but either way the blit itself never contributes anything to queries currently
-gathering data).
+rectangle (scissors) and window rectangles. It can also optionally honor the
+current render condition (but either way the blit itself never contributes
+anything to queries currently gathering data).
 As opposed to manually drawing a textured quad, this lets the pipe driver choose
 the optimal method for blitting (like using a special 2D engine), and usually
 offers, for example, accelerated stencil-only copies even where
@@ -517,8 +538,9 @@ to the transfer object remains unchanged (i.e. it can be non-NULL).
 the transfer object. The pointer into the resource should be considered
 invalid and discarded.
 
-``transfer_inline_write`` performs a simplified transfer for simple writes.
-Basically transfer_map, data write, and transfer_unmap all in one.
+``texture_subdata`` and ``buffer_subdata`` perform a simplified
+transfer for simple writes. Basically transfer_map, data write, and
+transfer_unmap all in one.
 
 
 The box parameter to some of these functions defines a 1D, 2D or 3D

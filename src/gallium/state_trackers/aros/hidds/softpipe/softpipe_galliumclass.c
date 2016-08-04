@@ -50,9 +50,13 @@ struct HiddSoftpipeDisplaytarget * HiddSoftpipe_Displaytarget(struct sw_displayt
 }
 
 static struct sw_displaytarget *
-HiddSoftpipe_CreateDisplaytarget(struct sw_winsys *winsys, unsigned tex_usage,
-    enum pipe_format format, unsigned width, unsigned height,
-    unsigned alignment, unsigned *stride)
+HiddSoftpipe_CreateDisplaytarget( struct sw_winsys *ws,
+                            unsigned tex_usage,
+                            enum pipe_format format,
+                            unsigned width, unsigned height,
+                            unsigned alignment,
+                            const void *front_private,
+                            unsigned *stride )
 {
     struct HiddSoftpipeDisplaytarget * spdt = 
         AllocVec(sizeof(struct HiddSoftpipeDisplaytarget), MEMF_PUBLIC | MEMF_CLEAR);
@@ -134,7 +138,9 @@ VOID METHOD(HiddSoftpipe, Root, Dispose)
 
 VOID METHOD(HiddSoftpipe, Root, Get)
 {
+#if (0)
     struct HiddGalliumSoftpipeData * HiddSoftpipe_DATA = OOP_INST_DATA(cl, o);
+#endif
     ULONG idx;
 
     D(bug ("[SoftPipe] %s()\n", __PRETTY_FUNCTION__));

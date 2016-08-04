@@ -20,6 +20,10 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#if defined(__AROS__)
+#define __BSD_VISIBLE
+#endif
+
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sys/types.h>

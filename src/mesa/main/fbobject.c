@@ -389,7 +389,8 @@ driver_RenderTexture_is_safe(const struct gl_renderbuffer_attachment *att)
    const struct gl_texture_image *const texImage =
       att->Texture->Image[att->CubeMapFace][att->TextureLevel];
 
-   if (texImage->Width == 0 || texImage->Height == 0 || texImage->Depth == 0)
+   if (!texImage ||
+       texImage->Width == 0 || texImage->Height == 0 || texImage->Depth == 0)
       return false;
 
    if ((texImage->TexObject->Target == GL_TEXTURE_1D_ARRAY
@@ -2127,7 +2128,7 @@ renderbuffer_storage(struct gl_context *ctx, struct gl_renderbuffer *rb,
       }
 
       if (sample_count_error != GL_NO_ERROR) {
-         _mesa_error(ctx, sample_count_error, "%s(samples)", func);
+         _mesa_error(ctx, sample_count_error, "%s(samples=%d)", func, samples);
          return;
       }
    }

@@ -68,8 +68,7 @@ draw_impl(struct fd_context *ctx, struct fd_ringbuffer *ring,
 			(info->mode == PIPE_PRIM_POINTS))
 		primtype = DI_PT_POINTLIST_PSIZE;
 
-	fd4_draw_emit(ctx, ring,
-			primtype,
+	fd4_draw_emit(ctx->batch, ring, primtype,
 			emit->key.binning_pass ? IGNORE_VISIBILITY : USE_VISIBILITY,
 			info);
 }
@@ -164,22 +163,24 @@ fd4_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info)
 	emit.key.binning_pass = false;
 	emit.dirty = dirty;
 
+	struct fd_ringbuffer *ring = ctx->batch->draw;
+
 	if (ctx->rasterizer->rasterizer_discard) {
-		fd_wfi(ctx, ctx->ring);
-		OUT_PKT3(ctx->ring, CP_REG_RMW, 3);
-		OUT_RING(ctx->ring, REG_A4XX_RB_RENDER_CONTROL);
-		OUT_RING(ctx->ring, ~A4XX_RB_RENDER_CONTROL_DISABLE_COLOR_PIPE);
-		OUT_RING(ctx->ring, A4XX_RB_RENDER_CONTROL_DISABLE_COLOR_PIPE);
+		fd_wfi(ctx->batch, ring);
+		OUT_PKT3(ring, CP_REG_RMW, 3);
+		OUT_RING(ring, REG_A4XX_RB_RENDER_CONTROL);
+		OUT_RING(ring, ~A4XX_RB_RENDER_CONTROL_DISABLE_COLOR_PIPE);
+		OUT_RING(ring, A4XX_RB_RENDER_CONTROL_DISABLE_COLOR_PIPE);
 	}
 
-	draw_impl(ctx, ctx->ring, &emit);
+	draw_impl(ctx, ctx->batch->draw, &emit);
 
 	if (ctx->rasterizer->rasterizer_discard) {
-		fd_wfi(ctx, ctx->ring);
-		OUT_PKT3(ctx->ring, CP_REG_RMW, 3);
-		OUT_RING(ctx->ring, REG_A4XX_RB_RENDER_CONTROL);
-		OUT_RING(ctx->ring, ~A4XX_RB_RENDER_CONTROL_DISABLE_COLOR_PIPE);
-		OUT_RING(ctx->ring, 0);
+		fd_wfi(ctx->batch, ring);
+		OUT_PKT3(ring, CP_REG_RMW, 3);
+		OUT_RING(ring, REG_A4XX_RB_RENDER_CONTROL);
+		OUT_RING(ring, ~A4XX_RB_RENDER_CONTROL_DISABLE_COLOR_PIPE);
+		OUT_RING(ring, 0);
 	}
 
 	/* and now binning pass: */
@@ -187,7 +188,7 @@ fd4_draw_vbo(struct fd_context *ctx, const struct pipe_draw_info *info)
 	emit.dirty = dirty & ~(FD_DIRTY_BLEND);
 	emit.vp = NULL;   /* we changed key so need to refetch vp */
 	emit.fp = NULL;
-	draw_impl(ctx, ctx->binning_ring, &emit);
+	draw_impl(ctx, ctx->batch->binning, &emit);
 
 	return true;
 }
@@ -217,7 +218,7 @@ static void
 fd4_clear_binning(struct fd_context *ctx, unsigned dirty)
 {
 	struct fd4_context *fd4_ctx = fd4_context(ctx);
-	struct fd_ringbuffer *ring = ctx->binning_ring;
+	struct fd_ringbuffer *ring = ctx->batch->binning;
 	struct fd4_emit emit = {
 		.debug = &ctx->debug,
 		.vtx  = &fd4_ctx->solid_vbuf_state,
@@ -231,7 +232,7 @@ fd4_clear_binning(struct fd_context *ctx, unsigned dirty)
 
 	fd4_emit_state(ctx, ring, &emit);
 	fd4_emit_vertex_bufs(ring, &emit);
-	reset_viewport(ring, &ctx->framebuffer);
+	reset_viewport(ring, &ctx->batch->framebuffer);
 
 	OUT_PKT0(ring, REG_A4XX_PC_PRIM_VTX_CNTL, 2);
 	OUT_RING(ring, A4XX_PC_PRIM_VTX_CNTL_VAROUT(0) |
@@ -242,7 +243,7 @@ fd4_clear_binning(struct fd_context *ctx, unsigned dirty)
 	OUT_PKT0(ring, REG_A4XX_GRAS_ALPHA_CONTROL, 1);
 	OUT_RING(ring, 0x00000002);
 
-	fd4_draw(ctx, ring, DI_PT_RECTLIST, IGNORE_VISIBILITY,
+	fd4_draw(ctx->batch, ring, DI_PT_RECTLIST, IGNORE_VISIBILITY,
 			DI_SRC_SEL_AUTO_INDEX, 2, 1, INDEX_SIZE_IGN, 0, 0, NULL);
 }
 
@@ -251,8 +252,8 @@ fd4_clear(struct fd_context *ctx, unsigned buffers,
 		const union pipe_color_union *color, double depth, unsigned stencil)
 {
 	struct fd4_context *fd4_ctx = fd4_context(ctx);
-	struct fd_ringbuffer *ring = ctx->ring;
-	struct pipe_framebuffer_state *pfb = &ctx->framebuffer;
+	struct fd_ringbuffer *ring = ctx->batch->draw;
+	struct pipe_framebuffer_state *pfb = &ctx->batch->framebuffer;
 	unsigned char mrt_comp[A4XX_MAX_RENDER_TARGETS] = {0};
 	unsigned dirty = ctx->dirty;
 	unsigned i;
@@ -284,7 +285,7 @@ fd4_clear(struct fd_context *ctx, unsigned buffers,
 				A4XX_RB_DEPTH_CONTROL_Z_ENABLE |
 				A4XX_RB_DEPTH_CONTROL_ZFUNC(FUNC_ALWAYS));
 
-		fd_wfi(ctx, ring);
+		fd_wfi(ctx->batch, ring);
 		OUT_PKT0(ring, REG_A4XX_GRAS_CL_VPORT_ZOFFSET_0, 2);
 		OUT_RING(ring, A4XX_GRAS_CL_VPORT_ZOFFSET_0(0.0));
 		OUT_RING(ring, A4XX_GRAS_CL_VPORT_ZSCALE_0(depth));
@@ -388,7 +389,7 @@ fd4_clear(struct fd_context *ctx, unsigned buffers,
 	OUT_PKT3(ring, CP_UNKNOWN_1A, 1);
 	OUT_RING(ring, 0x00000001);
 
-	fd4_draw(ctx, ring, DI_PT_RECTLIST, USE_VISIBILITY,
+	fd4_draw(ctx->batch, ring, DI_PT_RECTLIST, USE_VISIBILITY,
 			DI_SRC_SEL_AUTO_INDEX, 2, 1, INDEX_SIZE_IGN, 0, 0, NULL);
 
 	OUT_PKT3(ring, CP_UNKNOWN_1A, 1);

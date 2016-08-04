@@ -150,6 +150,7 @@ Target *Target::create(unsigned int chipset)
    switch (chipset & ~0xf) {
    case 0x110:
    case 0x120:
+   case 0x130:
       return getTargetGM107(chipset);
    case 0xc0:
    case 0xd0:
@@ -505,14 +506,16 @@ nv50_ir_relocate_code(void *relocData, uint32_t *code,
 
 void
 nv50_ir_apply_fixups(void *fixupData, uint32_t *code,
-                     bool force_persample_interp, bool flatshade)
+                     bool force_persample_interp, bool flatshade,
+                     uint8_t alphatest)
 {
    nv50_ir::FixupInfo *info = reinterpret_cast<nv50_ir::FixupInfo *>(
       fixupData);
 
    // force_persample_interp: all non-flat -> per-sample
    // flatshade: all color -> flat
-   nv50_ir::FixupData data(force_persample_interp, flatshade);
+   // alphatest: PIPE_FUNC_* to use with alphatest
+   nv50_ir::FixupData data(force_persample_interp, flatshade, alphatest);
    for (unsigned i = 0; i < info->count; ++i)
       info->entry[i].apply(&info->entry[i], code, data);
 }

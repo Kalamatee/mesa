@@ -30,7 +30,8 @@ static bool
 is_input(nir_intrinsic_instr *intrin)
 {
    return intrin->intrinsic == nir_intrinsic_load_input ||
-          intrin->intrinsic == nir_intrinsic_load_per_vertex_input;
+          intrin->intrinsic == nir_intrinsic_load_per_vertex_input ||
+          intrin->intrinsic == nir_intrinsic_load_interpolated_input;
 }
 
 static bool
@@ -282,8 +283,16 @@ brw_nir_lower_tes_inputs(nir_shader *nir, const struct brw_vue_map *vue_map)
 void
 brw_nir_lower_fs_inputs(nir_shader *nir)
 {
-   nir_assign_var_locations(&nir->inputs, &nir->num_inputs, type_size_scalar);
-   nir_lower_io(nir, nir_var_shader_in, type_size_scalar);
+   foreach_list_typed(nir_variable, var, node, &nir->inputs) {
+      var->data.driver_location = var->data.location;
+   }
+
+   nir_lower_io(nir, nir_var_shader_in, type_size_vec4);
+
+   /* This pass needs actual constants */
+   nir_opt_constant_folding(nir);
+
+   add_const_offset_to_base(nir, nir_var_shader_in);
 }
 
 void
@@ -292,6 +301,7 @@ brw_nir_lower_vue_outputs(nir_shader *nir,
 {
    if (is_scalar) {
       nir_assign_var_locations(&nir->outputs, &nir->num_outputs,
+                               VARYING_SLOT_VAR0,
                                type_size_vec4_times_4);
       nir_lower_io(nir, nir_var_shader_out, type_size_vec4_times_4);
    } else {
@@ -330,14 +340,14 @@ void
 brw_nir_lower_fs_outputs(nir_shader *nir)
 {
    nir_assign_var_locations(&nir->outputs, &nir->num_outputs,
-                            type_size_scalar);
-   nir_lower_io(nir, nir_var_shader_out, type_size_scalar);
+                            FRAG_RESULT_DATA0, type_size_vec4_times_4);
+   nir_lower_io(nir, nir_var_shader_out, type_size_vec4_times_4);
 }
 
 void
 brw_nir_lower_cs_shared(nir_shader *nir)
 {
-   nir_assign_var_locations(&nir->shared, &nir->num_shared,
+   nir_assign_var_locations(&nir->shared, &nir->num_shared, 0,
                             type_size_scalar_bytes);
    nir_lower_io(nir, nir_var_shared, type_size_scalar_bytes);
 }
@@ -419,6 +429,8 @@ brw_preprocess_nir(const struct brw_compiler *compiler, nir_shader *nir)
 
    static const nir_lower_tex_options tex_options = {
       .lower_txp = ~0,
+      .lower_txf_offset = true,
+      .lower_rect_offset = true,
    };
 
    OPT(nir_lower_tex, &tex_options);

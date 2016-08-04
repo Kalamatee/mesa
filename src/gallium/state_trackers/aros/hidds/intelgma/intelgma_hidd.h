@@ -31,6 +31,9 @@
 #include "intelgma_i2c.h"
 #endif
 
+//#define GMA_USECOPY3D
+//#define GALLIUM_SIMULATION
+
 #define CLID_Hidd_Gfx_IntelGMA		"hidd.gfx.intelgma"
 #define IID_Hidd_Gfx_IntelGMA		"hidd.gfx.intelgma"
 
@@ -233,6 +236,8 @@ BOOL copybox3d_supported();
 BOOL copybox3d( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
                ULONG dst_x,ULONG dst_y,ULONG dst_width, ULONG dst_height,
                ULONG src_x,ULONG src_y,ULONG src_width, ULONG src_height );
+BOOL copybox810( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
+               ULONG dst_x,ULONG dst_y,ULONG dst_width, ULONG dst_height,
+               ULONG src_x,ULONG src_y,ULONG src_width, ULONG src_height, ULONG mode);
 
-//#define GALLIUM_SIMULATION             
 #endif /* INTELGMA_GFX_H_ */

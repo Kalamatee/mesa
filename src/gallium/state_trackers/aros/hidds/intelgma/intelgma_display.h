@@ -11,6 +11,25 @@
 
 struct HiddDisplayIntelGMAData {
     char *name;
+    OOP_Object *overlay;
 };
+
+enum
+{
+    aoHidd_DisplayIntelGMA_Overlay,
+    num_Hidd_DisplayIntelGMA_Attrs
+};
+
+#define HiddDisplayIntelGMAAttrBase              __IHidd_DisplayIntelGMA
+
+#if !defined(__OOP_NOATTRBASES__) && !defined(__Hidd_DisplayIntelGMA_NOATTRBASE__)
+extern OOP_AttrBase HiddDisplayIntelGMAAttrBase;
+#endif
+
+#define aHidd_DisplayIntelGMA_Overlay           (HiddDisplayIntelGMAAttrBase + aoHidd_DisplayIntelGMA_Overlay)
+
+#define Hidd_DisplayIntelGMA_Switch(attr, idx) \
+if (((idx) = (attr) - HiddDisplayIntelGMAAttrBase) < num_Hidd_DisplayIntelGMA_Attrs) \
+switch (idx)
 
 #endif /* INTELGMA_DISPLAY_H_ */

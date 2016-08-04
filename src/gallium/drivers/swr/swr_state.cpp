@@ -21,9 +21,14 @@
  * IN THE SOFTWARE.
  ***************************************************************************/
 
+// llvm redefines DEBUG
+#pragma push_macro("DEBUG")
+#undef DEBUG
+#include "JitManager.h"
+#pragma pop_macro("DEBUG")
+
 #include "common/os.h"
 #include "jit_api.h"
-#include "JitManager.h"
 #include "state_llvm.h"
 
 #include "gallivm/lp_bld_tgsi.h"
@@ -409,7 +414,7 @@ static void
 swr_set_constant_buffer(struct pipe_context *pipe,
                         uint shader,
                         uint index,
-                        struct pipe_constant_buffer *cb)
+                        const struct pipe_constant_buffer *cb)
 {
    struct swr_context *ctx = swr_context(pipe);
    struct pipe_resource *constants = cb ? cb->buffer : NULL;
@@ -776,6 +781,10 @@ swr_update_derived(struct pipe_context *pipe,
    struct swr_context *ctx = swr_context(pipe);
    struct swr_screen *screen = swr_screen(ctx->pipe.screen);
 
+   /* Update screen->pipe to current pipe context. */
+   if (screen->pipe != pipe)
+      screen->pipe = pipe;
+
    /* Any state that requires dirty flags to be re-triggered sets this mask */
    /* For example, user_buffer vertex and index buffers. */
    unsigned post_update_dirty_flags = 0;
@@ -849,7 +858,9 @@ swr_update_derived(struct pipe_context *pipe,
    }
 
    /* Raster state */
-   if (ctx->dirty & (SWR_NEW_RASTERIZER | SWR_NEW_FRAMEBUFFER)) {
+   if (ctx->dirty & (SWR_NEW_RASTERIZER |
+                     SWR_NEW_VS | // clipping
+                     SWR_NEW_FRAMEBUFFER)) {
       pipe_rasterizer_state *rasterizer = ctx->rasterizer;
       pipe_framebuffer_state *fb = &ctx->framebuffer;
 
@@ -905,6 +916,14 @@ swr_update_derived(struct pipe_context *pipe,
          rastState->depthFormat = swr_resource(zb->texture)->swr.format;
 
       rastState->depthClipEnable = rasterizer->depth_clip;
+
+      rastState->clipDistanceMask =
+         ctx->vs->info.base.num_written_clipdistance ?
+         ctx->vs->info.base.clipdist_writemask & rasterizer->clip_plane_enable :
+         rasterizer->clip_plane_enable;
+
+      rastState->cullDistanceMask =
+         ctx->vs->info.base.culldist_writemask << ctx->vs->info.base.num_written_clipdistance;
 
       SwrSetRastState(ctx->swrContext, rastState);
    }
@@ -1067,6 +1086,7 @@ swr_update_derived(struct pipe_context *pipe,
 
    /* VertexShader */
    if (ctx->dirty & (SWR_NEW_VS |
+                     SWR_NEW_RASTERIZER | // for clip planes
                      SWR_NEW_SAMPLER |
                      SWR_NEW_SAMPLER_VIEW |
                      SWR_NEW_FRAMEBUFFER)) {
@@ -1341,17 +1361,29 @@ swr_update_derived(struct pipe_context *pipe,
       }
    }
 
-   uint32_t linkage = ctx->vs->linkageMask;
-   if (ctx->rasterizer->sprite_coord_enable)
-      linkage |= (1 << ctx->vs->info.base.num_outputs);
-
-   SwrSetLinkage(ctx->swrContext, linkage, NULL);
+   if (ctx->dirty & SWR_NEW_CLIP) {
+      // shader exporting clip distances overrides all user clip planes
+      if (ctx->rasterizer->clip_plane_enable &&
+          !ctx->vs->info.base.num_written_clipdistance)
+      {
+         swr_draw_context *pDC = &ctx->swrDC;
+         memcpy(pDC->userClipPlanes,
+                ctx->clip.ucp,
+                sizeof(pDC->userClipPlanes));
+      }
+   }
 
    // set up backend state
    SWR_BACKEND_STATE backendState = {0};
-   backendState.numAttributes = 1;
-   backendState.numComponents[0] = 4;
-   backendState.constantInterpolationMask = ctx->fs->constantMask;
+   backendState.numAttributes =
+      ctx->vs->info.base.num_outputs - 1 +
+      (ctx->rasterizer->sprite_coord_enable ? 1 : 0);
+   for (unsigned i = 0; i < backendState.numAttributes; i++)
+      backendState.numComponents[i] = 4;
+   backendState.constantInterpolationMask =
+      ctx->rasterizer->flatshade ?
+      ctx->fs->flatConstantMask :
+      ctx->fs->constantMask;
    backendState.pointSpriteTexCoordMask = ctx->fs->pointSpriteMask;
 
    SwrSetBackendState(ctx->swrContext, &backendState);

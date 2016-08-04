@@ -29,8 +29,7 @@
 #include "pipebuffer/pb_buffer.h"
 
 #define RADEON_FLUSH_ASYNC		(1 << 0)
-#define RADEON_FLUSH_KEEP_TILING_FLAGS	(1 << 1)
-#define RADEON_FLUSH_END_OF_FRAME       (1 << 2)
+#define RADEON_FLUSH_END_OF_FRAME       (1 << 1)
 
 /* Tiling flags. */
 enum radeon_bo_layout {
@@ -225,10 +224,18 @@ enum radeon_bo_priority {
 struct winsys_handle;
 struct radeon_winsys_ctx;
 
+struct radeon_winsys_cs_chunk {
+    unsigned cdw;  /* Number of used dwords. */
+    unsigned max_dw; /* Maximum number of dwords. */
+    uint32_t *buf; /* The base pointer of the chunk. */
+};
+
 struct radeon_winsys_cs {
-    unsigned                    cdw;  /* Number of used dwords. */
-    unsigned                    max_dw; /* Maximum number of dwords. */
-    uint32_t                    *buf; /* The command buffer. */
+    struct radeon_winsys_cs_chunk current;
+    struct radeon_winsys_cs_chunk *prev;
+    unsigned                      num_prev; /* Number of previous chunks. */
+    unsigned                      max_prev; /* Space in array pointed to by prev. */
+    unsigned                      prev_dw; /* Total number of dwords in previous chunks. */
 };
 
 struct radeon_info {
@@ -245,11 +252,13 @@ struct radeon_info {
     uint32_t                    gart_page_size;
     uint64_t                    gart_size;
     uint64_t                    vram_size;
+    uint64_t                    max_alloc_size;
     bool                        has_dedicated_vram;
-    boolean                     has_virtual_memory;
+    bool                        has_virtual_memory;
     bool                        gfx_ib_pad_with_type2;
-    boolean                     has_sdma;
-    boolean                     has_uvd;
+    bool                        has_sdma;
+    bool                        has_uvd;
+    uint32_t                    uvd_fw_version;
     uint32_t                    vce_fw_version;
     uint32_t                    vce_harvest_config;
     uint32_t                    clock_crystal_freq;
@@ -258,7 +267,7 @@ struct radeon_info {
     uint32_t                    drm_major; /* version */
     uint32_t                    drm_minor;
     uint32_t                    drm_patchlevel;
-    boolean                     has_userptr;
+    bool                        has_userptr;
 
     /* Shader cores. */
     uint32_t                    r600_max_quad_pipes; /* wave size / 16 */
@@ -271,7 +280,7 @@ struct radeon_info {
     uint32_t                    r300_num_gb_pipes;
     uint32_t                    r300_num_z_pipes;
     uint32_t                    r600_gb_backend_map; /* R600 harvest config */
-    boolean                     r600_gb_backend_map_valid;
+    bool                        r600_gb_backend_map_valid;
     uint32_t                    r600_num_banks;
     uint32_t                    num_render_backends;
     uint32_t                    num_tile_pipes; /* pipe count from PIPE_CONFIG */
@@ -334,6 +343,7 @@ enum radeon_feature_id {
 #define RADEON_SURF_HAS_SBUFFER_MIPTREE         (1 << 19)
 #define RADEON_SURF_HAS_TILE_MODE_INDEX         (1 << 20)
 #define RADEON_SURF_FMASK                       (1 << 21)
+#define RADEON_SURF_DISABLE_DCC                 (1 << 22)
 
 #define RADEON_SURF_GET(v, field)   (((v) >> RADEON_SURF_ ## field ## _SHIFT) & RADEON_SURF_ ## field ## _MASK)
 #define RADEON_SURF_SET(v, field)   (((v) & RADEON_SURF_ ## field ## _MASK) << RADEON_SURF_ ## field ## _SHIFT)
@@ -351,6 +361,8 @@ struct radeon_surf_level {
     uint32_t                    pitch_bytes;
     uint32_t                    mode;
     uint64_t                    dcc_offset;
+    uint64_t                    dcc_fast_clear_size;
+    bool                        dcc_enabled;
 };
 
 struct radeon_surf {
@@ -379,7 +391,6 @@ struct radeon_surf {
     uint32_t                    mtilea;
     uint32_t                    tile_split;
     uint32_t                    stencil_tile_split;
-    uint64_t                    stencil_offset;
     struct radeon_surf_level    level[RADEON_SURF_MAX_LEVEL];
     struct radeon_surf_level    stencil_level[RADEON_SURF_MAX_LEVEL];
     uint32_t                    tiling_index[RADEON_SURF_MAX_LEVEL];
@@ -387,13 +398,22 @@ struct radeon_surf {
     uint32_t                    pipe_config;
     uint32_t                    num_banks;
     uint32_t                    macro_tile_index;
+    uint32_t                    micro_tile_mode; /* displayable, thin, depth, rotated */
+
+    /* Whether the depth miptree or stencil miptree as used by the DB are
+     * adjusted from their TC compatible form to ensure depth/stencil
+     * compatibility. If either is true, the corresponding plane cannot be
+     * sampled from.
+     */
+    bool                        depth_adjusted;
+    bool                        stencil_adjusted;
 
     uint64_t                    dcc_size;
     uint64_t                    dcc_alignment;
 };
 
 struct radeon_bo_list_item {
-    struct pb_buffer *buf;
+    uint64_t bo_size;
     uint64_t vm_address;
     uint64_t priority_usage; /* mask of (1 << RADEON_PRIO_*) */
 };
@@ -542,12 +562,12 @@ struct radeon_winsys {
      * \param buf       A winsys buffer object to get the handle from.
      * \param whandle   A winsys handle pointer.
      * \param stride    A stride of the buffer in bytes, for texturing.
-     * \return          TRUE on success.
+     * \return          true on success.
      */
-    boolean (*buffer_get_handle)(struct pb_buffer *buf,
-                                 unsigned stride, unsigned offset,
-                                 unsigned slice_size,
-                                 struct winsys_handle *whandle);
+    bool (*buffer_get_handle)(struct pb_buffer *buf,
+                              unsigned stride, unsigned offset,
+                              unsigned slice_size,
+                              struct winsys_handle *whandle);
 
     /**
      * Return the virtual address of a buffer.
@@ -664,24 +684,34 @@ struct radeon_winsys {
                             struct pb_buffer *buf);
 
     /**
-     * Return TRUE if there is enough memory in VRAM and GTT for the buffers
+     * Return true if there is enough memory in VRAM and GTT for the buffers
      * added so far. If the validation fails, all buffers which have
      * been added since the last call of cs_validate will be removed and
      * the CS will be flushed (provided there are still any buffers).
      *
      * \param cs        A command stream to validate.
      */
-    boolean (*cs_validate)(struct radeon_winsys_cs *cs);
+    bool (*cs_validate)(struct radeon_winsys_cs *cs);
 
     /**
-     * Return TRUE if there is enough memory in VRAM and GTT for the buffers
+     * Check whether the given number of dwords is available in the IB.
+     * Optionally chain a new chunk of the IB if necessary and supported.
+     *
+     * \param cs        A command stream.
+     * \param dw        Number of CS dwords requested by the caller.
+     */
+    bool (*cs_check_space)(struct radeon_winsys_cs *cs, unsigned dw);
+
+    /**
+     * Return true if there is enough memory in VRAM and GTT for the buffers
      * added so far.
      *
      * \param cs        A command stream to validate.
      * \param vram      VRAM memory size pending to be use
      * \param gtt       GTT memory size pending to be use
      */
-    boolean (*cs_memory_below_limit)(struct radeon_winsys_cs *cs, uint64_t vram, uint64_t gtt);
+    bool (*cs_memory_below_limit)(struct radeon_winsys_cs *cs,
+                                  uint64_t vram, uint64_t gtt);
 
     uint64_t (*cs_query_memory_usage)(struct radeon_winsys_cs *cs);
 
@@ -702,20 +732,22 @@ struct radeon_winsys {
      * \param flags,      RADEON_FLUSH_ASYNC or 0.
      * \param fence       Pointer to a fence. If non-NULL, a fence is inserted
      *                    after the CS and is returned through this parameter.
+     * \return Negative POSIX error code or 0 for success.
+     *         Asynchronous submissions never return an error.
      */
-    void (*cs_flush)(struct radeon_winsys_cs *cs,
-                     unsigned flags,
-                     struct pipe_fence_handle **fence);
+    int (*cs_flush)(struct radeon_winsys_cs *cs,
+                    unsigned flags,
+                    struct pipe_fence_handle **fence);
 
     /**
-     * Return TRUE if a buffer is referenced by a command stream.
+     * Return true if a buffer is referenced by a command stream.
      *
      * \param cs        A command stream.
      * \param buf       A winsys buffer.
      */
-    boolean (*cs_is_buffer_referenced)(struct radeon_winsys_cs *cs,
-                                       struct pb_buffer *buf,
-                                       enum radeon_bo_usage usage);
+    bool (*cs_is_buffer_referenced)(struct radeon_winsys_cs *cs,
+                                    struct pb_buffer *buf,
+                                    enum radeon_bo_usage usage);
 
     /**
      * Request access to a feature for a command stream.
@@ -724,9 +756,9 @@ struct radeon_winsys {
      * \param fid       Feature ID, one of RADEON_FID_*
      * \param enable    Whether to enable or disable the feature.
      */
-    boolean (*cs_request_feature)(struct radeon_winsys_cs *cs,
-                                  enum radeon_feature_id fid,
-                                  boolean enable);
+    bool (*cs_request_feature)(struct radeon_winsys_cs *cs,
+                               enum radeon_feature_id fid,
+                               bool enable);
      /**
       * Make sure all asynchronous flush of the cs have completed
       *
@@ -777,19 +809,19 @@ struct radeon_winsys {
 
 static inline bool radeon_emitted(struct radeon_winsys_cs *cs, unsigned num_dw)
 {
-    return cs && cs->cdw > num_dw;
+    return cs && (cs->prev_dw + cs->current.cdw > num_dw);
 }
 
 static inline void radeon_emit(struct radeon_winsys_cs *cs, uint32_t value)
 {
-    cs->buf[cs->cdw++] = value;
+    cs->current.buf[cs->current.cdw++] = value;
 }
 
 static inline void radeon_emit_array(struct radeon_winsys_cs *cs,
 				     const uint32_t *values, unsigned count)
 {
-    memcpy(cs->buf+cs->cdw, values, count * 4);
-    cs->cdw += count;
+    memcpy(cs->current.buf + cs->current.cdw, values, count * 4);
+    cs->current.cdw += count;
 }
 
 #endif

@@ -49,7 +49,6 @@
 #define VC4_DIRTY_ZSA           (1 <<  2)
 #define VC4_DIRTY_FRAGTEX       (1 <<  3)
 #define VC4_DIRTY_VERTTEX       (1 <<  4)
-#define VC4_DIRTY_TEXSTATE      (1 <<  5)
 
 #define VC4_DIRTY_BLEND_COLOR   (1 <<  7)
 #define VC4_DIRTY_STENCIL_REF   (1 <<  8)
@@ -70,11 +69,13 @@
 #define VC4_DIRTY_COMPILED_CS   (1 << 23)
 #define VC4_DIRTY_COMPILED_VS   (1 << 24)
 #define VC4_DIRTY_COMPILED_FS   (1 << 25)
+#define VC4_DIRTY_FS_INPUTS     (1 << 26)
 
 struct vc4_sampler_view {
         struct pipe_sampler_view base;
         uint32_t texture_p0;
         uint32_t texture_p1;
+        bool force_first_level;
 };
 
 struct vc4_sampler_state {
@@ -87,7 +88,6 @@ struct vc4_texture_stateobj {
         unsigned num_textures;
         struct pipe_sampler_state *samplers[PIPE_MAX_SAMPLERS];
         unsigned num_samplers;
-        unsigned dirty_samplers;
 };
 
 struct vc4_shader_uniform_info {
@@ -124,6 +124,17 @@ struct vc4_ubo_range {
         uint32_t size;
 };
 
+struct vc4_fs_inputs {
+        /**
+         * Array of the meanings of the VPM inputs this shader needs.
+         *
+         * It doesn't include those that aren't part of the VPM, like
+         * point/line coordinates.
+         */
+        struct vc4_varying_slot *input_slots;
+        uint32_t num_inputs;
+};
+
 struct vc4_compiled_shader {
         uint64_t program_id;
         struct vc4_bo *bo;
@@ -143,6 +154,8 @@ struct vc4_compiled_shader {
         /** bitmask of which inputs are color inputs, for flat shade handling. */
         uint32_t color_inputs;
 
+        bool disable_early_z;
+
         uint8_t num_inputs;
 
         /* Byte offsets for the start of the vertex attributes 0-7, and the
@@ -151,13 +164,7 @@ struct vc4_compiled_shader {
         uint8_t vattr_offsets[9];
         uint8_t vattrs_live;
 
-        /**
-         * Array of the meanings of the VPM inputs this shader needs.
-         *
-         * It doesn't include those that aren't part of the VPM, like
-         * point/line coordinates.
-         */
-        struct vc4_varying_slot *input_slots;
+        const struct vc4_fs_inputs *fs_inputs;
 };
 
 struct vc4_program_stateobj {
@@ -269,6 +276,7 @@ struct vc4_context {
         struct primconvert_context *primconvert;
 
         struct hash_table *fs_cache, *vs_cache;
+        struct set *fs_inputs_set;
         uint32_t next_uncompiled_program_id;
         uint64_t next_compiled_program_id;
 

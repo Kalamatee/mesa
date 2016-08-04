@@ -43,6 +43,8 @@
 
 #include "va_private.h"
 
+DEBUG_GET_ONCE_BOOL_OPTION(nointerlace, "VAAPI_DISABLE_INTERLACE", FALSE);
+
 #include <va/va_drmcommon.h>
 
 static const enum pipe_format vpp_surface_formats[] = {
@@ -71,6 +73,10 @@ vlVaDestroySurfaces(VADriverContextP ctx, VASurfaceID *surface_list, int num_sur
    pipe_mutex_lock(drv->mutex);
    for (i = 0; i < num_surfaces; ++i) {
       vlVaSurface *surf = handle_table_get(drv->htab, surface_list[i]);
+      if (!surf) {
+         pipe_mutex_unlock(drv->mutex);
+         return VA_STATUS_ERROR_INVALID_SURFACE;
+      }
       if (surf->buffer)
          surf->buffer->destroy(surf->buffer);
       util_dynarray_fini(&surf->subpics);
@@ -315,17 +321,18 @@ vlVaUnlockSurface(VADriverContextP ctx, VASurfaceID surface)
 }
 
 VAStatus
-vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config,
+vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config_id,
                            VASurfaceAttrib *attrib_list, unsigned int *num_attribs)
 {
    vlVaDriver *drv;
+   vlVaConfig *config;
    VASurfaceAttrib *attribs;
    struct pipe_screen *pscreen;
    int i, j;
 
    STATIC_ASSERT(ARRAY_SIZE(vpp_surface_formats) <= VL_VA_MAX_IMAGE_FORMATS);
 
-   if (config == VA_INVALID_ID)
+   if (config_id == VA_INVALID_ID)
       return VA_STATUS_ERROR_INVALID_CONFIG;
 
    if (!attrib_list && !num_attribs)
@@ -344,6 +351,13 @@ vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config,
    if (!drv)
       return VA_STATUS_ERROR_INVALID_CONTEXT;
 
+   pipe_mutex_lock(drv->mutex);
+   config = handle_table_get(drv->htab, config_id);
+   pipe_mutex_unlock(drv->mutex);
+
+   if (!config)
+      return VA_STATUS_ERROR_INVALID_CONFIG;
+
    pscreen = VL_VA_PSCREEN(ctx);
 
    if (!pscreen)
@@ -359,7 +373,7 @@ vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config,
 
    /* vlVaCreateConfig returns PIPE_VIDEO_PROFILE_UNKNOWN
     * only for VAEntrypointVideoProc. */
-   if (config == PIPE_VIDEO_PROFILE_UNKNOWN) {
+   if (config->profile == PIPE_VIDEO_PROFILE_UNKNOWN) {
       for (j = 0; j < ARRAY_SIZE(vpp_surface_formats); ++j) {
          attribs[i].type = VASurfaceAttribPixelFormat;
          attribs[i].value.type = VAGenericValueTypeInteger;
@@ -608,6 +622,8 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
 
    templat.width = width;
    templat.height = height;
+   if (debug_get_option_nointerlace())
+      templat.interlaced = false;
 
    memset(surfaces, VA_INVALID_ID, num_surfaces * sizeof(VASurfaceID));
 
@@ -621,6 +637,14 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
 
       switch (memory_type) {
       case VA_SURFACE_ATTRIB_MEM_TYPE_VA:
+         /* The application will clear the TILING flag when the surface is
+          * intended to be exported as dmabuf. Adding shared flag because not
+          * null memory_attibute means VASurfaceAttribExternalBuffers is used.
+          */
+         if (memory_attibute &&
+             !(memory_attibute->flags & VA_SURFACE_EXTBUF_DESC_ENABLE_TILING))
+            templat.bind = PIPE_BIND_LINEAR | PIPE_BIND_SHARED;
+
          surf->buffer = drv->pipe->create_video_buffer(drv->pipe, &templat);
          if (!surf->buffer) {
             FREE(surf);

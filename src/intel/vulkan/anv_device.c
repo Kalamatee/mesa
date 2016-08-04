@@ -28,7 +28,7 @@
 #include <fcntl.h>
 
 #include "anv_private.h"
-#include "mesa/main/git_sha1.h"
+#include "anv_timestamp.h"
 #include "util/strtod.h"
 #include "util/debug.h"
 
@@ -372,15 +372,15 @@ void anv_GetPhysicalDeviceFeatures(
       .robustBufferAccess                       = true,
       .fullDrawIndexUint32                      = true,
       .imageCubeArray                           = false,
-      .independentBlend                         = pdevice->info->gen >= 8,
+      .independentBlend                         = true,
       .geometryShader                           = true,
       .tessellationShader                       = false,
-      .sampleRateShading                        = false,
+      .sampleRateShading                        = pdevice->info->gen >= 8,
       .dualSrcBlend                             = true,
       .logicOp                                  = true,
       .multiDrawIndirect                        = false,
       .drawIndirectFirstInstance                = false,
-      .depthClamp                               = false,
+      .depthClamp                               = true,
       .depthBiasClamp                           = false,
       .fillModeNonSolid                         = true,
       .depthBounds                              = false,
@@ -426,7 +426,7 @@ void
 anv_device_get_cache_uuid(void *uuid)
 {
    memset(uuid, 0, VK_UUID_SIZE);
-   snprintf(uuid, VK_UUID_SIZE, "anv-%s", MESA_GIT_SHA1 + 4);
+   snprintf(uuid, VK_UUID_SIZE, "anv-%s", ANV_TIMESTAMP);
 }
 
 void anv_GetPhysicalDeviceProperties(
@@ -436,9 +436,11 @@ void anv_GetPhysicalDeviceProperties(
    ANV_FROM_HANDLE(anv_physical_device, pdevice, physicalDevice);
    const struct brw_device_info *devinfo = pdevice->info;
 
-   anv_finishme("Get correct values for VkPhysicalDeviceLimits");
-
    const float time_stamp_base = devinfo->gen >= 9 ? 83.333 : 80.0;
+
+   /* See assertions made when programming the buffer surface state. */
+   const uint32_t max_raw_buffer_sz = devinfo->gen >= 7 ?
+                                      (1ul << 30) : (1ul << 27);
 
    VkSampleCountFlags sample_counts =
       isl_device_get_sample_counts(&pdevice->isl_dev);
@@ -450,8 +452,8 @@ void anv_GetPhysicalDeviceProperties(
       .maxImageDimensionCube                    = (1 << 14),
       .maxImageArrayLayers                      = (1 << 11),
       .maxTexelBufferElements                   = 128 * 1024 * 1024,
-      .maxUniformBufferRange                    = UINT32_MAX,
-      .maxStorageBufferRange                    = UINT32_MAX,
+      .maxUniformBufferRange                    = (1ul << 27),
+      .maxStorageBufferRange                    = max_raw_buffer_sz,
       .maxPushConstantsSize                     = MAX_PUSH_CONSTANTS_SIZE,
       .maxMemoryAllocationCount                 = UINT32_MAX,
       .maxSamplerAllocationCount                = 64 * 1024,
@@ -880,7 +882,7 @@ VkResult anv_CreateDevice(
 
    anv_bo_init_new(&device->workaround_bo, device, 1024);
 
-   anv_block_pool_init(&device->scratch_block_pool, device, 0x10000);
+   anv_scratch_pool_init(device, &device->scratch_pool);
 
    anv_queue_init(device, &device->queue);
 
@@ -949,7 +951,7 @@ void anv_DestroyDevice(
    anv_block_pool_finish(&device->instruction_block_pool);
    anv_state_pool_finish(&device->surface_state_pool);
    anv_block_pool_finish(&device->surface_state_block_pool);
-   anv_block_pool_finish(&device->scratch_block_pool);
+   anv_scratch_pool_finish(device, &device->scratch_pool);
 
    close(device->fd);
 

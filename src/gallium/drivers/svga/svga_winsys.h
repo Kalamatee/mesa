@@ -419,6 +419,14 @@ struct svga_winsys_screen
                          uint32 numMipLevels);
 
    /**
+    * Invalidate the content of this surface
+    */
+   void
+   (*surface_invalidate)(struct svga_winsys_screen *sws,
+                         struct svga_winsys_surface *surface);
+
+
+   /**
     * Buffer management. Buffer attributes are mostly fixed over its lifetime.
     *
     * @param usage bitmask of SVGA_BUFFER_USAGE_* flags.
@@ -544,6 +552,9 @@ struct svga_winsys_screen
 
    /** To rebind resources at the beginnning of a new command buffer */
    boolean need_to_rebind_resources;
+
+   boolean have_generate_mipmap_cmd;
+   boolean have_set_predication_cmd;
 };
 
 

@@ -199,6 +199,7 @@ enum tgsi_semantic {
    TGSI_SEMANTIC_HELPER_INVOCATION,  /**< current invocation is helper */
    TGSI_SEMANTIC_BASEINSTANCE,
    TGSI_SEMANTIC_DRAWID,
+   TGSI_SEMANTIC_WORK_DIM,    /**< opencl get_work_dim value */
    TGSI_SEMANTIC_COUNT,       /**< number of semantic values */
 };
 
@@ -561,7 +562,12 @@ struct tgsi_property_data {
 #define TGSI_OPCODE_DFLR                220 /* nvc0 */
 #define TGSI_OPCODE_DROUND              221 /* nvc0 */
 #define TGSI_OPCODE_DSSG                222
-#define TGSI_OPCODE_LAST                223
+
+#define TGSI_OPCODE_VOTE_ANY            223
+#define TGSI_OPCODE_VOTE_ALL            224
+#define TGSI_OPCODE_VOTE_EQ             225
+
+#define TGSI_OPCODE_LAST                226
 
 /**
  * Opcode is the operation code to execute. A given operation defines the

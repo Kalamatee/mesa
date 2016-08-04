@@ -197,7 +197,7 @@ brw_codegen_tcs_prog(struct brw_context *brw,
     * padding around uniform values below vec4 size, so the worst case is that
     * every uniform is a float which gets padded to the size of a vec4.
     */
-   struct gl_shader *tcs = shader_prog ?
+   struct gl_linked_shader *tcs = shader_prog ?
       shader_prog->_LinkedShaders[MESA_SHADER_TESS_CTRL] : NULL;
    int param_count = nir->num_uniforms / 4;
 
@@ -225,19 +225,24 @@ brw_codegen_tcs_prog(struct brw_context *brw,
        */
       const float **param = (const float **) prog_data.base.base.param;
       static float zero = 0.0f;
-      for (int i = 0; i < 4; i++) {
-         param[7 - i] = &ctx->TessCtrlProgram.patch_default_outer_level[i];
-      }
+      for (int i = 0; i < 8; i++)
+         param[i] = &zero;
 
       if (key->tes_primitive_mode == GL_QUADS) {
+         for (int i = 0; i < 4; i++)
+            param[7 - i] = &ctx->TessCtrlProgram.patch_default_outer_level[i];
+
          param[3] = &ctx->TessCtrlProgram.patch_default_inner_level[0];
          param[2] = &ctx->TessCtrlProgram.patch_default_inner_level[1];
-         param[1] = &zero;
-         param[0] = &zero;
       } else if (key->tes_primitive_mode == GL_TRIANGLES) {
+         for (int i = 0; i < 3; i++)
+            param[7 - i] = &ctx->TessCtrlProgram.patch_default_outer_level[i];
+
          param[4] = &ctx->TessCtrlProgram.patch_default_inner_level[0];
-         for (int i = 0; i < 4; i++)
-            param[i] = &zero;
+      } else {
+         assert(key->tes_primitive_mode == GL_ISOLINES);
+         param[7] = &ctx->TessCtrlProgram.patch_default_outer_level[1];
+         param[6] = &ctx->TessCtrlProgram.patch_default_outer_level[0];
       }
    }
 
@@ -289,11 +294,9 @@ brw_codegen_tcs_prog(struct brw_context *brw,
    }
 
    /* Scratch space is used for register spilling */
-   if (prog_data.base.base.total_scratch) {
-      brw_get_scratch_bo(brw, &stage_state->scratch_bo,
-			 prog_data.base.base.total_scratch *
-                         brw->max_hs_threads);
-   }
+   brw_alloc_stage_scratch(brw, stage_state,
+                           prog_data.base.base.total_scratch,
+                           brw->max_hs_threads);
 
    brw_upload_cache(&brw->cache, BRW_CACHE_TCS_PROG,
                     key, sizeof(*key),
@@ -334,7 +337,8 @@ brw_upload_tcs_prog(struct brw_context *brw,
 
    memset(&key, 0, sizeof(key));
 
-   key.input_vertices = ctx->TessCtrlProgram.patch_vertices;
+   if (brw->gen < 8 || !tcp)
+      key.input_vertices = ctx->TessCtrlProgram.patch_vertices;
    key.outputs_written = per_vertex_slots;
    key.patch_outputs_written = per_patch_slots;
 
@@ -347,8 +351,7 @@ brw_upload_tcs_prog(struct brw_context *brw,
       key.program_string_id = tcp->id;
 
       /* _NEW_TEXTURE */
-      brw_populate_sampler_prog_key_data(ctx, prog, stage_state->sampler_count,
-                                         &key.tex);
+      brw_populate_sampler_prog_key_data(ctx, prog, &key.tex);
    } else {
       key.outputs_written = tep->program.Base.InputsRead;
    }
@@ -386,11 +389,14 @@ brw_tcs_precompile(struct gl_context *ctx,
    brw_setup_tex_for_precompile(brw, &key.tex, prog);
 
    /* Guess that the input and output patches have the same dimensionality. */
-   key.input_vertices = shader_prog->TessCtrl.VerticesOut;
+   if (brw->gen < 8) {
+      key.input_vertices = shader_prog->
+         _LinkedShaders[MESA_SHADER_TESS_CTRL]->info.TessCtrl.VerticesOut;
+   }
 
-   key.tes_primitive_mode =
-      shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL] ?
-      shader_prog->TessEval.PrimitiveMode : GL_TRIANGLES;
+   key.tes_primitive_mode = shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL]
+      ? shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL]->info.TessEval.PrimitiveMode
+      : GL_TRIANGLES;
 
    key.outputs_written = prog->OutputsWritten;
    key.patch_outputs_written = prog->PatchOutputsWritten;

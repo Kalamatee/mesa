@@ -40,8 +40,6 @@ gen8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
    const VkViewport *viewports = cmd_buffer->state.dynamic.viewport.viewports;
    struct anv_state sf_clip_state =
       anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, count * 64, 64);
-   struct anv_state cc_state =
-      anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, count * 8, 32);
 
    for (uint32_t i = 0; i < count; i++) {
       const VkViewport *vp = &viewports[i];
@@ -65,28 +63,45 @@ gen8_cmd_buffer_emit_viewport(struct anv_cmd_buffer *cmd_buffer)
          .YMaxViewPort = vp->y + vp->height - 1,
       };
 
-      struct GENX(CC_VIEWPORT) cc_viewport = {
-         .MinimumDepth = vp->minDepth,
-         .MaximumDepth = vp->maxDepth
-      };
-
       GENX(SF_CLIP_VIEWPORT_pack)(NULL, sf_clip_state.map + i * 64,
                                  &sf_clip_viewport);
+   }
+
+   if (!cmd_buffer->device->info.has_llc)
+      anv_state_clflush(sf_clip_state);
+
+   anv_batch_emit(&cmd_buffer->batch,
+                  GENX(3DSTATE_VIEWPORT_STATE_POINTERS_SF_CLIP), clip) {
+      clip.SFClipViewportPointer = sf_clip_state.offset;
+   }
+}
+
+void
+gen8_cmd_buffer_emit_depth_viewport(struct anv_cmd_buffer *cmd_buffer,
+                                    bool depth_clamp_enable)
+{
+   uint32_t count = cmd_buffer->state.dynamic.viewport.count;
+   const VkViewport *viewports = cmd_buffer->state.dynamic.viewport.viewports;
+   struct anv_state cc_state =
+      anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, count * 8, 32);
+
+   for (uint32_t i = 0; i < count; i++) {
+      const VkViewport *vp = &viewports[i];
+
+      struct GENX(CC_VIEWPORT) cc_viewport = {
+         .MinimumDepth = depth_clamp_enable ? vp->minDepth : 0.0f,
+         .MaximumDepth = depth_clamp_enable ? vp->maxDepth : 1.0f,
+      };
+
       GENX(CC_VIEWPORT_pack)(NULL, cc_state.map + i * 8, &cc_viewport);
    }
 
-   if (!cmd_buffer->device->info.has_llc) {
-      anv_state_clflush(sf_clip_state);
+   if (!cmd_buffer->device->info.has_llc)
       anv_state_clflush(cc_state);
-   }
 
    anv_batch_emit(&cmd_buffer->batch,
                   GENX(3DSTATE_VIEWPORT_STATE_POINTERS_CC), cc) {
       cc.CCViewportPointer = cc_state.offset;
-   }
-   anv_batch_emit(&cmd_buffer->batch,
-                  GENX(3DSTATE_VIEWPORT_STATE_POINTERS_SF_CLIP), clip) {
-      clip.SFClipViewportPointer = sf_clip_state.offset;
    }
 }
 #endif
@@ -319,12 +334,6 @@ flush_compute_descriptor_set(struct anv_cmd_buffer *cmd_buffer)
    const struct brw_cs_prog_data *cs_prog_data = get_cs_prog_data(pipeline);
    const struct brw_stage_prog_data *prog_data = &cs_prog_data->base;
 
-   unsigned local_id_dwords = cs_prog_data->local_invocation_id_regs * 8;
-   unsigned push_constant_data_size =
-      (prog_data->nr_params + local_id_dwords) * 4;
-   unsigned reg_aligned_constant_size = ALIGN(push_constant_data_size, 32);
-   unsigned push_constant_regs = reg_aligned_constant_size / 32;
-
    if (push_state.alloc_size) {
       anv_batch_emit(&cmd_buffer->batch, GENX(MEDIA_CURBE_LOAD), curbe) {
          curbe.CURBETotalDataLength    = push_state.alloc_size;
@@ -332,15 +341,7 @@ flush_compute_descriptor_set(struct anv_cmd_buffer *cmd_buffer)
       }
    }
 
-   assert(prog_data->total_shared <= 64 * 1024);
-   uint32_t slm_size = 0;
-   if (prog_data->total_shared > 0) {
-      /* slm_size is in 4k increments, but must be a power of 2. */
-      slm_size = 4 * 1024;
-      while (slm_size < prog_data->total_shared)
-         slm_size <<= 1;
-      slm_size /= 4 * 1024;
-   }
+   const uint32_t slm_size = encode_slm_size(GEN_GEN, prog_data->total_shared);
 
    struct anv_state state =
       anv_state_pool_emit(&device->dynamic_state_pool,
@@ -351,12 +352,15 @@ flush_compute_descriptor_set(struct anv_cmd_buffer *cmd_buffer)
                           .BindingTableEntryCount = 0,
                           .SamplerStatePointer = samplers.offset,
                           .SamplerCount = 0,
-                          .ConstantIndirectURBEntryReadLength = push_constant_regs,
+                          .ConstantIndirectURBEntryReadLength =
+                             cs_prog_data->push.per_thread.regs,
                           .ConstantURBEntryReadOffset = 0,
                           .BarrierEnable = cs_prog_data->uses_barrier,
                           .SharedLocalMemorySize = slm_size,
                           .NumberofThreadsinGPGPUThreadGroup =
-                             pipeline->cs_thread_width_max);
+                             cs_prog_data->threads,
+                          .CrossThreadConstantDataReadLength =
+                             cs_prog_data->push.cross_thread.regs);
 
    uint32_t size = GENX(INTERFACE_DESCRIPTOR_DATA_length) * sizeof(uint32_t);
    anv_batch_emit(&cmd_buffer->batch,

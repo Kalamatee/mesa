@@ -294,22 +294,30 @@ void bindThread(uint32_t threadId, uint32_t procGroupId = 0, bool bindProcGroup=
 }
 
 INLINE
-uint64_t GetEnqueuedDraw(SWR_CONTEXT *pContext)
+uint32_t GetEnqueuedDraw(SWR_CONTEXT *pContext)
 {
     return pContext->dcRing.GetHead();
 }
 
 INLINE
-DRAW_CONTEXT *GetDC(SWR_CONTEXT *pContext, uint64_t drawId)
+DRAW_CONTEXT *GetDC(SWR_CONTEXT *pContext, uint32_t drawId)
 {
     return &pContext->dcRing[(drawId-1) % KNOB_MAX_DRAWS_IN_FLIGHT];
 }
 
+INLINE
+bool IDComparesLess(uint32_t a, uint32_t b)
+{
+    // Use signed delta to ensure that wrap-around to 0 is correctly handled.
+    int32_t delta = int32_t(a - b);
+    return (delta < 0);
+}
+
 // returns true if dependency not met
 INLINE
-bool CheckDependency(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint64_t lastRetiredDraw)
+bool CheckDependency(SWR_CONTEXT *pContext, DRAW_CONTEXT *pDC, uint32_t lastRetiredDraw)
 {
-    return (pDC->dependency > lastRetiredDraw);
+    return pDC->dependent && IDComparesLess(lastRetiredDraw, pDC->drawId - 1);
 }
 
 // inlined-only version
@@ -320,6 +328,13 @@ INLINE int64_t CompleteDrawContextInl(SWR_CONTEXT* pContext, DRAW_CONTEXT* pDC)
 
     if (result == 0)
     {
+        if (pDC->retireCallback.pfnCallbackFunc)
+        {
+            pDC->retireCallback.pfnCallbackFunc(pDC->retireCallback.userData,
+                                                pDC->retireCallback.userData2,
+                                                pDC->retireCallback.userData3);
+        }
+
         // Cleanup memory allocations
         pDC->pArena->Reset(true);
         if (!pDC->isCompute)
@@ -345,11 +360,11 @@ int64_t CompleteDrawContext(SWR_CONTEXT* pContext, DRAW_CONTEXT* pDC)
     return CompleteDrawContextInl(pContext, pDC);
 }
 
-INLINE bool FindFirstIncompleteDraw(SWR_CONTEXT* pContext, uint64_t& curDrawBE, uint64_t& drawEnqueued)
+INLINE bool FindFirstIncompleteDraw(SWR_CONTEXT* pContext, uint32_t& curDrawBE, uint32_t& drawEnqueued)
 {
     // increment our current draw id to the first incomplete draw
     drawEnqueued = GetEnqueuedDraw(pContext);
-    while (curDrawBE < drawEnqueued)
+    while (IDComparesLess(curDrawBE, drawEnqueued))
     {
         DRAW_CONTEXT *pDC = &pContext->dcRing[curDrawBE % KNOB_MAX_DRAWS_IN_FLIGHT];
 
@@ -372,7 +387,7 @@ INLINE bool FindFirstIncompleteDraw(SWR_CONTEXT* pContext, uint64_t& curDrawBE, 
     }
 
     // If there are no more incomplete draws then return false.
-    return (curDrawBE >= drawEnqueued) ? false : true;
+    return IDComparesLess(curDrawBE, drawEnqueued);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -392,20 +407,20 @@ INLINE bool FindFirstIncompleteDraw(SWR_CONTEXT* pContext, uint64_t& curDrawBE, 
 void WorkOnFifoBE(
     SWR_CONTEXT *pContext,
     uint32_t workerId,
-    uint64_t &curDrawBE,
+    uint32_t &curDrawBE,
     TileSet& lockedTiles,
     uint32_t numaNode,
     uint32_t numaMask)
 {
     // Find the first incomplete draw that has pending work. If no such draw is found then
     // return. FindFirstIncompleteDraw is responsible for incrementing the curDrawBE.
-    uint64_t drawEnqueued = 0;
+    uint32_t drawEnqueued = 0;
     if (FindFirstIncompleteDraw(pContext, curDrawBE, drawEnqueued) == false)
     {
         return;
     }
 
-    uint64_t lastRetiredDraw = pContext->dcRing[curDrawBE % KNOB_MAX_DRAWS_IN_FLIGHT].drawId - 1;
+    uint32_t lastRetiredDraw = pContext->dcRing[curDrawBE % KNOB_MAX_DRAWS_IN_FLIGHT].drawId - 1;
 
     // Reset our history for locked tiles. We'll have to re-learn which tiles are locked.
     lockedTiles.clear();
@@ -415,7 +430,7 @@ void WorkOnFifoBE(
     //   2. If we're trying to work on draws after curDrawBE, we are restricted to 
     //      working on those macrotiles that are known to be complete in the prior draw to
     //      maintain order. The locked tiles provides the history to ensures this.
-    for (uint64_t i = curDrawBE; i < drawEnqueued; ++i)
+    for (uint32_t i = curDrawBE; IDComparesLess(i, drawEnqueued); ++i)
     {
         DRAW_CONTEXT *pDC = &pContext->dcRing[i % KNOB_MAX_DRAWS_IN_FLIGHT];
 
@@ -437,7 +452,7 @@ void WorkOnFifoBE(
 
         for (uint32_t tileID : macroTiles)
         {
-            // Only work on tiles for for this numa node
+            // Only work on tiles for this numa node
             uint32_t x, y;
             pDC->pTileMgr->getTileIndices(tileID, x, y);
             if (((x ^ y) & numaMask) != numaNode)
@@ -508,11 +523,11 @@ void WorkOnFifoBE(
     }
 }
 
-void WorkOnFifoFE(SWR_CONTEXT *pContext, uint32_t workerId, uint64_t &curDrawFE)
+void WorkOnFifoFE(SWR_CONTEXT *pContext, uint32_t workerId, uint32_t &curDrawFE)
 {
     // Try to grab the next DC from the ring
-    uint64_t drawEnqueued = GetEnqueuedDraw(pContext);
-    while (curDrawFE < drawEnqueued)
+    uint32_t drawEnqueued = GetEnqueuedDraw(pContext);
+    while (IDComparesLess(curDrawFE, drawEnqueued))
     {
         uint32_t dcSlot = curDrawFE % KNOB_MAX_DRAWS_IN_FLIGHT;
         DRAW_CONTEXT *pDC = &pContext->dcRing[dcSlot];
@@ -527,8 +542,8 @@ void WorkOnFifoFE(SWR_CONTEXT *pContext, uint32_t workerId, uint64_t &curDrawFE)
         }
     }
 
-    uint64_t curDraw = curDrawFE;
-    while (curDraw < drawEnqueued)
+    uint32_t curDraw = curDrawFE;
+    while (IDComparesLess(curDraw, drawEnqueued))
     {
         uint32_t dcSlot = curDraw % KNOB_MAX_DRAWS_IN_FLIGHT;
         DRAW_CONTEXT *pDC = &pContext->dcRing[dcSlot];
@@ -559,17 +574,17 @@ void WorkOnFifoFE(SWR_CONTEXT *pContext, uint32_t workerId, uint64_t &curDrawFE)
 void WorkOnCompute(
     SWR_CONTEXT *pContext,
     uint32_t workerId,
-    uint64_t& curDrawBE)
+    uint32_t& curDrawBE)
 {
-    uint64_t drawEnqueued = 0;
+    uint32_t drawEnqueued = 0;
     if (FindFirstIncompleteDraw(pContext, curDrawBE, drawEnqueued) == false)
     {
         return;
     }
 
-    uint64_t lastRetiredDraw = pContext->dcRing[curDrawBE % KNOB_MAX_DRAWS_IN_FLIGHT].drawId - 1;
+    uint32_t lastRetiredDraw = pContext->dcRing[curDrawBE % KNOB_MAX_DRAWS_IN_FLIGHT].drawId - 1;
 
-    for (uint64_t i = curDrawBE; curDrawBE < drawEnqueued; ++i)
+    for (uint64_t i = curDrawBE; IDComparesLess(i, drawEnqueued); ++i)
     {
         DRAW_CONTEXT *pDC = &pContext->dcRing[i % KNOB_MAX_DRAWS_IN_FLIGHT];
         if (pDC->isCompute == false) return;
@@ -639,10 +654,10 @@ DWORD workerThreadMain(LPVOID pData)
     //    the worker can safely increment its oldestDraw counter and move on to the next draw.
     std::unique_lock<std::mutex> lock(pContext->WaitLock, std::defer_lock);
 
-    auto threadHasWork = [&](uint64_t curDraw) { return curDraw != pContext->dcRing.GetHead(); };
+    auto threadHasWork = [&](uint32_t curDraw) { return curDraw != pContext->dcRing.GetHead(); };
 
-    uint64_t curDrawBE = 0;
-    uint64_t curDrawFE = 0;
+    uint32_t curDrawBE = 0;
+    uint32_t curDrawFE = 0;
 
     while (pContext->threadPool.inThreadShutdown == false)
     {

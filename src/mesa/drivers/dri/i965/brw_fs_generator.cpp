@@ -440,7 +440,7 @@ fs_generator::generate_urb_read(fs_inst *inst,
    assert(header.type == BRW_REGISTER_TYPE_UD);
 
    brw_inst *send = brw_next_insn(p, BRW_OPCODE_SEND);
-   brw_set_dest(p, send, dst);
+   brw_set_dest(p, send, retype(dst, BRW_REGISTER_TYPE_UD));
    brw_set_src0(p, send, header);
    brw_set_src1(p, send, brw_imm_ud(0u));
 
@@ -1177,7 +1177,7 @@ fs_generator::generate_uniform_pull_constant_load_gen7(fs_inst *inst,
       brw_inst_set_exec_size(devinfo, send, BRW_EXECUTE_4);
       brw_pop_insn_state(p);
 
-      brw_set_dest(p, send, dst);
+      brw_set_dest(p, send, retype(dst, BRW_REGISTER_TYPE_UD));
       brw_set_src0(p, send, src);
       brw_set_sampler_message(p, send,
                               surf_index,
@@ -1649,7 +1649,7 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width)
       brw_set_default_acc_write_control(p, inst->writes_accumulator);
       brw_set_default_exec_size(p, cvt(inst->exec_size) - 1);
 
-      assert(inst->force_writemask_all || inst->exec_size >= 8);
+      assert(inst->force_writemask_all || inst->exec_size >= 4);
       assert(inst->force_writemask_all || inst->group % inst->exec_size == 0);
       assert(inst->base_mrf + inst->mlen <= BRW_MAX_MRF(devinfo->gen));
       assert(inst->mlen <= BRW_MAX_MSG_LENGTH);
@@ -1760,6 +1760,9 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width)
          assert(devinfo->gen >= 7);
          /* FBL only supports UD type for dst. */
          brw_FBL(p, retype(dst, BRW_REGISTER_TYPE_UD), src[0]);
+         break;
+      case BRW_OPCODE_LZD:
+         brw_LZD(p, dst, src[0]);
          break;
       case BRW_OPCODE_CBIT:
          assert(devinfo->gen >= 7);
@@ -2054,11 +2057,6 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width)
          }
          break;
 
-      case FS_OPCODE_INTERPOLATE_AT_CENTROID:
-         generate_pixel_interpolator_query(inst, dst, src[0], src[1],
-                                           GEN7_PIXEL_INTERPOLATOR_LOC_CENTROID);
-         break;
-
       case FS_OPCODE_INTERPOLATE_AT_SAMPLE:
          generate_pixel_interpolator_query(inst, dst, src[0], src[1],
                                            GEN7_PIXEL_INTERPOLATOR_LOC_SAMPLE);
@@ -2081,6 +2079,13 @@ fs_generator::generate_code(const cfg_t *cfg, int dispatch_width)
       case SHADER_OPCODE_BARRIER:
 	 generate_barrier(inst, src[0]);
 	 break;
+
+      case BRW_OPCODE_DIM:
+         assert(devinfo->is_haswell);
+         assert(src[0].type == BRW_REGISTER_TYPE_DF);
+         assert(dst.type == BRW_REGISTER_TYPE_DF);
+         brw_DIM(p, dst, retype(src[0], BRW_REGISTER_TYPE_F));
+         break;
 
       default:
          unreachable("Unsupported opcode");

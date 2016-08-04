@@ -3,13 +3,13 @@
 #   Generate libgalliumvm.a
 #
 
-include $(TOP)/config/make.cfg
+include $(SRCDIR)/config/aros.cfg
 
 CUR_MESADIR := src/gallium/auxiliary
 include $(SRCDIR)/$(CURDIR)/../mesa.cfg
 include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
 
-##MM- mesa3dgl-linklibs : mesa3dgl-linklibs-galliumvm
+##MM- mesa3dgl-linklibs : mesa3d-linklib-galliumvm
 
 GALLIVM_C_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,  $(filter %.c, $(GALLIVM_SOURCES))))
 GALLIVM_CXX_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,  $(filter %.cpp, $(GALLIVM_SOURCES))))
@@ -30,7 +30,7 @@ USER_INCLUDES := \
 USER_CFLAGS := $(USER_CFLAGS)
 ##-DHAVE_LLVM=0x0209 -D__STDC_CONSTANT_MACROS
 
-%build_linklib mmake=mesa3dgl-linklibs-galliumvm libname=galliumvm \
+%build_linklib mmake=mesa3d-linklib-galliumvm libname=galliumvm \
    libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) \
    files="$(GALLIVM_SOURCES_C)" cxxfiles="$(GALLIVM_SOURCES_CXX)"
 

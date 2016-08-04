@@ -38,6 +38,7 @@
 
 #include "vc4_screen.h"
 #include "vc4_qpu_defines.h"
+#include "vc4_qpu.h"
 #include "kernel/vc4_packet.h"
 #include "pipe/p_state.h"
 
@@ -155,6 +156,18 @@ enum qop {
         QOP_TEX_RESULT,
 
         QOP_LOAD_IMM,
+
+        /* Jumps to block->successor[0] if the qinst->cond (as a
+         * QPU_COND_BRANCH_*) passes, or block->successor[1] if not.  Note
+         * that block->successor[1] may be unset if the condition is ALWAYS.
+         */
+        QOP_BRANCH,
+
+        /* Emits an ADD from src[0] to src[1], where src[0] must be a
+         * QOP_LOAD_IMM result and src[1] is a QUNIFORM_UNIFORMS_ADDRESS,
+         * required by the kernel as part of its branch validation.
+         */
+        QOP_UNIFORMS_RESET,
 };
 
 struct queued_qpu_inst {
@@ -233,6 +246,8 @@ enum quniform_contents {
         /** A reference to a texture config parameter 2 cubemap stride uniform */
         QUNIFORM_TEXTURE_CONFIG_P2,
 
+        QUNIFORM_TEXTURE_FIRST_LEVEL,
+
         QUNIFORM_TEXTURE_MSAA_ADDR,
 
         QUNIFORM_UBO_ADDR,
@@ -253,6 +268,11 @@ enum quniform_contents {
 
         QUNIFORM_ALPHA_REF,
         QUNIFORM_SAMPLE_MASK,
+
+        /* Placeholder uniform that will be updated by the kernel when used by
+         * an instruction writing to QPU_W_UNIFORMS_ADDRESS.
+         */
+        QUNIFORM_UNIFORMS_ADDRESS,
 };
 
 struct vc4_varying_slot {
@@ -296,6 +316,7 @@ struct vc4_key {
                                 unsigned compare_func:3;
                                 unsigned wrap_s:3;
                                 unsigned wrap_t:3;
+                                bool force_first_level:1;
                         };
                         struct {
                                 uint16_t msaa_width, msaa_height;
@@ -331,16 +352,43 @@ struct vc4_fs_key {
 struct vc4_vs_key {
         struct vc4_key base;
 
-        /**
-         * This is a proxy for the array of FS input semantics, which is
-         * larger than we would want to put in the key.
-         */
-        uint64_t compiled_fs_id;
-
+        const struct vc4_fs_inputs *fs_inputs;
         enum pipe_format attr_formats[8];
         bool is_coord;
         bool per_vertex_point_size;
         bool clamp_color;
+};
+
+/** A basic block of QIR intructions. */
+struct qblock {
+        struct list_head link;
+
+        struct list_head instructions;
+        struct list_head qpu_inst_list;
+
+        struct set *predecessors;
+        struct qblock *successors[2];
+
+        int index;
+
+        /* Instruction IPs for the first and last instruction of the block.
+         * Set by vc4_qpu_schedule.c.
+         */
+        uint32_t start_qpu_ip;
+        uint32_t end_qpu_ip;
+
+        /* Instruction IP for the branch instruction of the block.  Set by
+         * vc4_qpu_schedule.c.
+         */
+        uint32_t branch_qpu_ip;
+
+        /** @{ used by vc4_qir_live_variables.c */
+        BITSET_WORD *def;
+        BITSET_WORD *use;
+        BITSET_WORD *live_in;
+        BITSET_WORD *live_out;
+        int start_ip, end_ip;
+        /** @} */
 };
 
 struct vc4_compile {
@@ -381,6 +429,11 @@ struct vc4_compile {
         uint32_t num_ubo_ranges;
         uint32_t next_ubo_dst_offset;
 
+        /* State for whether we're executing on each channel currently.  0 if
+         * yes, otherwise a block number + 1 that the channel jumped to.
+         */
+        struct qreg execute;
+
         struct qreg line_x, point_x, point_y;
         struct qreg discard;
         struct qreg payload_FRAG_Z;
@@ -410,6 +463,9 @@ struct vc4_compile {
         struct vc4_fs_key *fs_key;
         struct vc4_vs_key *vs_key;
 
+        /* Live ranges of temps. */
+        int *temp_start, *temp_end;
+
         uint32_t *uniform_data;
         enum quniform_contents *uniform_contents;
         uint32_t uniform_array_size;
@@ -424,9 +480,15 @@ struct vc4_compile {
         struct qreg undef;
         enum qstage stage;
         uint32_t num_temps;
-        struct list_head instructions;
+
+        struct list_head blocks;
+        int next_block_index;
+        struct qblock *cur_block;
+        struct qblock *loop_cont_block;
+        struct qblock *loop_break_block;
 
         struct list_head qpu_inst_list;
+
         uint64_t *qpu_insts;
         uint32_t qpu_inst_count;
         uint32_t qpu_inst_size;
@@ -450,6 +512,11 @@ struct vc4_compile {
 
 struct vc4_compile *qir_compile_init(void);
 void qir_compile_destroy(struct vc4_compile *c);
+struct qblock *qir_new_block(struct vc4_compile *c);
+void qir_set_emit_block(struct vc4_compile *c, struct qblock *block);
+void qir_link_blocks(struct qblock *predecessor, struct qblock *successor);
+struct qblock *qir_entry_block(struct vc4_compile *c);
+struct qblock *qir_exit_block(struct vc4_compile *c);
 struct qinst *qir_inst(enum qop op, struct qreg dst,
                        struct qreg src0, struct qreg src1);
 struct qinst *qir_inst4(enum qop op, struct qreg dst,
@@ -463,16 +530,13 @@ struct qreg qir_uniform(struct vc4_compile *c,
                         uint32_t data);
 void qir_schedule_instructions(struct vc4_compile *c);
 void qir_reorder_uniforms(struct vc4_compile *c);
+void qir_emit_uniform_stream_resets(struct vc4_compile *c);
 
-void qir_emit(struct vc4_compile *c, struct qinst *inst);
-static inline struct qinst *
-qir_emit_nodef(struct vc4_compile *c, struct qinst *inst)
-{
-        list_addtail(&inst->link, &c->instructions);
-        return inst;
-}
+struct qreg qir_emit_def(struct vc4_compile *c, struct qinst *inst);
+struct qinst *qir_emit_nondef(struct vc4_compile *c, struct qinst *inst);
 
 struct qreg qir_get_temp(struct vc4_compile *c);
+void qir_calculate_live_intervals(struct vc4_compile *c);
 int qir_get_op_nsrc(enum qop qop);
 bool qir_reg_equals(struct qreg a, struct qreg b);
 bool qir_has_side_effects(struct vc4_compile *c, struct qinst *inst);
@@ -484,6 +548,7 @@ bool qir_is_float_input(struct qinst *inst);
 bool qir_depends_on_flags(struct qinst *inst);
 bool qir_writes_r4(struct qinst *inst);
 struct qreg qir_follow_movs(struct vc4_compile *c, struct qreg reg);
+uint8_t qir_channels_written(struct qinst *inst);
 
 void qir_dump(struct vc4_compile *c);
 void qir_dump_inst(struct vc4_compile *c, struct qinst *inst);
@@ -496,6 +561,7 @@ bool qir_opt_algebraic(struct vc4_compile *c);
 bool qir_opt_constant_folding(struct vc4_compile *c);
 bool qir_opt_copy_propagation(struct vc4_compile *c);
 bool qir_opt_dead_code(struct vc4_compile *c);
+bool qir_opt_peephole_sf(struct vc4_compile *c);
 bool qir_opt_small_immediates(struct vc4_compile *c);
 bool qir_opt_vpm(struct vc4_compile *c);
 void vc4_nir_lower_blend(nir_shader *s, struct vc4_compile *c);
@@ -527,70 +593,58 @@ qir_uniform_f(struct vc4_compile *c, float f)
 static inline struct qreg                                                \
 qir_##name(struct vc4_compile *c)                                        \
 {                                                                        \
-        struct qreg t = qir_get_temp(c);                                 \
-        qir_emit(c, qir_inst(QOP_##name, t, c->undef, c->undef));        \
-        return t;                                                        \
+        return qir_emit_def(c, qir_inst(QOP_##name, c->undef,            \
+                                        c->undef, c->undef));            \
+}                                                                        \
+static inline struct qinst *                                             \
+qir_##name##_dest(struct vc4_compile *c, struct qreg dest)               \
+{                                                                        \
+        return qir_emit_nondef(c, qir_inst(QOP_##name, dest,             \
+                                           c->undef, c->undef));         \
 }
 
 #define QIR_ALU1(name)                                                   \
 static inline struct qreg                                                \
 qir_##name(struct vc4_compile *c, struct qreg a)                         \
 {                                                                        \
-        struct qreg t = qir_get_temp(c);                                 \
-        qir_emit(c, qir_inst(QOP_##name, t, a, c->undef));               \
-        return t;                                                        \
+        return qir_emit_def(c, qir_inst(QOP_##name, c->undef,            \
+                                        a, c->undef));                   \
 }                                                                        \
 static inline struct qinst *                                             \
 qir_##name##_dest(struct vc4_compile *c, struct qreg dest,               \
                   struct qreg a)                                         \
 {                                                                        \
-        if (dest.file == QFILE_TEMP)                                     \
-                c->defs[dest.index] = NULL;                              \
-        return qir_emit_nodef(c, qir_inst(QOP_##name, dest, a,           \
-                                          c->undef));                    \
+        return qir_emit_nondef(c, qir_inst(QOP_##name, dest, a,          \
+                                           c->undef));                   \
 }
 
 #define QIR_ALU2(name)                                                   \
 static inline struct qreg                                                \
 qir_##name(struct vc4_compile *c, struct qreg a, struct qreg b)          \
 {                                                                        \
-        struct qreg t = qir_get_temp(c);                                 \
-        qir_emit(c, qir_inst(QOP_##name, t, a, b));                      \
-        return t;                                                        \
+        return qir_emit_def(c, qir_inst(QOP_##name, c->undef, a, b));    \
 }                                                                        \
-static inline void                                                       \
+static inline struct qinst *                                             \
 qir_##name##_dest(struct vc4_compile *c, struct qreg dest,               \
                   struct qreg a, struct qreg b)                          \
 {                                                                        \
-        qir_emit_nodef(c, qir_inst(QOP_##name, dest, a, b));             \
+        return qir_emit_nondef(c, qir_inst(QOP_##name, dest, a, b));     \
 }
 
 #define QIR_NODST_1(name)                                               \
 static inline struct qinst *                                            \
 qir_##name(struct vc4_compile *c, struct qreg a)                        \
 {                                                                       \
-        struct qinst *inst = qir_inst(QOP_##name, c->undef,             \
-                                      a, c->undef);                     \
-        qir_emit(c, inst);                                              \
-        return inst;                                                    \
+        return qir_emit_nondef(c, qir_inst(QOP_##name, c->undef,        \
+                                           a, c->undef));               \
 }
 
 #define QIR_NODST_2(name)                                               \
 static inline struct qinst *                                            \
 qir_##name(struct vc4_compile *c, struct qreg a, struct qreg b)         \
 {                                                                       \
-        struct qinst *inst = qir_inst(QOP_##name, c->undef,             \
-                                      a, b);                            \
-        qir_emit(c, inst);                                              \
-        return inst;                                                    \
-}
-
-#define QIR_PACK(name)                                                   \
-static inline struct qreg                                                \
-qir_##name(struct vc4_compile *c, struct qreg dest, struct qreg a)       \
-{                                                                        \
-        qir_emit_nodef(c, qir_inst(QOP_##name, dest, a, c->undef));      \
-        return dest;                                                     \
+        return qir_emit_nondef(c, qir_inst(QOP_##name, c->undef,        \
+                                           a, b));                      \
 }
 
 #define QIR_PAYLOAD(name)                                                \
@@ -603,7 +657,8 @@ qir_##name(struct vc4_compile *c)                                        \
         *payload = qir_get_temp(c);                                      \
         struct qinst *inst = qir_inst(QOP_##name, *payload,              \
                                       c->undef, c->undef);               \
-        list_add(&inst->link, &c->instructions);                         \
+        struct qblock *entry = qir_entry_block(c);                       \
+        list_add(&inst->link, &entry->instructions);                     \
         c->defs[payload->index] = inst;                                  \
         return *payload;                                                 \
 }
@@ -662,7 +717,7 @@ qir_SEL(struct vc4_compile *c, uint8_t cond, struct qreg src0, struct qreg src1)
         struct qinst *a = qir_MOV_dest(c, t, src0);
         struct qinst *b = qir_MOV_dest(c, t, src1);
         a->cond = cond;
-        b->cond = cond ^ 1;
+        b->cond = qpu_cond_complement(cond);
         return t;
 }
 
@@ -703,9 +758,7 @@ qir_PACK_8_F(struct vc4_compile *c, struct qreg dest, struct qreg val, int chan)
 {
         assert(!dest.pack);
         dest.pack = QPU_PACK_MUL_8A + chan;
-        qir_emit(c, qir_inst(QOP_MMOV, dest, val, c->undef));
-        if (dest.file == QFILE_TEMP)
-                c->defs[dest.index] = NULL;
+        qir_emit_nondef(c, qir_inst(QOP_MMOV, dest, val, c->undef));
 }
 
 static inline struct qreg
@@ -733,10 +786,50 @@ qir_VPM_WRITE(struct vc4_compile *c, struct qreg val)
 static inline struct qreg
 qir_LOAD_IMM(struct vc4_compile *c, uint32_t val)
 {
-        struct qreg t = qir_get_temp(c);
-        qir_emit(c, qir_inst(QOP_LOAD_IMM, t,
-                             qir_reg(QFILE_LOAD_IMM, val), c->undef));
-        return t;
+        return qir_emit_def(c, qir_inst(QOP_LOAD_IMM, c->undef,
+                                        qir_reg(QFILE_LOAD_IMM, val), c->undef));
 }
+
+static inline void
+qir_MOV_cond(struct vc4_compile *c, uint8_t cond,
+             struct qreg dest, struct qreg src)
+{
+        qir_MOV_dest(c, dest, src)->cond = cond;
+}
+
+static inline struct qinst *
+qir_BRANCH(struct vc4_compile *c, uint8_t cond)
+{
+        struct qinst *inst = qir_inst(QOP_BRANCH, c->undef, c->undef, c->undef);
+        inst->cond = cond;
+        qir_emit_nondef(c, inst);
+        return inst;
+}
+
+#define qir_for_each_block(block, c)                                    \
+        list_for_each_entry(struct qblock, block, &c->blocks, link)
+
+#define qir_for_each_block_rev(block, c)                                \
+        list_for_each_entry_rev(struct qblock, block, &c->blocks, link)
+
+/* Loop over the non-NULL members of the successors array. */
+#define qir_for_each_successor(succ, block)                             \
+        for (struct qblock *succ = block->successors[0];                \
+             succ != NULL;                                              \
+             succ = (succ == block->successors[1] ? NULL :              \
+                     block->successors[1]))
+
+#define qir_for_each_inst(inst, block)                                  \
+        list_for_each_entry(struct qinst, inst, &block->instructions, link)
+
+#define qir_for_each_inst_rev(inst, block)                                  \
+        list_for_each_entry_rev(struct qinst, inst, &block->instructions, link)
+
+#define qir_for_each_inst_safe(inst, block)                             \
+        list_for_each_entry_safe(struct qinst, inst, &block->instructions, link)
+
+#define qir_for_each_inst_inorder(inst, c)                              \
+        qir_for_each_block(_block, c)                                   \
+                qir_for_each_inst(inst, _block)
 
 #endif /* VC4_QIR_H */
