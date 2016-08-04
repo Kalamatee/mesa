@@ -29,10 +29,10 @@ USER_INCLUDES := \
             -iquote $(top_srcdir)/src/gallium/include \
             -iquote $(top_srcdir)/src/gallium/auxiliary
 
-OLDUSER_INCLUDES := \
-            -I$(top_srcdir)/include \
-            -I$(top_srcdir)/include/GL \
-            -iquote $(top_srcdir)/src \
+# disable necessary warnings
+NOWARN_FLAGS := -Wno-return-type -Wno-maybe-uninitialized -Wno-sign-compare -Wno-misleading-indentation -Wno-strict-aliasing -Wno-unused-function
+USER_CFLAGS += $(NOWARN_FLAGS)
+USER_CXXFLAGS += $(NOWARN_FLAGS)
 
 define local-l-or-ll-to-c-or-cpp
 	@mkdir -p $(dir $@)
