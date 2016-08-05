@@ -92,7 +92,7 @@ os_time_sleep(int64_t usecs)
    time.tv_nsec = (usecs % 1000000) * 1000;
    while (clock_nanosleep(CLOCK_MONOTONIC, 0, &time, &time) == EINTR);
 
-#elif defined(PIPE_OS_UNIX)
+#elif defined(PIPE_OS_UNIX) || defined(PIPE_OS_AROS)
    usleep(usecs);
 
 #elif defined(PIPE_SUBSYSTEM_WINDOWS_USER)

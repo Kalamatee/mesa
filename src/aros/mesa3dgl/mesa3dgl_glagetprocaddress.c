@@ -38,5 +38,5 @@
 {
     D(bug("[MESA3DGL] %s()\n", __PRETTY_FUNCTION__));
 
-    return glstapi->get_proc_address(glstapi, procname);
+    return _glapi_get_proc_address(procname);
 }
