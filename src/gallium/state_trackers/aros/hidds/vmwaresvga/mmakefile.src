@@ -31,7 +31,7 @@ USER_INCLUDES := \
 USER_LDFLAGS := \
   -L$(top_libdir) \
   -lgalliumauxiliary -lmesautil \
-  -lstdcio -lstdc
+  -lposixc -lstdcio -lstdc
 
 # disable necessary warnings
 NOWARN_FLAGS := -Wno-unused-value -Wno-unused-variable -Wno-strict-aliasing
