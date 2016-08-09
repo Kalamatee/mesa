@@ -27,6 +27,8 @@ USER_INCLUDES := \
             -iquote $(GALLIUM_PATH)/auxiliary \
             -iquote $(SRCDIR)/$(CURDIR)
 
+NOWARN_CFLAGS := $(NOWARN_MAYBE_UNINITIALIZED)
+USER_CFLAGS += $(NOWARN_CFLAGS)
 
 USER_LDFLAGS := \
   -L$(top_libdir) \
