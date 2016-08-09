@@ -3,6 +3,9 @@
 #define __NOUVEAU_DEBUG_H__
 
 #include <stdio.h>
+#if defined(__AROS__)
+#include <string.h>
+#endif
 
 #include "util/u_debug.h"
 

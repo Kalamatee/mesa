@@ -26,7 +26,9 @@ OOP_Object *METHOD(HiddGallium, Root, New)
 
     if (o)
     {
+#if (0)
         struct HiddGalliumData * HiddGallium_DATA = OOP_INST_DATA(cl, o);
+#endif
     }
 
     return o;
@@ -34,7 +36,9 @@ OOP_Object *METHOD(HiddGallium, Root, New)
 
 VOID METHOD(HiddGallium, Root, Get)
 {
+#if (0)
     struct HiddGalliumData * HiddGallium_DATA = OOP_INST_DATA(cl, o);
+#endif
     ULONG idx;
 
     D(bug("[Gallium] %s()\n", __PRETTY_FUNCTION__));

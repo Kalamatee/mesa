@@ -1,5 +1,6 @@
 #   $Id: mmakefile.src 49977 2015-01-31 05:19:35Z NicJA $
-include $(TOP)/config/make.cfg
+
+include $(SRCDIR)/config/aros.cfg
 
 GALLIUM_PATH = $(SRCDIR)/$(CURDIR)/../../../..
 
@@ -18,7 +19,8 @@ USER_INCLUDES := \
             -I$(AROS_DEVELOPMENT)/include/gallium \
             -iquote $(GALLIUM_PATH)/../../include \
             -iquote $(GALLIUM_PATH)/include \
-            -iquote $(GALLIUM_PATH)/..
+            -iquote $(GALLIUM_PATH)/.. \
+            -iquote $(SRCDIR)/$(CURDIR)
 
 %build_module mmake=hidd-gallium modname=gallium modtype=hidd \
    files="$(HIDD_GALLIUM_FILES)"

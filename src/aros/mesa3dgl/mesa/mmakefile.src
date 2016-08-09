@@ -3,21 +3,21 @@
 #   Build Mesa3DGL private libmesa.a
 #
 
-include $(TOP)/config/make.cfg
+include $(SRCDIR)/config/aros.cfg
 
 CUR_MESADIR := src/mesa
 include $(SRCDIR)/$(CURDIR)/../mesa.cfg
 include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
 
-#MM- mesa3dgl-linklibs : mesa3dgl-linklibs-mesa
+#MM- mesa3dgl-linklibs : mesa3d-linklib-mesa
 
-USER_CFLAGS := \
-                $(USER_CFLAGS) \
+# disable necessary warnings
+NOWARN_FLAGS := -Wno-return-type -Wno-unused-const-variable -Wno-strict-aliasing -Wno-maybe-uninitialized
+COMMON_FLAGS := $(NOWARN_FLAGS) \
                 -DPACKAGE_VERSION=\"$(MESA_VERSION)\" \
                 -DPACKAGE_BUGREPORT=\"https://bugs.freedesktop.org/enter_bug.cgi?product=Mesa\"
-
-OLDUSER_CFLAGS := $(USER_CFLAGS) \
-                -DMAPI_ABI_HEADER=\"glapi/glapi_mapi_tmp.h\" \
+USER_CFLAGS += $(COMMON_FLAGS)
+USER_CXXFLAGS += $(COMMON_FLAGS)
 
 USER_INCLUDES := \
             $(USER_INCLUDES) \
@@ -168,10 +168,10 @@ MESA3DGL_MESA_CXX_SOURCES := \
 MESA3DGL_MESA_SOURCES_CXX := $(MESA3DGL_MESA_CXX_SOURCES:.cpp=)
 
 #MM
-mesa3dgl-linklibs-mesa-generated : $(MESA3DGL_MESA_GENERATED_C_HEADERS) $(MESA3DGL_MESA_GENERATED_C_SOURCES)
+mesa3d-linklib-mesa-generated : $(MESA3DGL_MESA_GENERATED_C_HEADERS) $(MESA3DGL_MESA_GENERATED_C_SOURCES)
 
-#MM mesa3dgl-linklibs-mesa : mesa3dgl-linklibs-mesa-generated
+#MM mesa3d-linklib-mesa : mesa3d-linklib-mesa-generated
 
-%build_linklib mmake=mesa3dgl-linklibs-mesa libname=mesa libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_MESA_SOURCES_C)" cxxfiles="$(MESA3DGL_MESA_SOURCES_CXX)"
+%build_linklib mmake=mesa3d-linklib-mesa libname=mesa libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_MESA_SOURCES_C)" cxxfiles="$(MESA3DGL_MESA_SOURCES_CXX)"
 
 %common

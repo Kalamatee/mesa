@@ -102,9 +102,9 @@
     struct mesa3dgl_context * ctx = NULL;
     struct TagItem pscreen_tags[] = 
     { 
-            { CPS_PipeFriendBitMap,             NULL                            },
-            { CPS_PipeScreenDriver,             NULL                            },
-            { TAG_DONE,                         NULL                            }
+            { CPS_PipeFriendBitMap,     0       },
+            { CPS_PipeScreenDriver,     0       },
+            { TAG_DONE,                 0       }
     };
     struct pipe_screen * pscreen = NULL;
     struct st_context_attribs attribs = {0};

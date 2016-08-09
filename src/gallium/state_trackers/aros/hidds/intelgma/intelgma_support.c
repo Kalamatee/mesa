@@ -119,7 +119,7 @@ void EnablePipe(struct g45staticdata *sd, LONG pipe)
 {		
     char *pipeconf_reg = sd->Card.MMIO + ((pipe == PIPE_A) ? G45_PIPEACONF : G45_PIPEBCONF);
 
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     writel( readl( pipeconf_reg ) | G45_PIPECONF_ENABLE ,pipeconf_reg );
 }
@@ -128,7 +128,7 @@ void DisablePipe(struct g45staticdata *sd, LONG pipe)
 {
     char *pipeconf_reg = sd->Card.MMIO + ((pipe == PIPE_A) ? G45_PIPEACONF : G45_PIPEBCONF);
 
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     writel(readl( pipeconf_reg ) & ~G45_PIPECONF_ENABLE, pipeconf_reg );
     readl( pipeconf_reg );
@@ -140,7 +140,7 @@ void EnablePlane(struct g45staticdata *sd, LONG plane)
     char *dspbase_reg = sd->Card.MMIO + ((plane == PIPE_A) ? G45_DSPABASE : G45_DSPBBASE);
     char *dspcntr_reg = sd->Card.MMIO + ((plane == PIPE_A) ? G45_DSPACNTR : G45_DSPBCNTR);
 
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     writel( readl( dspcntr_reg ) | G45_DSPCNTR_PLANE_ENABLE ,dspcntr_reg);
     writel( readl( dspbase_reg ), dspbase_reg);
@@ -152,7 +152,7 @@ void DisablePlane(struct g45staticdata *sd, LONG plane)
     char *dspbase_reg = sd->Card.MMIO + ((plane == PIPE_A) ? G45_DSPABASE : G45_DSPBBASE);
     char *dspcntr_reg = sd->Card.MMIO + ((plane == PIPE_A) ? G45_DSPACNTR : G45_DSPBCNTR);
 
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     writel( readl( dspcntr_reg ) & ~G45_DSPCNTR_PLANE_ENABLE ,dspcntr_reg);
     writel( readl( dspbase_reg ), dspbase_reg);
@@ -162,8 +162,8 @@ void DisablePlane(struct g45staticdata *sd, LONG plane)
 
 void UpdateCursor(struct g45staticdata *sd)
 {
-    D(bug("[IntelGMA] %s(0x%p)\n", __PRETTY_FUNCTION__, sd));
-    D(bug("[IntelGMA] %s: CursorBase @ 0x%p\n", __PRETTY_FUNCTION__, sd->CursorBase));
+    D(bug("[IntelGMA] %s(0x%p)\n", __func__, sd));
+    D(bug("[IntelGMA] %s: CursorBase @ 0x%p\n", __func__, sd->CursorBase));
 
     if (sd && sd->CursorBase)
         writel(sd->CursorBase, sd->Card.MMIO + (sd->pipe == PIPE_A ? G45_CURABASE : G45_CURBBASE));
@@ -174,7 +174,7 @@ void SetCursorPosition(struct g45staticdata *sd,LONG x,LONG y)
     LONG width;
     LONG height;
 
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     if (sd && sd->VisibleBitmap)
     {
@@ -314,7 +314,7 @@ void G45_LoadState(struct g45staticdata *sd, GMAState_t *state)
 	uint32_t tmp;
 	BOOL panelfitter;
 	
-	bug("[IntelGMA] %s(%dx%dx%d)\n", __PRETTY_FUNCTION__,
+	bug("[IntelGMA] %s(%dx%dx%d)\n", __func__,
 		(state->htotal & 0x0000ffff) + 1,
 		(state->vtotal & 0x0000ffff) + 1,
 		(state->dspcntr & G45_DSPCNTR_PIXEL_MASK)==G45_DSPCNTR_8BPP  ? 8:
@@ -566,14 +566,14 @@ void G45_LoadState(struct g45staticdata *sd, GMAState_t *state)
 
 void G45_SaveState(struct g45staticdata *sd, GMAState_t *state)
 {
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 }
 
 IPTR AllocBitmapArea(struct g45staticdata *sd, ULONG width, ULONG height, ULONG bpp)
 {
     IPTR result;
 
-    D(bug("[IntelGMA] %s(%dx%d@%d)\n", __PRETTY_FUNCTION__,
+    D(bug("[IntelGMA] %s(%dx%d@%d)\n", __func__,
 	width, height, bpp));
 
     LOCK_HW
@@ -583,7 +583,7 @@ IPTR AllocBitmapArea(struct g45staticdata *sd, ULONG width, ULONG height, ULONG 
     if (result)
     	result +=512;
 
-    D(bug("[IntelGMA] %s: BitMap @ 0x%p\n", __PRETTY_FUNCTION__, result));
+    D(bug("[IntelGMA] %s: BitMap @ 0x%p\n", __func__, result));
 
     /*
 	If allocation failed, use -1 as return value. If it succeeded,
@@ -605,7 +605,7 @@ VOID FreeBitmapArea(struct g45staticdata *sd, IPTR bmp, ULONG width, ULONG heigh
 {
     APTR ptr = (APTR)(bmp + sd->Card.Framebuffer-512);
 
-    D(bug("[IntelGMA] %s(%p,%dx%d@%d)\n", __PRETTY_FUNCTION__,
+    D(bug("[IntelGMA] %s(%p,%dx%d@%d)\n", __func__,
 	ptr, width, height, bpp));
 
     LOCK_HW
@@ -617,14 +617,14 @@ VOID FreeBitmapArea(struct g45staticdata *sd, IPTR bmp, ULONG width, ULONG heigh
 
 BOOL adpa_Enabled(struct g45staticdata *sd)
 {
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     return ( readl( sd->Card.MMIO + G45_ADPA ) & G45_ADPA_ENABLE) ? TRUE : FALSE;
 }
 
 BOOL lvds_Enabled(struct g45staticdata *sd)
 {
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     return ( readl( sd->Card.MMIO + G45_LVDS ) & G45_LVDS_PORT_EN) ? TRUE : FALSE;
 }
@@ -636,7 +636,7 @@ void GetSync(struct g45staticdata *sd, struct Sync *sync,ULONG pipe)
     ULONG vtot =  readl(sd->Card.MMIO + (pipe == PIPE_A ? G45_VTOTAL_A : G45_VTOTAL_B));
     ULONG vsync = readl(sd->Card.MMIO + (pipe == PIPE_A ? G45_VSYNC_A : G45_VSYNC_B));
 
-    D(bug("[IntelGMA] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA] %s()\n", __func__));
 
     sync->pixelclock = 48; // dummy value
 	sync->flags =0;

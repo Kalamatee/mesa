@@ -30,6 +30,7 @@
 #include "util/format_srgb.h"
 
 
+
 static void
 util_format_dxt1_rgb_fetch_stub(int src_stride,
                                 const uint8_t *src,
@@ -160,11 +161,14 @@ util_format_s3tc_init(void)
 
 #if defined(_WIN32) || defined(WIN32)
 #define DXTN_LIBNAME "dxtn.dll"
+#elif defined(__CYGWIN__)
+#define DXTN_LIBNAME "cygtxc_dxtn.dll"
 #elif defined(__APPLE__)
 #define DXTN_LIBNAME "libtxc_dxtn.dylib"
 #else
 #define DXTN_LIBNAME "libtxc_dxtn.so"
 #endif
+
 
 void
 util_format_s3tc_init(void)

@@ -316,11 +316,12 @@ void EDIDParse(APTR edidpool, UBYTE *edid_data, struct TagItem **tagsptr, struct
 
                 case 0xFC:
                     {
-                        D(bug("[EDID] %s: Monitor Name: %s\n", __PRETTY_FUNCTION__, &edid_data[i+5]));
+                        char *rawName = (char *)&edid_data[i+5];
+                        D(bug("[EDID] %s: Monitor Name: %s\n", __PRETTY_FUNCTION__, rawName));
                         if (name)
                         {
-                            *name = AllocVec(strlen(&edid_data[i+5]) +1, MEMF_ANY);
-                            sprintf(*name, "%s", &edid_data[i+5]);
+                            *name = AllocVec(strlen(rawName) +1, MEMF_ANY);
+                            sprintf(*name, "%s", rawName);
                         }
                     }
                     break;

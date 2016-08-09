@@ -69,7 +69,7 @@
 
     galliumTags[0].ti_Data = GetTagData(CPS_GalliumInterfaceVersion, -1, tags);
     friendbm = (struct BitMap *)GetTagData(CPS_PipeFriendBitMap, 0, tags);
-    driver = (OOP_Object **)GetTagData(CPS_PipeScreenDriver, &_driver, tags);
+    driver = (OOP_Object **)GetTagData(CPS_PipeScreenDriver, (IPTR)&_driver, tags);
 
     /* The tag is missing */
     if (galliumTags[0].ti_Data == -1)
@@ -90,7 +90,7 @@
         if (bmObj)
         {
             OOP_Object *displayhidd;
-            OOP_GetAttr(bmObj, aHidd_BitMap_Display, &displayhidd);
+            OOP_GetAttr(bmObj, aHidd_BitMap_Display, (IPTR *)&displayhidd);
 
             if (displayhidd)
             {

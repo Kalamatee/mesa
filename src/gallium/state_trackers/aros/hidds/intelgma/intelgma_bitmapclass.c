@@ -3,7 +3,7 @@
     $Id$
 */
 
-#define DEBUG 1
+#define DEBUG 0
 #include <aros/debug.h>
 
 #include <proto/oop.h>
@@ -21,6 +21,7 @@
 #include <stdlib.h>
 
 #include "intelgma_hidd.h"
+#include "intelgma_overlay.h"
 #include "intelG45_regs.h"
 
 #if defined(INTELGMA_COMPOSIT)
@@ -54,15 +55,15 @@ struct __ROP ROP_table[] = {
 	|| (y) < GC_CLIPY1(gc)		\
 	|| (y) > GC_CLIPY2(gc) )
 
-static BOOL CanAccelerateBlits(UWORD product_id)
+static inline BOOL IntelGMA_HasBLTEngine(UWORD product_id)
 {
-    return product_id >= 0x2582
-        && product_id <= 0x27ae;
+    return ((product_id >= 0x2582)
+        && (product_id <= 0x27ae));
 }
 
 OOP_Object *METHOD(BitMapIntelGMA, Root, New)
 {
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     o = (OOP_Object *)OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
     if (o)
@@ -70,9 +71,8 @@ OOP_Object *METHOD(BitMapIntelGMA, Root, New)
         GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
         IPTR width, height, depth;
+        IPTR displayable, pixfmt;
         UBYTE bytesPerPixel;
-        IPTR displayable;
-
         OOP_Object *pf;
 
         InitSemaphore(&bm->bmLock);
@@ -80,12 +80,39 @@ OOP_Object *METHOD(BitMapIntelGMA, Root, New)
         D(bug("[IntelGMA:BitMap] Super called. o=%p\n", o));
 
         /* cache the bitmaps display, and its enumerator */
-        OOP_GetAttr(o, aHidd_BitMap_Display, &bm->display);
-        OOP_GetAttr(bm->display, aHidd_Display_DMEnumerator, &bm->dmenum);
-
+        OOP_GetAttr(o, aHidd_BitMap_Display, (IPTR *)&bm->display);
+        OOP_GetAttr(o, aHidd_BitMap_StdPixFmt, &pixfmt);
         OOP_GetAttr(o, aHidd_BitMap_Width,  &width);
         OOP_GetAttr(o, aHidd_BitMap_Height, &height);
-        OOP_GetAttr(o, aHidd_BitMap_PixFmt, (APTR)&pf);
+
+        /* is it an overlay mode ? */
+        if ((pixfmt > vHidd_StdPixFmt_Plane) && (pixfmt < num_Hidd_AllPf))
+        {
+            if ((width <= 2048) && (height < 1024))
+            {
+                IPTR dispoverlay;
+
+                OOP_GetAttr(bm->display, aHidd_DisplayIntelGMA_Overlay, &dispoverlay);
+
+                if (!dispoverlay)
+                {
+                    OOP_SetAttrsTags(bm->display, aHidd_DisplayIntelGMA_Overlay, o, TAG_DONE);
+                    IntelGMA_OverlayEnable();
+                    return o;
+                }
+            }
+            else
+            {
+                D(bug("[IntelGMA:BitMap] Illegal overlay dimensions %dx%d\n", width, height));
+            }
+            OOP_MethodID disp_mid = sd->mid_Dispose;
+            OOP_CoerceMethod(cl, o, (OOP_Msg) &disp_mid);
+            return NULL;
+        }
+
+        OOP_GetAttr(bm->display, aHidd_Display_DMEnumerator, (IPTR *)&bm->dmenum);
+
+        OOP_GetAttr(o, aHidd_BitMap_PixFmt, (IPTR *)&pf);
         OOP_GetAttr(pf, aHidd_PixFmt_Depth, &depth);
         OOP_GetAttr(o, aHidd_BitMap_Displayable, &displayable);
 
@@ -93,7 +120,7 @@ OOP_Object *METHOD(BitMapIntelGMA, Root, New)
 
         D(bug("[IntelGMA:BitMap] width=%d height=%d depth=%d\n", width, height, depth));
 
-        if (width == 0 || height == 0 || depth == 0)
+        if ((width == 0) || (height == 0) || (depth == 0))
         {
             bug("[IntelGMA:BitMap] size mismatch!\n");
         }
@@ -246,7 +273,7 @@ VOID METHOD(BitMapIntelGMA, Root, Dispose)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     LOCK_BITMAP
     {
@@ -294,7 +321,7 @@ VOID METHOD(BitMapIntelGMA, Root, Get)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     ULONG idx;
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     if (IS_BitMapIntelGMA_ATTR(msg->attrID, idx))
     {
@@ -332,7 +359,7 @@ VOID METHOD(BitMapIntelGMA, Root, Get)
 
 VOID METHOD(BitMapIntelGMA, Root, Set)
 {
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
 #if defined(INTELGMA_COMPOSIT)
     struct TagItem  *tag, *tstate;
@@ -388,43 +415,13 @@ VOID METHOD(BitMapIntelGMA, Root, Set)
     OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 }
 
-/* not used?
-static inline void setup_engine(OOP_Class *cl, OOP_Object *o, GMABitMap_t *bm)
-{
-	if (sd->Engine2DOwner != bm && bm->fbgfx)
-	{
-		LOCK_HW
-
-		START_RING(8);
-
-		OUT_RING((2 << 29) | (0x11 << 22) | (7));	 // BR00
-		if (bm->bpp == 1)
-			OUT_RING(0xff << 16 | bm->pitch/4);
-		else if (bm->bpp == 2)
-			OUT_RING(0xff << 16 | (bm->pitch / 4) | (1 << 24));
-		else
-			OUT_RING(0xff << 16 | (bm->pitch / 4) | (3 << 24));
-		OUT_RING(0);
-		OUT_RING(0);
-		OUT_RING(bm->framebuffer);
-		OUT_RING(0);
-
-		ADVANCE_RING();
-
-		sd->Engine2DOwner = bm;
-
-		UNLOCK_HW
-	}
-}
-*/
-
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutPixel)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     void *ptr;
 
 #if (0)
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 #endif
 
 //	if (msg->x >= 0 && msg->x < bm->width && msg->y >= 0 && msg->y < bm->height)
@@ -468,7 +465,7 @@ HIDDT_Pixel METHOD(BitMapIntelGMA, Hidd_BitMap, GetPixel)
     void *ptr;
 
 #if (0)
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 #endif
 
     LOCK_BITMAP
@@ -513,7 +510,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, DrawPixel)
     HIDDT_Pixel     	writeMask;
     void                *ptr;
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     ptr = (void *)(bm->framebuffer + msg->y * bm->pitch);
     if (bm->fbgfx)
@@ -601,7 +598,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, DrawEllipse)
     HIDDT_Pixel     	    	    src;
     HIDDT_DrawMode  	    	    mode;
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     /* intermediate terms to speed up loop */
     LONG    	t1 = msg->rx * msg->rx, t2 = t1 << 1, t3 = t2 << 1;
@@ -741,7 +738,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, DrawLine)
 
 	APTR    	doclip = GC_DOCLIP(gc);
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     src       = GC_FG(gc);
     mode      = GC_DRMD(gc);
@@ -1007,7 +1004,7 @@ ULONG METHOD(BitMapIntelGMA, Hidd_BitMap, BytesPerLine)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     return (bm->pitch);
 }
@@ -1017,7 +1014,7 @@ BOOL METHOD(BitMapIntelGMA, Hidd_BitMap, ObtainDirectAccess)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     IPTR VideoData;
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     LOCK_BITMAP
 
@@ -1043,9 +1040,10 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, ReleaseDirectAccess)
 {
 
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
-    UNLOCK_BITMAP
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
+
+    UNLOCK_BITMAP
 
 #if defined(INTELGMA_COMPOSIT)
 	if (bm->displayable)
@@ -1061,8 +1059,6 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, ReleaseDirectAccess)
         };
         OOP_DoMethod(bm->compositing, (OOP_Msg)&brcmsg);    
     }
-#else
-    OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
 #endif
 }
 
@@ -1072,7 +1068,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, FillRect)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     LOCK_BITMAP
 
@@ -1131,26 +1127,31 @@ static inline int do_alpha(int a, int v)
     return ((tmp << 8) + tmp + 32768) >> 16;
 }
 
+/*
+    the BLT engine (the blitter) can not do alpha blending,
+    however we may utilise the 3d engine in future ..
+*/
 VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutAlphaImage)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
+    IPTR VideoData;
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     LOCK_BITMAP
 
-    IPTR VideoData = bm->framebuffer;
+    VideoData = bm->framebuffer;
 
-    if (bm->fbgfx)
+    if ((bm->fbgfx) && ((bm->bpp == 2) || (bm->bpp == 4)))
     {
-    	ULONG x_add = (msg->modulo - msg->width * 4) >> 2;
+        ULONG *pixarray, *pasrc = (ULONG *)msg->pixels;
+        ULONG srcpix, x, y = msg->y;
+        LONG src_red, src_green, src_blue, src_alpha;
+        LONG dst_red, dst_green, dst_blue;
     	UWORD height = msg->height;
     	UWORD bw = msg->width;
-        ULONG *pixarray = (ULONG *)msg->pixels;
-        ULONG y = msg->y;
-        ULONG x;
 
-        /* We're not going to use the 2D engine now. Therefore, flush the chip */
+        /* Since we wont use the BLT engine now, flush the chip */
         LOCK_HW
         DO_FLUSH();
         UNLOCK_HW
@@ -1160,161 +1161,131 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutAlphaImage)
          */
         if (bm->bpp == 4)
         {
-        	while(height--)
-        	{
-                ULONG *xbuf = (ULONG *)(sd->Card.Framebuffer + VideoData + y * bm->pitch);
-        		xbuf += msg->x;
+            ULONG       *xbuf = (ULONG *)(VideoData + sd->Card.Framebuffer + (msg->x << 2) + (y * bm->pitch));
+            ULONG       destpix;
 
-        		for (x=0; x < bw; x++)
-        		{
-        			ULONG       destpix;
-        			ULONG       srcpix;
-        			LONG        src_red, src_green, src_blue, src_alpha;
-        			LONG        dst_red, dst_green, dst_blue;
-
-					/* Read RGBA pixel from input array */
-        			srcpix = *pixarray++;
+            while(height--)
+            {
+                pixarray = pasrc;
+                for (x=0; x < bw; x++)
+                {
+                    /* Read RGBA pixel from input array */
+                    srcpix = *pixarray++;
 #if AROS_BIG_ENDIAN
-        			src_red   = (srcpix & 0x00FF0000) >> 16;
-        			src_green = (srcpix & 0x0000FF00) >> 8;
-        			src_blue  = (srcpix & 0x000000FF);
-        			src_alpha = (srcpix & 0xFF000000) >> 24;
+                    src_red   = (srcpix & 0x00FF0000) >> 16;
+                    src_green = (srcpix & 0x0000FF00) >> 8;
+                    src_blue  = (srcpix & 0x000000FF);
+                    src_alpha = (srcpix & 0xFF000000) >> 24;
 #else
-        			src_red   = (srcpix & 0x0000FF00) >> 8;
-        			src_green = (srcpix & 0x00FF0000) >> 16;
-        			src_blue  = (srcpix & 0xFF000000) >> 24;
-        			src_alpha = (srcpix & 0x000000FF);
+                    src_red   = (srcpix & 0x0000FF00) >> 8;
+                    src_green = (srcpix & 0x00FF0000) >> 16;
+                    src_blue  = (srcpix & 0xFF000000) >> 24;
+                    src_alpha = (srcpix & 0x000000FF);
 #endif
+                    /*
+                     * If the pixel is Opaque (alpha=0), skip unnecessary
+                     * reads and writes to VRAM.
+                     */
+                    if (src_alpha != 0)
+                    {
+                        if (src_alpha == 0xff)
+                        {
+                            /* Fully Transparent, just copy the source pixel */
+                            dst_red = src_red;
+                            dst_green = src_green;
+                            dst_blue = src_blue;
+                        }
+                        else
+                        {
+                            /* Alpha blend the source and destination pixels */
+                            destpix = xbuf[x];
+//#if AROS_BIG_ENDIAN
+//                            dst_red   = (destpix & 0x0000FF00) >> 8;
+//                            dst_green = (destpix & 0x00FF0000) >> 16;
+//                            dst_blue  = (destpix & 0xFF000000) >> 24;
+//#else
+                            dst_red   = (destpix & 0x00FF0000) >> 16;
+                            dst_green = (destpix & 0x0000FF00) >> 8;
+                            dst_blue  = (destpix & 0x000000FF);
+//#endif
 
-        			/*
-        			 * If alpha=0, do not change the destination pixel at all.
-        			 * This saves us unnecessary reads and writes to VRAM.
-        			 */
-					if (src_alpha != 0)
-					{
-						/*
-						 * Full opacity. Do not read the destination pixel, as
-						 * it's value does not matter anyway.
-						 */
-						if (src_alpha == 0xff)
-						{
-							dst_red = src_red;
-							dst_green = src_green;
-							dst_blue = src_blue;
-						}
-						else
-						{
-							/*
-							 * Alpha blending with source and destination pixels.
-							 * Get destination.
-							 */
-							destpix = xbuf[x];
+                            dst_red   += do_alpha(src_alpha, src_red - dst_red);
+                            dst_green += do_alpha(src_alpha, src_green - dst_green);
+                            dst_blue  += do_alpha(src_alpha, src_blue - dst_blue);
 
-//					#if AROS_BIG_ENDIAN
-//							dst_red   = (destpix & 0x0000FF00) >> 8;
-//							dst_green = (destpix & 0x00FF0000) >> 16;
-//							dst_blue  = (destpix & 0xFF000000) >> 24;
-//					#else
-							dst_red   = (destpix & 0x00FF0000) >> 16;
-							dst_green = (destpix & 0x0000FF00) >> 8;
-							dst_blue  = (destpix & 0x000000FF);
-//					#endif
+                        }
+//#if AROS_BIG_ENDIAN
+//                        destpix = (dst_blue << 24) + (dst_green << 16) + (dst_red << 8);
+//#else
+                        destpix = (dst_red << 16) + (dst_green << 8) + (dst_blue);
+//#endif
+                        /* Store the new pixel */
+                        xbuf[x] = destpix;
+                    }
+                }
 
-							dst_red   += do_alpha(src_alpha, src_red - dst_red);
-							dst_green += do_alpha(src_alpha, src_green - dst_green);
-							dst_blue  += do_alpha(src_alpha, src_blue - dst_blue);
-
-						}
-
-//					#if AROS_BIG_ENDIAN
-//                    destpix = (dst_blue << 24) + (dst_green << 16) + (dst_red << 8);
-//                #else
-						destpix = (dst_red << 16) + (dst_green << 8) + (dst_blue);
-//                #endif
-
-						/* Store the new pixel */
-						xbuf[x] = destpix;
-					}
-        		}
-
-        		y++;
-        		pixarray += x_add;
-        	}
-        }
-        /* 2bpp cases... */
-        else if (bm->bpp == 2)
-        {
-        	while(height--)
-        	{
-        		UWORD *xbuf = (UWORD *)(sd->Card.Framebuffer + VideoData + y * bm->pitch);
-        		xbuf += msg->x;
-
-        		for (x=0; x < bw; x++)
-        		{
-        			UWORD       destpix;
-        			ULONG       srcpix;
-        			LONG        src_red, src_green, src_blue, src_alpha;
-        			LONG        dst_red, dst_green, dst_blue;
-
-        			srcpix = *pixarray++;
-#if AROS_BIG_ENDIAN
-        			src_red   = (srcpix & 0x00FF0000) >> 16;
-        			src_green = (srcpix & 0x0000FF00) >> 8;
-        			src_blue  = (srcpix & 0x000000FF);
-        			src_alpha = (srcpix & 0xFF000000) >> 24;
-#else
-        			src_red   = (srcpix & 0x0000FF00) >> 8;
-        			src_green = (srcpix & 0x00FF0000) >> 16;
-        			src_blue  = (srcpix & 0xFF000000) >> 24;
-        			src_alpha = (srcpix & 0x000000FF);
-#endif
-
-        			/*
-        			 * If alpha=0, do not change the destination pixel at all.
-        			 * This saves us unnecessary reads and writes to VRAM.
-        			 */
-        			if (src_alpha != 0)
-        			{
-        				/*
-        				 * Full opacity. Do not read the destination pixel, as
-        				 * it's value does not matter anyway.
-        				 */
-        				if (src_alpha == 0xff)
-        				{
-        					dst_red = src_red;
-        					dst_green = src_green;
-        					dst_blue = src_blue;
-        				}
-        				else
-        				{
-        					/*
-        					 * Alpha blending with source and destination pixels.
-        					 * Get destination.
-        					 */
-
-        					destpix = xbuf[x];
-
-        					dst_red   = (destpix & 0x0000F800) >> 8;
-        					dst_green = (destpix & 0x000007e0) >> 3;
-        					dst_blue  = (destpix & 0x0000001f) << 3;
-
-        					dst_red   += do_alpha(src_alpha, src_red - dst_red);
-        					dst_green += do_alpha(src_alpha, src_green - dst_green);
-        					dst_blue  += do_alpha(src_alpha, src_blue - dst_blue);
-        				}
-
-        				destpix = (((dst_red << 8) & 0xf800) | ((dst_green << 3) & 0x07e0) | ((dst_blue >> 3) & 0x001f));
-
-        				xbuf[x] = destpix;
-        			}
-        		}
-
-        		y++;
-        		pixarray += x_add;
-        	}
+                y++;
+                pasrc = (ULONG *)((IPTR)pasrc + msg->modulo);
+                xbuf = (ULONG *)((IPTR)xbuf + bm->pitch);
+            }
         }
         else
-            OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
+        {
+            UWORD *xbuf = (UWORD *)(VideoData + sd->Card.Framebuffer + (msg->x << 1) + (y * bm->pitch));
+            UWORD       destpix;
+
+            while(height--)
+            {
+                pixarray = pasrc;
+                for (x=0; x < bw; x++)
+                {
+                    srcpix = *pixarray++;
+#if AROS_BIG_ENDIAN
+                    src_red   = (srcpix & 0x00FF0000) >> 16;
+                    src_green = (srcpix & 0x0000FF00) >> 8;
+                    src_blue  = (srcpix & 0x000000FF);
+                    src_alpha = (srcpix & 0xFF000000) >> 24;
+#else
+                    src_red   = (srcpix & 0x0000FF00) >> 8;
+                    src_green = (srcpix & 0x00FF0000) >> 16;
+                    src_blue  = (srcpix & 0xFF000000) >> 24;
+                    src_alpha = (srcpix & 0x000000FF);
+#endif
+                    /* If Opaque, skip unnecessary reads and writes to VRAM. */
+                    if (src_alpha != 0)
+                    {
+                        if (src_alpha == 0xff)
+                        {
+                            /* Fully Transparent */
+                            dst_red = src_red;
+                            dst_green = src_green;
+                            dst_blue = src_blue;
+                        }
+                        else
+                        {
+                            /* Alpha blend */
+
+                            destpix = xbuf[x];
+
+                            dst_red   = (destpix & 0x0000F800) >> 8;
+                            dst_green = (destpix & 0x000007e0) >> 3;
+                            dst_blue  = (destpix & 0x0000001f) << 3;
+
+                            dst_red   += do_alpha(src_alpha, src_red - dst_red);
+                            dst_green += do_alpha(src_alpha, src_green - dst_green);
+                            dst_blue  += do_alpha(src_alpha, src_blue - dst_blue);
+                        }
+
+                        destpix = (((dst_red << 8) & 0xf800) | ((dst_green << 3) & 0x07e0) | ((dst_blue >> 3) & 0x001f));
+
+                        xbuf[x] = destpix;
+                    }
+                }
+                y++;
+                pasrc = (ULONG *)((IPTR)pasrc + msg->modulo);
+                xbuf = (UWORD *)((IPTR)xbuf + bm->pitch);
+            }
+        }
     }
     else
     	OOP_DoSuperMethod(cl, o, (OOP_Msg)msg);
@@ -1327,7 +1298,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutImage)
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
     BOOL done = FALSE;
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     LOCK_BITMAP
 
@@ -1340,7 +1311,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutImage)
      * draw (many blits of height=1 instead of one single blit).
      * Therefore, many many the cache flushes kill the expected performance significantly. */
 
-    if (CanAccelerateBlits(sd->ProductID) && bm->fbgfx && bm->bpp == 4
+    if (IntelGMA_HasBLTEngine(sd->ProductID) && bm->fbgfx && bm->bpp == 4
         && (msg->pixFmt == vHidd_StdPixFmt_Native
         || msg->pixFmt == vHidd_StdPixFmt_Native32
         || msg->pixFmt == vHidd_StdPixFmt_BGRA32
@@ -1557,7 +1528,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutImage)
 				break;
 
 			default:
-				if (CanAccelerateBlits(sd->ProductID) && bm->bpp == 4)
+				if (IntelGMA_HasBLTEngine(sd->ProductID) && bm->bpp == 4)
 				{
 			    	/* Get image width aligned to 4K page boundary */
 			    	uint32_t line_width = (msg->width * bm->bpp + 4095) & ~4095;
@@ -1687,7 +1658,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutImageLUT)
 {
     GMABitMap_t *bm = OOP_INST_DATA(cl, o);
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     LOCK_BITMAP
 
@@ -1702,7 +1673,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, PutImageLUT)
     	{
     		LOCK_HW
 
-            if (bm->bpp == 4 && CanAccelerateBlits(sd->ProductID))
+            if (bm->bpp == 4 && IntelGMA_HasBLTEngine(sd->ProductID))
     		{
     			/* Get two buffers in different GTT regions and _surely_ in different CPU cache lines */
     			uint32_t *buffer_1 = (uint32_t *)(((intptr_t)pages + 4095) & ~4095);
@@ -1817,7 +1788,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, GetImage)
     int done = 0;
     IPTR VideoData;
 
-    D(bug("[IntelGMA:BitMap] %s()\n", __PRETTY_FUNCTION__));
+    D(bug("[IntelGMA:BitMap] %s()\n", __func__));
 
     LOCK_BITMAP
 
@@ -1832,7 +1803,7 @@ VOID METHOD(BitMapIntelGMA, Hidd_BitMap, GetImage)
 			DO_FLUSH();
 			UNLOCK_HW
 
-        if (bm->bpp == 4 && CanAccelerateBlits(sd->ProductID)
+        if (bm->bpp == 4 && IntelGMA_HasBLTEngine(sd->ProductID)
             && (msg->pixFmt == vHidd_StdPixFmt_Native
             || msg->pixFmt == vHidd_StdPixFmt_Native32))
 		{

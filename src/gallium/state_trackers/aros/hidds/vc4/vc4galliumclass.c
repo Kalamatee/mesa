@@ -105,7 +105,7 @@ OOP_Object *METHOD(VC4Gallium, Root, New)
     {
         struct HiddGalliumVC4Data * HiddVC4_DATA = OOP_INST_DATA(cl, o);
 
-        HiddSoftpipe_DATA->vc4_obj = o;
+        HiddVC4_DATA->vc4_obj = o;
 
 #if (0)
         HiddVC4_DATA->vc4_ws.destroy                            = NULL;
@@ -147,32 +147,10 @@ APTR METHOD(VC4Gallium, Hidd_Gallium, CreatePipeScreen)
 {
     struct HIDDVC4Data * HIDDVC4_Data = OOP_INST_DATA(cl, o);
     struct pipe_screen *screen = NULL;
-    struct sw_winsys *vc4_ws = NULL;
 
 #if (0)
-    struct HiddVC4WinSys * vc4ws;
-
-    vc4ws = HiddVC4CreateVC4WinSys();
-    if (vc4ws == NULL)
-        return NULL;
+    screen = vc4_create_screen(0);
 #endif
-
-    OOP_GetAttr(o, aHidd_Gallium_WinSys, &vc4_ws);
-
-    if (vc4_ws)
-    {
-        screen = vc4_create_screen(vc4_ws);
-        if (screen)
-        {
-#if (0)
-        /* Force a pipe_winsys pointer (Mesa 7.9 or never) */
-        screen->winsys = (struct pipe_winsys *)vc4ws;
-
-        /* Preserve pointer to HIDD driver */
-        vc4ws->base.driver = o;
-#endif
-        }
-    }
 
     return screen;
 
@@ -180,11 +158,9 @@ APTR METHOD(VC4Gallium, Hidd_Gallium, CreatePipeScreen)
 
 VOID METHOD(VC4Gallium, Hidd_Gallium, DisplayResource)
 {
-    struct vc4_resource * spr = vc4_resource(msg->resource);
     struct RastPort * rp;
-    struct sw_winsys * vc4_ws = NULL;
-    APTR * data = spr->data;
 
+#if (0)
     OOP_GetAttr(o, aHidd_Gallium_WinSys, &vc4_ws);
 
     if (vc4_ws)
@@ -216,4 +192,5 @@ VOID METHOD(VC4Gallium, Hidd_Gallium, DisplayResource)
         if ((spr->data == NULL) && (data != NULL))
             vc4_ws->displaytarget_unmap(vc4_ws, spr->dt);
     }
+#endif
 }

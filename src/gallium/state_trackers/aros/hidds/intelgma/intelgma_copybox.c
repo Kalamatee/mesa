@@ -36,7 +36,7 @@
 #include <proto/exec.h>
 #include <hidd/gfx.h>
 
-#include "intelgma_intern.h"
+#include "intelgma_hidd.h"
 #include "intelG45_regs.h"
 
 #include "i915/i915_reg.h"
@@ -82,17 +82,20 @@ static inline uint32_t pack_float(float f)
                      IS_945(Id) || \
                      IS_G33(Id) || \
                      IS_PINEVIEW(Id))
-              
+
 BOOL copybox3d_supported()
 {
+#if defined(GMA_USECOPY3D)
     // supported chipsets
     if( IS_GEN3( sd->ProductID ) )
     {
         return TRUE;
-    } 
+    }
+#endif
     return FALSE;
 }
 
+#if defined(GMA_USECOPY3D)
 BOOL copybox3d( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
                ULONG dst_x,ULONG dst_y,ULONG dst_width, ULONG dst_height,
                ULONG src_x,ULONG src_y,ULONG src_width, ULONG src_height )
@@ -152,6 +155,8 @@ BOOL copybox3d( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
         return FALSE;
     }
 
+    D(bug("[IntelGMA:HW] %s()\n", __func__));
+
     LOCK_HW
     START_RING(72);
 
@@ -160,6 +165,7 @@ BOOL copybox3d( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
         AA_LINE_ECAAR_WIDTH_ENABLE |
         AA_LINE_ECAAR_WIDTH_1_0 |
         AA_LINE_REGION_WIDTH_ENABLE | AA_LINE_REGION_WIDTH_1_0 );
+
     OUT_RING( _3DSTATE_INDEPENDENT_ALPHA_BLEND_CMD |
         IAB_MODIFY_ENABLE |
         IAB_MODIFY_FUNC | (BLENDFUNC_ADD << IAB_FUNC_SHIFT) |
@@ -167,12 +173,16 @@ BOOL copybox3d( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
                      IAB_SRC_FACTOR_SHIFT) |
         IAB_MODIFY_DST_FACTOR | (BLENDFACT_ZERO <<
                      IAB_DST_FACTOR_SHIFT) );
+
     OUT_RING( _3DSTATE_DFLT_DIFFUSE_CMD );
     OUT_RING( 0 );
+
     OUT_RING( _3DSTATE_DFLT_SPEC_CMD );
     OUT_RING( 0 );
+
     OUT_RING( _3DSTATE_DFLT_Z_CMD );
     OUT_RING( 0 );
+
     OUT_RING( _3DSTATE_COORD_SET_BINDINGS |
         CSB_TCB(0, 0) |
         CSB_TCB(1, 1) |
@@ -180,6 +190,7 @@ BOOL copybox3d( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
         CSB_TCB(3, 3) |
         CSB_TCB(4, 4) |
         CSB_TCB(5, 5) | CSB_TCB(6, 6) | CSB_TCB(7, 7) );
+
     OUT_RING( _3DSTATE_RASTER_RULES_CMD |
         ENABLE_POINT_RASTER_RULE |
         OGL_POINT_RASTER_RULE |
@@ -187,12 +198,16 @@ BOOL copybox3d( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
         ENABLE_TRI_FAN_PROVOKE_VRTX |
         LINE_STRIP_PROVOKE_VRTX(1) |
         TRI_FAN_PROVOKE_VRTX(2) | ENABLE_TEXKILL_3D_4D | TEXKILL_4D );
+
     OUT_RING( _3DSTATE_MODES_4_CMD |
         ENABLE_LOGIC_OP_FUNC | LOGIC_OP_FUNC(LOGICOP_COPY) |
         ENABLE_STENCIL_WRITE_MASK | STENCIL_WRITE_MASK(0xff) |
         ENABLE_STENCIL_TEST_MASK | STENCIL_TEST_MASK(0xff) );
+
     OUT_RING( _3DSTATE_LOAD_STATE_IMMEDIATE_1 | I1_LOAD_S(3) | I1_LOAD_S(4) | I1_LOAD_S(5) | 2 );
+
     OUT_RING( 0x00000000 );    /* Disable texture coordinate wrap-shortest */
+
     OUT_RING( (1 << S4_POINT_WIDTH_SHIFT) |
         S4_LINE_WIDTH_ONE |
         S4_CULLMODE_NONE |
@@ -310,6 +325,54 @@ BOOL copybox3d( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
 
     ADVANCE_RING();
     DO_FLUSH();
+    UNLOCK_HW
+
+    return TRUE;
+}
+#endif
+
+BOOL copybox810( GMABitMap_t *bm_dst, GMABitMap_t *bm_src,
+               ULONG dst_x,ULONG dst_y,ULONG dst_width, ULONG dst_height,
+               ULONG src_x,ULONG src_y,ULONG src_width, ULONG src_height, ULONG mode )
+{
+    uint32_t br00, br13, br22, br23, br09, br11, br26, br12;
+
+    D(bug("[IntelGMA:HW] %s()\n", __func__));
+
+    LOCK_HW
+    {
+        br00 = (2 << 29) | (0x53 << 22) | (6);
+        if (bm_dst->bpp == 4)
+            br00 |= 3 << 20;
+
+        br13 = bm_dst->pitch | ROP_table[mode].rop;
+        if (bm_dst->bpp == 4)
+            br13 |= 3 << 24;
+        else if (bm_dst->bpp == 2)
+            br13 |= 1 << 24;
+
+        br22 = dst_x | (dst_y << 16);
+        br23 = (dst_x + dst_width) | (dst_y + dst_height) << 16;
+        br09 = bm_dst->framebuffer;
+        br11 = bm_src->pitch;
+        br26 = src_x | (src_y << 16);
+        br12 = bm_src->framebuffer;
+
+        START_RING(8);
+
+        OUT_RING(br00);
+        OUT_RING(br13);
+        OUT_RING(br22);
+        OUT_RING(br23);
+        OUT_RING(br09);
+        OUT_RING(br26);
+        OUT_RING(br11);
+        OUT_RING(br12);
+
+        ADVANCE_RING();
+
+        DO_FLUSH();
+    }
     UNLOCK_HW
 
     return TRUE;

@@ -34,7 +34,7 @@
 #  include <windows.h>
 #elif defined(__GLIBC__) || defined(__CYGWIN__)
 #  include <errno.h>
-#elif defined(PIPE_OS_BSD) || defined(PIPE_OS_APPLE)
+#elif defined(PIPE_OS_AROS) || defined(PIPE_OS_BSD) || defined(PIPE_OS_APPLE)
 #  include <stdlib.h>
 #elif defined(PIPE_OS_HAIKU)
 #  include <kernel/OS.h>
@@ -93,6 +93,8 @@ os_get_process_name(char *procname, size_t size)
       image_info info;
       get_image_info(B_CURRENT_TEAM, &info);
       name = info.name;
+#elif defined(PIPE_OS_AROS)
+      name = "TODO";
 #else
 #warning unexpected platform in os_process.c
       return FALSE;
