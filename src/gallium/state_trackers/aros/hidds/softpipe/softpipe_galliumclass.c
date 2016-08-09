@@ -49,6 +49,15 @@ struct HiddSoftpipeDisplaytarget * HiddSoftpipe_Displaytarget(struct sw_displayt
     return (struct HiddSoftpipeDisplaytarget *)dt;
 }
 
+static boolean
+HiddSoftpipe_IsFormatSupported( struct sw_winsys *ws,
+                                          unsigned tex_usage,
+                                          enum pipe_format format )
+{
+   return TRUE;
+}
+
+
 static struct sw_displaytarget *
 HiddSoftpipe_CreateDisplaytarget( struct sw_winsys *ws,
                             unsigned tex_usage,
@@ -116,7 +125,7 @@ OOP_Object *METHOD(HiddSoftpipe, Root, New)
         HiddSoftpipe_DATA->softpipe_obj = o;
 
         HiddSoftpipe_DATA->softpipe_winsys.destroy                            = NULL;
-        HiddSoftpipe_DATA->softpipe_winsys.is_displaytarget_format_supported  = NULL;
+        HiddSoftpipe_DATA->softpipe_winsys.is_displaytarget_format_supported  = HiddSoftpipe_IsFormatSupported;
         HiddSoftpipe_DATA->softpipe_winsys.displaytarget_create               = HiddSoftpipe_CreateDisplaytarget;
         HiddSoftpipe_DATA->softpipe_winsys.displaytarget_from_handle          = NULL;
         HiddSoftpipe_DATA->softpipe_winsys.displaytarget_get_handle           = NULL;
