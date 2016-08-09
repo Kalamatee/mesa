@@ -227,6 +227,7 @@ util_format_s3tc_init(void)
 }
 #endif
 
+
 /*
  * Pixel fetch.
  */
