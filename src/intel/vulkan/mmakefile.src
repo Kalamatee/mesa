@@ -1,0 +1,110 @@
+#   $Id$
+#
+#   Build Mesa3DGL private libvulkan.a
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+CUR_MESADIR := src/vulkan
+include $(SRCDIR)/$(CURDIR)/mesa.cfg
+##include $(top_srcdir)/$(CUR_MESADIR)/Makefile.sources
+
+##MM- mesa3dgl-linklibs : mesa3dgl-linklibs-vulkan
+
+USER_INCLUDES := \
+            $(USER_INCLUDES) \
+            -I$(top_srcdir)/src/mesa \
+            -iquote $(top_srcdir)/src/mapi \
+            -iquote $(top_srcdir)/src/compiler \
+            -iquote $(top_builddir)/src/compiler \
+            -iquote $(top_builddir)/src/compiler/nir \
+            -iquote $(top_builddir)/$(CUR_MESADIR) \
+            -iquote $(top_srcdir)/src/gallium/include \
+            -iquote $(top_srcdir)/src/gallium/auxiliary
+
+OLDUSER_INCLUDES := \
+            -I$(top_srcdir)/include \
+            -I$(top_srcdir)/include/GL \
+            -iquote $(top_srcdir)/src \
+
+VULKAN_SOURCES := \
+	anv_allocator \
+	anv_cmd_buffer \
+	anv_batch_chain \
+	anv_descriptor_set \
+	anv_device \
+        anv_dump \
+	anv_entrypoints \
+	anv_formats \
+	anv_image \
+	anv_intel \
+	anv_meta \
+	anv_meta_blit \
+	anv_meta_clear \
+	anv_meta_resolve \
+	anv_nir_apply_dynamic_offsets \
+	anv_nir_apply_pipeline_layout \
+	anv_nir_lower_push_constants \
+	anv_pass \
+	anv_pipeline \
+	anv_pipeline_cache \
+	anv_query \
+	anv_util \
+	anv_wsi \
+	anv_wsi_aros
+
+BUILT_SOURCES := \
+	anv_entrypoints
+
+vulkan_include_HEADERS =				\
+	$(top_srcdir)/include/vulkan/vk_platform.h	\
+	$(top_srcdir)/include/vulkan/vulkan.h		\
+	$(top_srcdir)/include/vulkan/vulkan_intel.h
+
+$(top_builddir)/$(CUR_MESADIR)/anv_entrypoints.h : $(top_srcdir)/$(CUR_MESADIR)/anv_entrypoints_gen.py $(vulkan_include_HEADERS)
+	$(AM_V_GEN) cat $(vulkan_include_HEADERS) | $(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) - | $(PYTHON2) $< header > $@
+
+$(top_builddir)/$(CUR_MESADIR)/anv_entrypoints.c : $(top_srcdir)/$(CUR_MESADIR)/anv_entrypoints_gen.py $(vulkan_include_HEADERS)
+	$(AM_V_GEN) cat $(vulkan_include_HEADERS) | $(CPP) $(VULKAN_ENTRYPOINT_CPPFLAGS) - | $(PYTHON2) $< code > $@
+
+MESA3DGL_NIR_GENERATED_FILES := $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(NIR_GENERATED_FILES))
+MESA3DGL_GLSL_GENERATED_C_SOURCES := $(filter %.c, $(MESA3DGL_NIR_GENERATED_FILES))
+MESA3DGL_GLSL_C_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,  $(filter %.c, $(LIBGLSL_FILES) $(NIR_FILES))))
+
+MESA3DGL_GLSL_GENERATED_CXX_FILES := $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(LIBGLSL_GENERATED_CXX_FILES))
+MESA3DGL_GLSL_GENERATED_CXX_SOURCES := $(filter %.cpp, $(MESA3DGL_GLSL_GENERATED_CXX_FILES))
+MESA3DGL_GLSL_CXX_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(filter %.cpp, $(LIBGLSL_FILES) $(NIR_FILES))))
+
+MESA3DGL_GLSL_SOURCES_C := \
+            $(MESA3DGL_GLSL_GENERATED_C_SOURCES:.c=) \
+            $(MESA3DGL_GLSL_C_SOURCES:.c=)
+MESA3DGL_GLSL_SOURCES_CXX :=  \
+            $(MESA3DGL_GLSL_GENERATED_CXX_SOURCES:.cpp=) \
+            $(MESA3DGL_GLSL_CXX_SOURCES:.cpp=) \
+            $(top_srcdir)/src/aros/emul_cpp
+
+
+MESA3DGL_GLCPP_GENERATED_FILES := $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(LIBGLCPP_GENERATED_FILES))
+MESA3DGL_GLCPP_GENERATED_C_SOURCES := $(filter %.c, $(MESA3DGL_GLCPP_GENERATED_FILES))
+
+MESA3DGL_GLCPP_FILES := $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(LIBGLCPP_FILES))
+MESA3DGL_GLCPP_C_SOURCES := $(filter %.c, $(MESA3DGL_GLCPP_FILES))
+
+MESA3DGL_GLCPP_SOURCES_C := \
+            $(MESA3DGL_GLCPP_GENERATED_C_SOURCES:.c=) \
+            $(MESA3DGL_GLCPP_C_SOURCES:.c=)
+
+LIBCOMPILER_C_FILES := $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(filter %.c, $(LIBCOMPILER_FILES)))
+LIBCOMPILER_CXX_FILES := $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(filter %.cpp, $(LIBCOMPILER_FILES)))
+
+LIBCOMPILER_C_SOURCES := $(LIBCOMPILER_C_FILES:.c=)
+LIBCOMPILER_CXX_SOURCES := $(LIBCOMPILER_CXX_FILES:.cpp=)
+
+#MM
+mesa3dgl-linklibs-vulkan-generate : $(MESA3DGL_GLSL_GENERATED_CXX_FILES) $(MESA3DGL_GLCPP_GENERATED_FILES) $(MESA3DGL_NIR_GENERATED_FILES)
+
+#MM mesa3dgl-linklibs-vulkan : mesa3dgl-linklibs-vulkan-generate
+
+%build_linklib mmake=mesa3dgl-linklibs-vulkan libname=vulkan libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(VULKAN_SOURCES)"
+
+%common
