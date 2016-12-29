@@ -97,11 +97,12 @@ gen9_calc_std_image_alignment_sa(const struct isl_device *dev,
 }
 
 void
-gen9_choose_image_alignment_el(const struct isl_device *dev,
-                               const struct isl_surf_init_info *restrict info,
-                               enum isl_tiling tiling,
-                               enum isl_msaa_layout msaa_layout,
-                               struct isl_extent3d *image_align_el)
+isl_gen9_choose_image_alignment_el(const struct isl_device *dev,
+                                   const struct isl_surf_init_info *restrict info,
+                                   enum isl_tiling tiling,
+                                   enum isl_dim_layout dim_layout,
+                                   enum isl_msaa_layout msaa_layout,
+                                   struct isl_extent3d *image_align_el)
 {
    /* Handled by isl_choose_image_alignment_el */
    assert(info->format != ISL_FORMAT_HIZ);
@@ -173,7 +174,7 @@ gen9_choose_image_alignment_el(const struct isl_device *dev,
       return;
    }
 
-   if (info->dim == ISL_SURF_DIM_1D) {
+   if (dim_layout == ISL_DIM_LAYOUT_GEN9_1D) {
       /* See the Skylake BSpec > Memory Views > Common Surface Formats > Surface
        * Layout and Tiling > 1D Surfaces > 1D Alignment Requirements.
        */
@@ -195,6 +196,6 @@ gen9_choose_image_alignment_el(const struct isl_device *dev,
       return;
    }
 
-   gen8_choose_image_alignment_el(dev, info, tiling, msaa_layout,
-                                  image_align_el);
+   isl_gen8_choose_image_alignment_el(dev, info, tiling, dim_layout,
+                                      msaa_layout, image_align_el);
 }

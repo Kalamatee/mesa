@@ -177,7 +177,7 @@ brw_get_depthstencil_tile_masks(struct intel_mipmap_tree *depth_mt,
 
    if (depth_mt) {
       intel_get_tile_masks(depth_mt->tiling, depth_mt->tr_mode,
-                           depth_mt->cpp, false,
+                           depth_mt->cpp,
                            &tile_mask_x, &tile_mask_y);
 
       if (intel_miptree_level_has_hiz(depth_mt, depth_level)) {
@@ -185,7 +185,7 @@ brw_get_depthstencil_tile_masks(struct intel_mipmap_tree *depth_mt,
          intel_get_tile_masks(depth_mt->hiz_buf->mt->tiling,
                               depth_mt->hiz_buf->mt->tr_mode,
                               depth_mt->hiz_buf->mt->cpp,
-                              false, &hiz_tile_mask_x,
+                              &hiz_tile_mask_x,
                               &hiz_tile_mask_y);
 
          /* Each HiZ row represents 2 rows of pixels */
@@ -209,7 +209,7 @@ brw_get_depthstencil_tile_masks(struct intel_mipmap_tree *depth_mt,
          intel_get_tile_masks(stencil_mt->tiling,
                               stencil_mt->tr_mode,
                               stencil_mt->cpp,
-                              false, &stencil_tile_mask_x,
+                              &stencil_tile_mask_x,
                               &stencil_tile_mask_y);
 
          tile_mask_x |= stencil_tile_mask_x;
@@ -451,14 +451,12 @@ brw_workaround_depthstencil_alignment(struct brw_context *brw,
       brw->depthstencil.depth_offset =
          intel_miptree_get_aligned_offset(depth_mt,
                                           depth_irb->draw_x & ~tile_mask_x,
-                                          depth_irb->draw_y & ~tile_mask_y,
-                                          false);
+                                          depth_irb->draw_y & ~tile_mask_y);
       if (intel_renderbuffer_has_hiz(depth_irb)) {
          brw->depthstencil.hiz_offset =
             intel_miptree_get_aligned_offset(depth_mt,
                                              depth_irb->draw_x & ~tile_mask_x,
-                                             (depth_irb->draw_y & ~tile_mask_y) / 2,
-                                             false);
+                                             (depth_irb->draw_y & ~tile_mask_y) / 2);
       }
    }
    if (stencil_irb) {
@@ -795,37 +793,6 @@ const struct brw_tracked_state brw_polygon_stipple_offset = {
 };
 
 /**
- * AA Line parameters
- */
-static void
-upload_aa_line_parameters(struct brw_context *brw)
-{
-   struct gl_context *ctx = &brw->ctx;
-
-   if (!ctx->Line.SmoothFlag)
-      return;
-
-   /* Original Gen4 doesn't have 3DSTATE_AA_LINE_PARAMETERS. */
-   if (brw->gen == 4 && !brw->is_g4x)
-      return;
-
-   BEGIN_BATCH(3);
-   OUT_BATCH(_3DSTATE_AA_LINE_PARAMETERS << 16 | (3 - 2));
-   /* use legacy aa line coverage computation */
-   OUT_BATCH(0);
-   OUT_BATCH(0);
-   ADVANCE_BATCH();
-}
-
-const struct brw_tracked_state brw_aa_line_parameters = {
-   .dirty = {
-      .mesa = _NEW_LINE,
-      .brw = BRW_NEW_CONTEXT,
-   },
-   .emit = upload_aa_line_parameters
-};
-
-/**
  * Line stipple packet
  */
 static void
@@ -1025,6 +992,16 @@ brw_upload_invariant_state(struct brw_context *brw)
    } else {
       BEGIN_BATCH(2);
       OUT_BATCH(CMD_STATE_SIP << 16 | (2 - 2));
+      OUT_BATCH(0);
+      ADVANCE_BATCH();
+   }
+
+   /* Original Gen4 doesn't have 3DSTATE_AA_LINE_PARAMETERS. */
+   if (!is_965) {
+      BEGIN_BATCH(3);
+      OUT_BATCH(_3DSTATE_AA_LINE_PARAMETERS << 16 | (3 - 2));
+      /* use legacy aa line coverage computation */
+      OUT_BATCH(0);
       OUT_BATCH(0);
       ADVANCE_BATCH();
    }

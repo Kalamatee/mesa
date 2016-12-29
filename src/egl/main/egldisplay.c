@@ -44,6 +44,8 @@
 #include "egldriver.h"
 #include "eglglobals.h"
 #include "egllog.h"
+#include "eglimage.h"
+#include "eglsync.h"
 
 /* Includes for _eglNativePlatformDetectNativeDisplay */
 #ifdef HAVE_MINCORE
@@ -301,6 +303,26 @@ _eglReleaseDisplayResources(_EGLDriver *drv, _EGLDisplay *display)
       drv->API.DestroySurface(drv, display, surf);
    }
    assert(!display->ResourceLists[_EGL_RESOURCE_SURFACE]);
+
+   list = display->ResourceLists[_EGL_RESOURCE_IMAGE];
+   while (list) {
+      _EGLImage *image = (_EGLImage *) list;
+      list = list->Next;
+
+      _eglUnlinkImage(image);
+      drv->API.DestroyImageKHR(drv, display, image);
+   }
+   assert(!display->ResourceLists[_EGL_RESOURCE_IMAGE]);
+
+   list = display->ResourceLists[_EGL_RESOURCE_SYNC];
+   while (list) {
+      _EGLSync *sync = (_EGLSync *) list;
+      list = list->Next;
+
+      _eglUnlinkSync(sync);
+      drv->API.DestroySyncKHR(drv, display, sync);
+   }
+   assert(!display->ResourceLists[_EGL_RESOURCE_SYNC]);
 }
 
 
@@ -519,3 +541,24 @@ _eglGetWaylandDisplay(struct wl_display *native_display,
    return _eglFindDisplay(_EGL_PLATFORM_WAYLAND, native_display);
 }
 #endif /* HAVE_WAYLAND_PLATFORM */
+
+#ifdef HAVE_SURFACELESS_PLATFORM
+_EGLDisplay*
+_eglGetSurfacelessDisplay(void *native_display,
+                          const EGLint *attrib_list)
+{
+   /* This platform has no native display. */
+   if (native_display != NULL) {
+      _eglError(EGL_BAD_PARAMETER, "eglGetPlatformDisplay");
+      return NULL;
+   }
+
+   /* This platform recognizes no display attributes. */
+   if (attrib_list != NULL && attrib_list[0] != EGL_NONE) {
+      _eglError(EGL_BAD_ATTRIBUTE, "eglGetPlatformDisplay");
+      return NULL;
+   }
+
+   return _eglFindDisplay(_EGL_PLATFORM_SURFACELESS, native_display);
+}
+#endif /* HAVE_SURFACELESS_PLATFORM */

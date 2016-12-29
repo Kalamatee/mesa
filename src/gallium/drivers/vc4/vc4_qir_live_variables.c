@@ -113,8 +113,17 @@ qir_setup_def(struct vc4_compile *c, struct qblock *block, int ip,
         if (BITSET_TEST(block->use, var) || BITSET_TEST(block->def, var))
                 return;
 
-        /* Easy, common case: unconditional full register update. */
-        if (inst->cond == QPU_COND_ALWAYS && !inst->dst.pack) {
+        /* Easy, common case: unconditional full register update.
+         *
+         * We treat conditioning on the exec mask as the same as not being
+         * conditional.  This makes sure that if the register gets set on
+         * either side of an if, it is treated as being screened off before
+         * the if.  Otherwise, if there was no intervening def, its live
+         * interval doesn't extend back to the start of he program, and if too
+         * many registers did that we'd fail to register allocate.
+         */
+        if ((inst->cond == QPU_COND_ALWAYS ||
+             inst->cond_is_exec_mask) && !inst->dst.pack) {
                 BITSET_SET(block->def, var);
                 return;
         }
@@ -196,7 +205,7 @@ qir_setup_def_use(struct vc4_compile *c)
                 _mesa_hash_table_clear(partial_update_ht, NULL);
 
                 qir_for_each_inst(inst, block) {
-                        for (int i = 0; i < qir_get_op_nsrc(inst->op); i++)
+                        for (int i = 0; i < qir_get_nsrc(inst); i++)
                                 qir_setup_use(c, block, ip, inst->src[i]);
 
                         qir_setup_def(c, block, ip, partial_update_ht, inst);
@@ -292,8 +301,13 @@ qir_calculate_live_intervals(struct vc4_compile *c)
 {
         int bitset_words = BITSET_WORDS(c->num_temps);
 
-        c->temp_start = reralloc(c, c->temp_start, int, c->num_temps);
-        c->temp_end = reralloc(c, c->temp_end, int, c->num_temps);
+        /* If we called this function more than once, then we should be
+         * freeing the previous arrays.
+         */
+        assert(!c->temp_start);
+
+        c->temp_start = rzalloc_array(c, int, c->num_temps);
+        c->temp_end = rzalloc_array(c, int, c->num_temps);
 
         for (int i = 0; i < c->num_temps; i++) {
                 c->temp_start[i] = MAX_INSTRUCTION;
@@ -301,10 +315,10 @@ qir_calculate_live_intervals(struct vc4_compile *c)
         }
 
         qir_for_each_block(block, c) {
-                block->def = reralloc(c, block->def, BITSET_WORD, bitset_words);
-                block->use = reralloc(c, block->use, BITSET_WORD, bitset_words);
-                block->live_in = reralloc(c, block->live_in, BITSET_WORD, bitset_words);
-                block->live_out = reralloc(c, block->live_out, BITSET_WORD, bitset_words);
+                block->def = rzalloc_array(c, BITSET_WORD, bitset_words);
+                block->use = rzalloc_array(c, BITSET_WORD, bitset_words);
+                block->live_in = rzalloc_array(c, BITSET_WORD, bitset_words);
+                block->live_out = rzalloc_array(c, BITSET_WORD, bitset_words);
         }
 
         qir_setup_def_use(c);

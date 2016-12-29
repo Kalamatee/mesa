@@ -35,6 +35,7 @@
 
 
 #include "svga_types.h"
+#include "svga_winsys.h"
 #include "svga_reg.h"
 #include "svga3d_reg.h"
 
@@ -59,6 +60,25 @@ SVGA3D_FIFOReserve(struct svga_winsys_context *swc, uint32 cmd, uint32 cmdSize, 
 
 void
 SVGA_FIFOCommitAll(struct svga_winsys_context *swc);
+
+/**
+ * Return the last command id put in the command buffer.
+ */
+static inline SVGAFifo3dCmdId
+SVGA3D_GetLastCommand(const struct svga_winsys_context *swc)
+{
+   return swc->last_command;
+}
+
+/**
+ * Reset/clear the last command put in the command buffer.
+ * To be called when buffer is flushed.
+ */
+static inline void
+SVGA3D_ResetLastCommand(struct svga_winsys_context *swc)
+{
+   swc->last_command = 0;
+}
 
 
 /*
@@ -278,6 +298,10 @@ SVGA3D_InvalidateGBImagePartial(struct svga_winsys_context *swc,
                                 unsigned face, unsigned mipLevel,
                                 const SVGA3dBox *box,
                                 bool invertBox);
+
+enum pipe_error
+SVGA3D_InvalidateGBSurface(struct svga_winsys_context *swc,
+                           struct svga_winsys_surface *surface);
 
 
 enum pipe_error
@@ -648,4 +672,14 @@ SVGA3D_vgpu10_BufferCopy(struct svga_winsys_context *swc,
                          struct svga_winsys_surface *src,
                          struct svga_winsys_surface *dst,
                          unsigned srcx, unsigned dstx, unsigned width);
+
+enum pipe_error
+SVGA3D_vgpu10_TransferFromBuffer(struct svga_winsys_context *swc,
+                                 struct svga_winsys_surface *src,
+                                 unsigned srcOffset, unsigned srcPitch,
+                                 unsigned srcSlicePitch,
+                                 struct svga_winsys_surface *dst,
+                                 unsigned dstSubResource,
+                                 SVGA3dBox *dstBox);
+
 #endif /* __SVGA3D_H__ */

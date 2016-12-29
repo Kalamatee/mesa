@@ -36,12 +36,13 @@
 #include "nir_builder.h"
 
 static nir_shader *
-create_passthrough_tcs(const struct brw_compiler *compiler,
+create_passthrough_tcs(void *mem_ctx, const struct brw_compiler *compiler,
                        const nir_shader_compiler_options *options,
                        const struct brw_tcs_prog_key *key)
 {
    nir_builder b;
-   nir_builder_init_simple_shader(&b, NULL, MESA_SHADER_TESS_CTRL, options);
+   nir_builder_init_simple_shader(&b, mem_ctx, MESA_SHADER_TESS_CTRL,
+                                  options);
    nir_shader *nir = b.shader;
    nir_variable *var;
    nir_intrinsic_instr *load;
@@ -50,10 +51,10 @@ create_passthrough_tcs(const struct brw_compiler *compiler,
    nir_ssa_def *invoc_id =
       nir_load_system_value(&b, nir_intrinsic_load_invocation_id, 0);
 
-   nir->info.inputs_read = key->outputs_written;
-   nir->info.outputs_written = key->outputs_written;
-   nir->info.tcs.vertices_out = key->input_vertices;
-   nir->info.name = ralloc_strdup(nir, "passthrough");
+   nir->info->inputs_read = key->outputs_written;
+   nir->info->outputs_written = key->outputs_written;
+   nir->info->tcs.vertices_out = key->input_vertices;
+   nir->info->name = ralloc_strdup(nir, "passthrough");
    nir->num_uniforms = 8 * sizeof(uint32_t);
 
    var = nir_variable_create(nir, nir_var_uniform, glsl_vec4_type(), "hdr_0");
@@ -153,6 +154,8 @@ brw_tcs_debug_recompile(struct brw_context *brw,
                       key->patch_outputs_written);
    found |= key_debug(brw, "TES primitive mode", old_key->tes_primitive_mode,
                       key->tes_primitive_mode);
+   found |= key_debug(brw, "quads and equal_spacing workaround",
+                      old_key->quads_workaround, key->quads_workaround);
    found |= brw_debug_recompile_sampler_key(brw, &old_key->tex, &key->tex);
 
    if (!found) {
@@ -163,20 +166,21 @@ brw_tcs_debug_recompile(struct brw_context *brw,
 static bool
 brw_codegen_tcs_prog(struct brw_context *brw,
                      struct gl_shader_program *shader_prog,
-                     struct brw_tess_ctrl_program *tcp,
+                     struct brw_program *tcp,
                      struct brw_tcs_prog_key *key)
 {
    struct gl_context *ctx = &brw->ctx;
-   const struct brw_compiler *compiler = brw->intelScreen->compiler;
-   const struct brw_device_info *devinfo = compiler->devinfo;
+   const struct brw_compiler *compiler = brw->screen->compiler;
+   const struct gen_device_info *devinfo = compiler->devinfo;
    struct brw_stage_state *stage_state = &brw->tcs.base;
    nir_shader *nir;
    struct brw_tcs_prog_data prog_data;
    bool start_busy = false;
    double start_time = 0;
 
+   void *mem_ctx = ralloc_context(NULL);
    if (tcp) {
-      nir = tcp->program.Base.nir;
+      nir = tcp->program.nir;
    } else {
       /* Create a dummy nir_shader.  We won't actually use NIR code to
        * generate assembly (it's easier to generate assembly directly),
@@ -184,7 +188,7 @@ brw_codegen_tcs_prog(struct brw_context *brw,
        */
       const nir_shader_compiler_options *options =
          ctx->Const.ShaderCompilerOptions[MESA_SHADER_TESS_CTRL].NirOptions;
-      nir = create_passthrough_tcs(compiler, options, key);
+      nir = create_passthrough_tcs(mem_ctx, compiler, options, key);
    }
 
    memset(&prog_data, 0, sizeof(prog_data));
@@ -197,8 +201,6 @@ brw_codegen_tcs_prog(struct brw_context *brw,
     * padding around uniform values below vec4 size, so the worst case is that
     * every uniform is a float which gets padded to the size of a vec4.
     */
-   struct gl_linked_shader *tcs = shader_prog ?
-      shader_prog->_LinkedShaders[MESA_SHADER_TESS_CTRL] : NULL;
    int param_count = nir->num_uniforms / 4;
 
    prog_data.base.base.param =
@@ -207,16 +209,17 @@ brw_codegen_tcs_prog(struct brw_context *brw,
       rzalloc_array(NULL, const gl_constant_value *, param_count);
    prog_data.base.base.nr_params = param_count;
 
-   if (tcs) {
+   if (tcp) {
       brw_assign_common_binding_table_offsets(MESA_SHADER_TESS_CTRL, devinfo,
-                                              shader_prog, &tcp->program.Base,
+                                              shader_prog, &tcp->program,
                                               &prog_data.base.base, 0);
 
       prog_data.base.base.image_param =
-         rzalloc_array(NULL, struct brw_image_param, tcs->NumImages);
-      prog_data.base.base.nr_image_params = tcs->NumImages;
+         rzalloc_array(NULL, struct brw_image_param,
+                       tcp->program.info.num_images);
+      prog_data.base.base.nr_image_params = tcp->program.info.num_images;
 
-      brw_nir_setup_glsl_uniforms(nir, shader_prog, &tcp->program.Base,
+      brw_nir_setup_glsl_uniforms(nir, shader_prog, &tcp->program,
                                   &prog_data.base.base,
                                   compiler->scalar_stage[MESA_SHADER_TESS_CTRL]);
    } else {
@@ -246,9 +249,6 @@ brw_codegen_tcs_prog(struct brw_context *brw,
       }
    }
 
-   if (unlikely(INTEL_DEBUG & DEBUG_TCS) && tcs)
-      brw_dump_ir("tessellation control", shader_prog, tcs, NULL);
-
    int st_index = -1;
    if (unlikely(INTEL_DEBUG & DEBUG_SHADER_TIME))
       st_index = brw_get_shader_time_index(brw, shader_prog, NULL, ST_TCS);
@@ -258,7 +258,6 @@ brw_codegen_tcs_prog(struct brw_context *brw,
       start_time = get_time();
    }
 
-   void *mem_ctx = ralloc_context(NULL);
    unsigned program_size;
    char *error_str;
    const unsigned *program =
@@ -266,10 +265,8 @@ brw_codegen_tcs_prog(struct brw_context *brw,
                       &program_size, &error_str);
    if (program == NULL) {
       if (shader_prog) {
-         shader_prog->LinkStatus = false;
-         ralloc_strcat(&shader_prog->InfoLog, error_str);
-      } else {
-         ralloc_free(nir);
+         shader_prog->data->LinkStatus = false;
+         ralloc_strcat(&shader_prog->data->InfoLog, error_str);
       }
 
       _mesa_problem(NULL, "Failed to compile tessellation control shader: "
@@ -280,6 +277,8 @@ brw_codegen_tcs_prog(struct brw_context *brw,
    }
 
    if (unlikely(brw->perf_debug)) {
+      struct gl_linked_shader *tcs = shader_prog ?
+         shader_prog->_LinkedShaders[MESA_SHADER_TESS_CTRL] : NULL;
       struct brw_shader *btcs = (struct brw_shader *) tcs;
       if (btcs) {
          if (btcs->compiled_once) {
@@ -296,35 +295,68 @@ brw_codegen_tcs_prog(struct brw_context *brw,
    /* Scratch space is used for register spilling */
    brw_alloc_stage_scratch(brw, stage_state,
                            prog_data.base.base.total_scratch,
-                           brw->max_hs_threads);
+                           devinfo->max_tcs_threads);
 
    brw_upload_cache(&brw->cache, BRW_CACHE_TCS_PROG,
                     key, sizeof(*key),
                     program, program_size,
                     &prog_data, sizeof(prog_data),
-                    &stage_state->prog_offset, &brw->tcs.prog_data);
+                    &stage_state->prog_offset, &brw->tcs.base.prog_data);
    ralloc_free(mem_ctx);
-   if (!tcs)
-      ralloc_free(nir);
 
    return true;
 }
 
+void
+brw_tcs_populate_key(struct brw_context *brw,
+                     struct brw_tcs_prog_key *key)
+{
+   struct brw_program *tcp = (struct brw_program *) brw->tess_ctrl_program;
+   struct brw_program *tep = (struct brw_program *) brw->tess_eval_program;
+   struct gl_program *tes_prog = &tep->program;
+
+   uint64_t per_vertex_slots = tes_prog->info.inputs_read;
+   uint32_t per_patch_slots = tes_prog->info.patch_inputs_read;
+
+   memset(key, 0, sizeof(*key));
+
+   if (tcp) {
+      struct gl_program *prog = &tcp->program;
+      per_vertex_slots |= prog->info.outputs_written;
+      per_patch_slots |= prog->info.patch_outputs_written;
+   }
+
+   if (brw->gen < 8 || !tcp)
+      key->input_vertices = brw->ctx.TessCtrlProgram.patch_vertices;
+   key->outputs_written = per_vertex_slots;
+   key->patch_outputs_written = per_patch_slots;
+
+   /* We need to specialize our code generation for tessellation levels
+    * based on the domain the DS is expecting to tessellate.
+    */
+   key->tes_primitive_mode = tep->program.info.tes.primitive_mode;
+   key->quads_workaround = brw->gen < 9 &&
+                           tep->program.info.tes.primitive_mode == GL_QUADS &&
+                           tep->program.info.tes.spacing == GL_EQUAL;
+
+   if (tcp) {
+      key->program_string_id = tcp->id;
+
+      /* _NEW_TEXTURE */
+      brw_populate_sampler_prog_key_data(&brw->ctx, &tcp->program, &key->tex);
+   }
+}
 
 void
-brw_upload_tcs_prog(struct brw_context *brw,
-                    uint64_t per_vertex_slots,
-                    uint32_t per_patch_slots)
+brw_upload_tcs_prog(struct brw_context *brw)
 {
-   struct gl_context *ctx = &brw->ctx;
-   struct gl_shader_program **current = ctx->_Shader->CurrentProgram;
+   struct gl_shader_program **current = brw->ctx._Shader->CurrentProgram;
    struct brw_stage_state *stage_state = &brw->tcs.base;
    struct brw_tcs_prog_key key;
    /* BRW_NEW_TESS_PROGRAMS */
-   struct brw_tess_ctrl_program *tcp =
-      (struct brw_tess_ctrl_program *) brw->tess_ctrl_program;
-   struct brw_tess_eval_program *tep =
-      (struct brw_tess_eval_program *) brw->tess_eval_program;
+   struct brw_program *tcp = (struct brw_program *) brw->tess_ctrl_program;
+   MAYBE_UNUSED struct brw_program *tep =
+      (struct brw_program *) brw->tess_eval_program;
    assert(tep);
 
    if (!brw_state_dirty(brw,
@@ -333,39 +365,17 @@ brw_upload_tcs_prog(struct brw_context *brw,
                         BRW_NEW_TESS_PROGRAMS))
       return;
 
-   struct gl_program *prog = &tcp->program.Base;
-
-   memset(&key, 0, sizeof(key));
-
-   if (brw->gen < 8 || !tcp)
-      key.input_vertices = ctx->TessCtrlProgram.patch_vertices;
-   key.outputs_written = per_vertex_slots;
-   key.patch_outputs_written = per_patch_slots;
-
-   /* We need to specialize our code generation for tessellation levels
-    * based on the domain the DS is expecting to tessellate.
-    */
-   key.tes_primitive_mode = tep->program.PrimitiveMode;
-
-   if (tcp) {
-      key.program_string_id = tcp->id;
-
-      /* _NEW_TEXTURE */
-      brw_populate_sampler_prog_key_data(ctx, prog, &key.tex);
-   } else {
-      key.outputs_written = tep->program.Base.InputsRead;
-   }
-
+   brw_tcs_populate_key(brw, &key);
 
    if (!brw_search_cache(&brw->cache, BRW_CACHE_TCS_PROG,
                          &key, sizeof(key),
-                         &stage_state->prog_offset, &brw->tcs.prog_data)) {
+                         &stage_state->prog_offset,
+                         &brw->tcs.base.prog_data)) {
       bool success = brw_codegen_tcs_prog(brw, current[MESA_SHADER_TESS_CTRL],
                                           tcp, &key);
       assert(success);
       (void)success;
    }
-   brw->tcs.base.prog_data = &brw->tcs.prog_data->base.base;
 }
 
 
@@ -377,11 +387,12 @@ brw_tcs_precompile(struct gl_context *ctx,
    struct brw_context *brw = brw_context(ctx);
    struct brw_tcs_prog_key key;
    uint32_t old_prog_offset = brw->tcs.base.prog_offset;
-   struct brw_tcs_prog_data *old_prog_data = brw->tcs.prog_data;
+   struct brw_stage_prog_data *old_prog_data = brw->tcs.base.prog_data;
    bool success;
 
-   struct gl_tess_ctrl_program *tcp = (struct gl_tess_ctrl_program *)prog;
-   struct brw_tess_ctrl_program *btcp = brw_tess_ctrl_program(tcp);
+   struct brw_program *btcp = brw_program(prog);
+   const struct gl_linked_shader *tes =
+      shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL];
 
    memset(&key, 0, sizeof(key));
 
@@ -394,17 +405,22 @@ brw_tcs_precompile(struct gl_context *ctx,
          _LinkedShaders[MESA_SHADER_TESS_CTRL]->info.TessCtrl.VerticesOut;
    }
 
-   key.tes_primitive_mode = shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL]
-      ? shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL]->info.TessEval.PrimitiveMode
-      : GL_TRIANGLES;
+   if (tes) {
+      key.tes_primitive_mode = tes->info.TessEval.PrimitiveMode;
+      key.quads_workaround = brw->gen < 9 &&
+                             tes->info.TessEval.PrimitiveMode == GL_QUADS &&
+                             tes->info.TessEval.Spacing == GL_EQUAL;
+   } else {
+      key.tes_primitive_mode = GL_TRIANGLES;
+   }
 
-   key.outputs_written = prog->OutputsWritten;
-   key.patch_outputs_written = prog->PatchOutputsWritten;
+   key.outputs_written = prog->nir->info->outputs_written;
+   key.patch_outputs_written = prog->nir->info->patch_outputs_written;
 
    success = brw_codegen_tcs_prog(brw, shader_prog, btcp, &key);
 
    brw->tcs.base.prog_offset = old_prog_offset;
-   brw->tcs.prog_data = old_prog_data;
+   brw->tcs.base.prog_data = old_prog_data;
 
    return success;
 }

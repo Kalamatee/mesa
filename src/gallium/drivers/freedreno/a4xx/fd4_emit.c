@@ -31,6 +31,7 @@
 #include "util/u_memory.h"
 #include "util/u_helpers.h"
 #include "util/u_format.h"
+#include "util/u_viewport.h"
 
 #include "freedreno_resource.h"
 #include "freedreno_query_hw.h"
@@ -53,7 +54,7 @@ static const enum adreno_state_block sb[] = {
  * prsc or dwords: buffer containing constant values
  * sizedwords:     size of const value buffer
  */
-void
+static void
 fd4_emit_const(struct fd_ringbuffer *ring, enum shader_t type,
 		uint32_t regid, uint32_t offset, uint32_t sizedwords,
 		const uint32_t *dwords, struct pipe_resource *prsc)
@@ -95,16 +96,16 @@ static void
 fd4_emit_const_bo(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
 		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
+	uint32_t anum = align(num, 4);
 	uint32_t i;
 
 	debug_assert((regid % 4) == 0);
-	debug_assert((num % 4) == 0);
 
-	OUT_PKT3(ring, CP_LOAD_STATE, 2 + num);
+	OUT_PKT3(ring, CP_LOAD_STATE, 2 + anum);
 	OUT_RING(ring, CP_LOAD_STATE_0_DST_OFF(regid/4) |
 			CP_LOAD_STATE_0_STATE_SRC(SS_DIRECT) |
 			CP_LOAD_STATE_0_STATE_BLOCK(sb[type]) |
-			CP_LOAD_STATE_0_NUM_UNIT(num/4));
+			CP_LOAD_STATE_0_NUM_UNIT(anum/4));
 	OUT_RING(ring, CP_LOAD_STATE_1_EXT_SRC_ADDR(0) |
 			CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS));
 
@@ -119,6 +120,9 @@ fd4_emit_const_bo(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
 			OUT_RING(ring, 0xbad00000 | (i << 16));
 		}
 	}
+
+	for (; i < anum; i++)
+		OUT_RING(ring, 0xffffffff);
 }
 
 static void
@@ -290,14 +294,14 @@ fd4_emit_gmem_restore_tex(struct fd_ringbuffer *ring, unsigned nr_bufs,
 	for (i = 0; i < nr_bufs; i++) {
 		if (bufs[i]) {
 			struct fd_resource *rsc = fd_resource(bufs[i]->texture);
-			enum pipe_format format = fd4_gmem_restore_format(bufs[i]->format);
+			enum pipe_format format = fd_gmem_restore_format(bufs[i]->format);
 
 			/* The restore blit_zs shader expects stencil in sampler 0,
 			 * and depth in sampler 1
 			 */
 			if (rsc->stencil && (i == 0)) {
 				rsc = rsc->stencil;
-				format = fd4_gmem_restore_format(rsc->base.b.format);
+				format = fd_gmem_restore_format(rsc->base.b.format);
 			}
 
 			/* note: PIPE_BUFFER disallowed for surfaces */
@@ -550,12 +554,14 @@ fd4_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 				A4XX_RB_STENCILREFMASK_BF_STENCILREF(sr->ref_value[1]));
 	}
 
-	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_PROG)) {
+	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_RASTERIZER | FD_DIRTY_PROG)) {
 		struct fd4_zsa_stateobj *zsa = fd4_zsa_stateobj(ctx->zsa);
 		bool fragz = fp->has_kill | fp->writes_pos;
+		bool clamp = !ctx->rasterizer->depth_clip;
 
 		OUT_PKT0(ring, REG_A4XX_RB_DEPTH_CONTROL, 1);
 		OUT_RING(ring, zsa->rb_depth_control |
+				COND(clamp, A4XX_RB_DEPTH_CONTROL_Z_CLAMP_ENABLE) |
 				COND(fragz, A4XX_RB_DEPTH_CONTROL_EARLY_Z_DISABLE) |
 				COND(fragz && fp->frag_coord, A4XX_RB_DEPTH_CONTROL_FORCE_FRAGZ_TO_FS));
 
@@ -640,6 +646,30 @@ fd4_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_RING(ring, A4XX_GRAS_CL_VPORT_YSCALE_0(ctx->viewport.scale[1]));
 		OUT_RING(ring, A4XX_GRAS_CL_VPORT_ZOFFSET_0(ctx->viewport.translate[2]));
 		OUT_RING(ring, A4XX_GRAS_CL_VPORT_ZSCALE_0(ctx->viewport.scale[2]));
+	}
+
+	if (dirty & (FD_DIRTY_VIEWPORT | FD_DIRTY_RASTERIZER | FD_DIRTY_FRAMEBUFFER)) {
+		float zmin, zmax;
+		int depth = 24;
+		if (ctx->batch->framebuffer.zsbuf) {
+			depth = util_format_get_component_bits(
+					pipe_surface_format(ctx->batch->framebuffer.zsbuf),
+					UTIL_FORMAT_COLORSPACE_ZS, 0);
+		}
+		util_viewport_zmin_zmax(&ctx->viewport, ctx->rasterizer->clip_halfz,
+								&zmin, &zmax);
+
+		OUT_PKT0(ring, REG_A4XX_RB_VPORT_Z_CLAMP(0), 2);
+		if (depth == 32) {
+			OUT_RING(ring, fui(zmin));
+			OUT_RING(ring, fui(zmax));
+		} else if (depth == 16) {
+			OUT_RING(ring, (uint32_t)(zmin * 0xffff));
+			OUT_RING(ring, (uint32_t)(zmax * 0xffff));
+		} else {
+			OUT_RING(ring, (uint32_t)(zmin * 0xffffff));
+			OUT_RING(ring, (uint32_t)(zmax * 0xffffff));
+		}
 	}
 
 	if (dirty & (FD_DIRTY_PROG | FD_DIRTY_FRAMEBUFFER)) {
@@ -847,10 +877,10 @@ fd4_emit_restore(struct fd_batch *batch, struct fd_ringbuffer *ring)
 
 	/* we don't use this yet.. probably best to disable.. */
 	OUT_PKT3(ring, CP_SET_DRAW_STATE, 2);
-	OUT_RING(ring, CP_SET_DRAW_STATE_0_COUNT(0) |
-			CP_SET_DRAW_STATE_0_DISABLE_ALL_GROUPS |
-			CP_SET_DRAW_STATE_0_GROUP_ID(0));
-	OUT_RING(ring, CP_SET_DRAW_STATE_1_ADDR(0));
+	OUT_RING(ring, CP_SET_DRAW_STATE__0_COUNT(0) |
+			CP_SET_DRAW_STATE__0_DISABLE_ALL_GROUPS |
+			CP_SET_DRAW_STATE__0_GROUP_ID(0));
+	OUT_RING(ring, CP_SET_DRAW_STATE__1_ADDR_LO(0));
 
 	OUT_PKT0(ring, REG_A4XX_SP_VS_PVT_MEM_PARAM, 2);
 	OUT_RING(ring, 0x08000001);                  /* SP_VS_PVT_MEM_PARAM */

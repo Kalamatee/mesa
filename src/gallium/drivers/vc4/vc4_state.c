@@ -409,7 +409,7 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
         struct pipe_framebuffer_state *cso = &vc4->framebuffer;
         unsigned i;
 
-        vc4_flush(pctx);
+        vc4->job = NULL;
 
         for (i = 0; i < framebuffer->nr_cbufs; i++)
                 pipe_surface_reference(&cso->cbufs[i], framebuffer->cbufs[i]);
@@ -422,23 +422,6 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
 
         cso->width = framebuffer->width;
         cso->height = framebuffer->height;
-
-        /* If we're binding to uninitialized buffers, no need to load their
-         * contents before drawing..
-         */
-        if (cso->cbufs[0]) {
-                struct vc4_resource *rsc =
-                        vc4_resource(cso->cbufs[0]->texture);
-                if (!rsc->writes)
-                        vc4->cleared |= PIPE_CLEAR_COLOR0;
-        }
-
-        if (cso->zsbuf) {
-                struct vc4_resource *rsc =
-                        vc4_resource(cso->zsbuf->texture);
-                if (!rsc->writes)
-                        vc4->cleared |= PIPE_CLEAR_DEPTH | PIPE_CLEAR_STENCIL;
-        }
 
         /* Nonzero texture mipmap levels are laid out as if they were in
          * power-of-two-sized spaces.  The renderbuffer config infers its
@@ -460,27 +443,11 @@ vc4_set_framebuffer_state(struct pipe_context *pctx,
                          rsc->cpp);
         }
 
-        vc4->msaa = false;
-        if (cso->cbufs[0])
-                vc4->msaa = cso->cbufs[0]->texture->nr_samples > 1;
-        else if (cso->zsbuf)
-                vc4->msaa = cso->zsbuf->texture->nr_samples > 1;
-
-        if (vc4->msaa) {
-                vc4->tile_width = 32;
-                vc4->tile_height = 32;
-        } else {
-                vc4->tile_width = 64;
-                vc4->tile_height = 64;
-        }
-        vc4->draw_tiles_x = DIV_ROUND_UP(cso->width, vc4->tile_width);
-        vc4->draw_tiles_y = DIV_ROUND_UP(cso->height, vc4->tile_height);
-
         vc4->dirty |= VC4_DIRTY_FRAMEBUFFER;
 }
 
 static struct vc4_texture_stateobj *
-vc4_get_stage_tex(struct vc4_context *vc4, unsigned shader)
+vc4_get_stage_tex(struct vc4_context *vc4, enum pipe_shader_type shader)
 {
         switch (shader) {
         case PIPE_SHADER_FRAGMENT:
@@ -559,7 +526,7 @@ vc4_create_sampler_state(struct pipe_context *pctx,
 
 static void
 vc4_sampler_states_bind(struct pipe_context *pctx,
-                        unsigned shader, unsigned start,
+                        enum pipe_shader_type shader, unsigned start,
                         unsigned nr, void **hwcso)
 {
         struct vc4_context *vc4 = vc4_context(pctx);
@@ -648,6 +615,9 @@ vc4_create_sampler_view(struct pipe_context *pctx, struct pipe_resource *prsc,
                  VC4_SET_FIELD(prsc->height0 & 2047, VC4_TEX_P1_HEIGHT) |
                  VC4_SET_FIELD(prsc->width0 & 2047, VC4_TEX_P1_WIDTH));
 
+        if (prsc->format == PIPE_FORMAT_ETC1_RGB8)
+                so->texture_p1 |= VC4_TEX_P1_ETCFLIP_MASK;
+
         return &so->base;
 }
 
@@ -660,7 +630,8 @@ vc4_sampler_view_destroy(struct pipe_context *pctx,
 }
 
 static void
-vc4_set_sampler_views(struct pipe_context *pctx, unsigned shader,
+vc4_set_sampler_views(struct pipe_context *pctx,
+                      enum pipe_shader_type shader,
                       unsigned start, unsigned nr,
                       struct pipe_sampler_view **views)
 {

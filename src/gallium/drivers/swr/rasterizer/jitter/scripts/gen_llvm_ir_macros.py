@@ -97,6 +97,7 @@ intrinsics = [
         ["BEXTR_32", "x86_bmi_bextr_32", ["src", "control"]],
         ["VMASKLOADD", "x86_avx2_maskload_d_256", ["src", "mask"]],
         ["VMASKMOVPS", "x86_avx_maskload_ps_256", ["src", "mask"]],
+        ["VMASKSTOREPS", "x86_avx_maskstore_ps_256", ["src", "mask", "val"]],
         ["VPSHUFB", "x86_avx2_pshuf_b", ["a", "b"]],
         ["VPERMD", "x86_avx2_permd", ["a", "idx"]],
         ["VPERMPS", "x86_avx2_permps", ["idx", "a"]],
@@ -258,7 +259,11 @@ def generate_gen_cpp(functions, output_file):
 
     output_lines += [
         '#include \"builder.h\"',
-        ''
+        '',
+        'namespace SwrJit',
+        '{',
+        '    using namespace llvm;',
+        '',
     ]
 
     for func in functions:
@@ -276,14 +281,14 @@ def generate_gen_cpp(functions, output_file):
             first_arg = False
 
         output_lines += [
-            '//////////////////////////////////////////////////////////////////////////',
-            '%sBuilder::%s(%s)' % (func['return'], name, func['args_nodefs']),
-            '{',
-            '   return IRB()->%s(%s);' % (func['name'], func_args),
-            '}',
+            '    //////////////////////////////////////////////////////////////////////////',
+            '    %sBuilder::%s(%s)' % (func['return'], name, func['args_nodefs']),
+            '    {',
+            '       return IRB()->%s(%s);' % (func['name'], func_args),
+            '    }',
             '',
         ]
-
+    output_lines.append('}')
     output_file.write('\n'.join(output_lines) + '\n')
 
 """
@@ -325,7 +330,11 @@ def generate_x86_cpp(output_file):
 
     output_lines += [
         '#include \"builder.h\"',
-        ''
+        '',
+        'namespace SwrJit',
+        '{',
+        '    using namespace llvm;',
+        '',
     ]
 
     for inst in intrinsics:
@@ -343,10 +352,10 @@ def generate_x86_cpp(output_file):
             first = False
 
         output_lines += [
-            '//////////////////////////////////////////////////////////////////////////',
-            'Value *Builder::%s(%s)' % (inst[0], args),
-            '{',
-            '    Function *func = Intrinsic::getDeclaration(JM()->mpCurrentModule, Intrinsic::%s);' % inst[1],
+            '    //////////////////////////////////////////////////////////////////////////',
+            '    Value *Builder::%s(%s)' % (inst[0], args),
+            '    {',
+            '        Function *func = Intrinsic::getDeclaration(JM()->mpCurrentModule, Intrinsic::%s);' % inst[1],
         ]
         if inst[0] == "VPERMD":
             rev_args = ''
@@ -359,21 +368,22 @@ def generate_x86_cpp(output_file):
 
             output_lines += [
                 '#if (HAVE_LLVM == 0x306) && (LLVM_VERSION_PATCH == 0)',
-                '    return CALL(func, std::initializer_list<Value*>{%s});' % rev_args,
+                '        return CALL(func, std::initializer_list<Value*>{%s});' % rev_args,
                 '#else',
             ]
         output_lines += [
-            '    return CALL(func, std::initializer_list<Value*>{%s});' % pass_args,
+            '        return CALL(func, std::initializer_list<Value*>{%s});' % pass_args,
         ]
         if inst[0] == "VPERMD":
             output_lines += [
                 '#endif',
             ]
         output_lines += [
-            '}',
+            '    }',
             '',
         ]
 
+    output_lines.append('}')
     output_file.write('\n'.join(output_lines) + '\n')
 
 """

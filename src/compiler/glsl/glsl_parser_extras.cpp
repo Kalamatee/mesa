@@ -28,6 +28,7 @@
 #include "main/core.h" /* for struct gl_context */
 #include "main/context.h"
 #include "main/debug_output.h"
+#include "main/formats.h"
 #include "main/shaderobj.h"
 #include "util/u_atomic.h" /* for p_atomic_cmpxchg */
 #include "util/ralloc.h"
@@ -66,6 +67,8 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->scanner = NULL;
    this->translation_unit.make_empty();
    this->symbols = new(mem_ctx) glsl_symbol_table;
+
+   this->linalloc = linear_alloc_parent(this, 0);
 
    this->info_log = ralloc_strdup(mem_ctx, "");
    this->error = false;
@@ -273,12 +276,10 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->default_uniform_qualifier = new(this) ast_type_qualifier();
    this->default_uniform_qualifier->flags.q.shared = 1;
    this->default_uniform_qualifier->flags.q.column_major = 1;
-   this->default_uniform_qualifier->is_default_qualifier = true;
 
    this->default_shader_storage_qualifier = new(this) ast_type_qualifier();
    this->default_shader_storage_qualifier->flags.q.shared = 1;
    this->default_shader_storage_qualifier->flags.q.column_major = 1;
-   this->default_shader_storage_qualifier->is_default_qualifier = true;
 
    this->fs_uses_gl_fragcoord = false;
    this->fs_redeclares_gl_fragcoord = false;
@@ -292,10 +293,15 @@ _mesa_glsl_parse_state::_mesa_glsl_parse_state(struct gl_context *_ctx,
    this->in_qualifier = new(this) ast_type_qualifier();
    this->out_qualifier = new(this) ast_type_qualifier();
    this->fs_early_fragment_tests = false;
+   this->fs_inner_coverage = false;
+   this->fs_post_depth_coverage = false;
+   this->fs_blend_support = 0;
    memset(this->atomic_counter_offsets, 0,
           sizeof(this->atomic_counter_offsets));
    this->allow_extension_directive_midshader =
       ctx->Const.AllowGLSLExtensionDirectiveMidShader;
+
+   this->cs_input_local_size_variable_specified = false;
 }
 
 /**
@@ -522,6 +528,11 @@ struct _mesa_glsl_extension {
    const char *name;
 
    /**
+    * Whether this extension is a part of AEP
+    */
+   bool aep;
+
+   /**
     * Predicate that checks whether the relevant extension is available for
     * this context.
     */
@@ -564,9 +575,14 @@ has_##name_str(const struct gl_context *ctx, gl_api api, uint8_t version) \
 #undef EXT
 
 #define EXT(NAME)                                           \
-   { "GL_" #NAME, has_##NAME,                         \
-         &_mesa_glsl_parse_state::NAME##_enable,            \
-         &_mesa_glsl_parse_state::NAME##_warn }
+   { "GL_" #NAME, false, has_##NAME,                        \
+     &_mesa_glsl_parse_state::NAME##_enable,                \
+     &_mesa_glsl_parse_state::NAME##_warn }
+
+#define EXT_AEP(NAME)                                       \
+   { "GL_" #NAME, true, has_##NAME,                         \
+     &_mesa_glsl_parse_state::NAME##_enable,                \
+     &_mesa_glsl_parse_state::NAME##_warn }
 
 /**
  * Table of extensions that can be enabled/disabled within a shader,
@@ -579,6 +595,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(ARB_ES3_2_compatibility),
    EXT(ARB_arrays_of_arrays),
    EXT(ARB_compute_shader),
+   EXT(ARB_compute_variable_group_size),
    EXT(ARB_conservative_depth),
    EXT(ARB_cull_distance),
    EXT(ARB_derivative_control),
@@ -591,6 +608,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(ARB_fragment_layer_viewport),
    EXT(ARB_gpu_shader5),
    EXT(ARB_gpu_shader_fp64),
+   EXT(ARB_post_depth_coverage),
    EXT(ARB_sample_shading),
    EXT(ARB_separate_shader_objects),
    EXT(ARB_shader_atomic_counter_ops),
@@ -607,6 +625,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(ARB_shader_subroutine),
    EXT(ARB_shader_texture_image_samples),
    EXT(ARB_shader_texture_lod),
+   EXT(ARB_shader_viewport_layer_array),
    EXT(ARB_shading_language_420pack),
    EXT(ARB_shading_language_packing),
    EXT(ARB_tessellation_shader),
@@ -622,6 +641,7 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
 
    /* KHR extensions go here, sorted alphabetically.
     */
+   EXT_AEP(KHR_blend_equation_advanced),
 
    /* OES extensions go here, sorted alphabetically.
     */
@@ -629,16 +649,19 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(OES_geometry_point_size),
    EXT(OES_geometry_shader),
    EXT(OES_gpu_shader5),
-   EXT(OES_sample_variables),
-   EXT(OES_shader_image_atomic),
+   EXT(OES_primitive_bounding_box),
+   EXT_AEP(OES_sample_variables),
+   EXT_AEP(OES_shader_image_atomic),
    EXT(OES_shader_io_blocks),
-   EXT(OES_shader_multisample_interpolation),
+   EXT_AEP(OES_shader_multisample_interpolation),
    EXT(OES_standard_derivatives),
    EXT(OES_tessellation_point_size),
    EXT(OES_tessellation_shader),
    EXT(OES_texture_3D),
    EXT(OES_texture_buffer),
-   EXT(OES_texture_storage_multisample_2d_array),
+   EXT(OES_texture_cube_map_array),
+   EXT_AEP(OES_texture_storage_multisample_2d_array),
+   EXT(OES_viewport_array),
 
    /* All other extensions go here, sorted alphabetically.
     */
@@ -647,19 +670,27 @@ static const _mesa_glsl_extension _mesa_glsl_supported_extensions[] = {
    EXT(AMD_shader_trinary_minmax),
    EXT(AMD_vertex_shader_layer),
    EXT(AMD_vertex_shader_viewport_index),
+   EXT(ANDROID_extension_pack_es31a),
    EXT(EXT_blend_func_extended),
    EXT(EXT_draw_buffers),
    EXT(EXT_clip_cull_distance),
-   EXT(EXT_gpu_shader5),
+   EXT(EXT_geometry_point_size),
+   EXT_AEP(EXT_geometry_shader),
+   EXT_AEP(EXT_gpu_shader5),
+   EXT_AEP(EXT_primitive_bounding_box),
    EXT(EXT_separate_shader_objects),
+   EXT(EXT_shader_framebuffer_fetch),
    EXT(EXT_shader_integer_mix),
-   EXT(EXT_shader_io_blocks),
+   EXT_AEP(EXT_shader_io_blocks),
    EXT(EXT_shader_samples_identical),
    EXT(EXT_tessellation_point_size),
-   EXT(EXT_tessellation_shader),
+   EXT_AEP(EXT_tessellation_shader),
    EXT(EXT_texture_array),
-   EXT(EXT_texture_buffer),
+   EXT_AEP(EXT_texture_buffer),
+   EXT_AEP(EXT_texture_cube_map_array),
+   EXT(INTEL_conservative_rasterization),
    EXT(MESA_shader_integer_functions),
+   EXT(NV_image_formats),
 };
 
 #undef EXT
@@ -703,7 +734,6 @@ static const _mesa_glsl_extension *find_extension(const char *name)
    }
    return NULL;
 }
-
 
 bool
 _mesa_glsl_process_extension(const char *name, YYLTYPE *name_locp,
@@ -759,6 +789,22 @@ _mesa_glsl_process_extension(const char *name, YYLTYPE *name_locp,
       const _mesa_glsl_extension *extension = find_extension(name);
       if (extension && extension->compatible_with_state(state, api, gl_version)) {
          extension->set_flags(state, behavior);
+         if (extension->available_pred == has_ANDROID_extension_pack_es31a) {
+            for (unsigned i = 0;
+                 i < ARRAY_SIZE(_mesa_glsl_supported_extensions); ++i) {
+               const _mesa_glsl_extension *extension =
+                  &_mesa_glsl_supported_extensions[i];
+
+               if (!extension->aep)
+                  continue;
+               /* AEP should not be enabled if all of the sub-extensions can't
+                * also be enabled. This is not the proper layer to do such
+                * error-checking though.
+                */
+               assert(extension->compatible_with_state(state, api, gl_version));
+               extension->set_flags(state, behavior);
+            }
+         }
       } else {
          static const char fmt[] = "extension `%s' unsupported in %s shader";
 
@@ -950,6 +996,7 @@ _mesa_ast_process_interface_block(YYLTYPE *locp,
    temp_type_qualifier.flags.q.in = true;
    temp_type_qualifier.flags.q.out = true;
    temp_type_qualifier.flags.q.buffer = true;
+   temp_type_qualifier.flags.q.patch = true;
    interface_type_mask = temp_type_qualifier.flags.i;
 
    /* Get the block's interface qualifier.  The interface_qualifier
@@ -958,22 +1005,22 @@ _mesa_ast_process_interface_block(YYLTYPE *locp,
     */
    uint64_t block_interface_qualifier = q.flags.i;
 
-   block->layout.flags.i |= block_interface_qualifier;
+   block->default_layout.flags.i |= block_interface_qualifier;
 
    if (state->stage == MESA_SHADER_GEOMETRY &&
        state->has_explicit_attrib_stream() &&
-       block->layout.flags.q.out) {
+       block->default_layout.flags.q.out) {
       /* Assign global layout's stream value. */
-      block->layout.flags.q.stream = 1;
-      block->layout.flags.q.explicit_stream = 0;
-      block->layout.stream = state->out_qualifier->stream;
+      block->default_layout.flags.q.stream = 1;
+      block->default_layout.flags.q.explicit_stream = 0;
+      block->default_layout.stream = state->out_qualifier->stream;
    }
 
-   if (state->has_enhanced_layouts() && block->layout.flags.q.out) {
+   if (state->has_enhanced_layouts() && block->default_layout.flags.q.out) {
       /* Assign global layout's xfb_buffer value. */
-      block->layout.flags.q.xfb_buffer = 1;
-      block->layout.flags.q.explicit_xfb_buffer = 0;
-      block->layout.xfb_buffer = state->out_qualifier->xfb_buffer;
+      block->default_layout.flags.q.xfb_buffer = 1;
+      block->default_layout.flags.q.explicit_xfb_buffer = 0;
+      block->default_layout.xfb_buffer = state->out_qualifier->xfb_buffer;
    }
 
    foreach_list_typed (ast_declarator_list, member, link, &block->declarations) {
@@ -1592,7 +1639,7 @@ ast_struct_specifier::print(void) const
 }
 
 
-ast_struct_specifier::ast_struct_specifier(const char *identifier,
+ast_struct_specifier::ast_struct_specifier(void *lin_ctx, const char *identifier,
 					   ast_declarator_list *declarator_list)
 {
    if (identifier == NULL) {
@@ -1604,7 +1651,7 @@ ast_struct_specifier::ast_struct_specifier(const char *identifier,
       count = anon_count++;
       mtx_unlock(&mutex);
 
-      identifier = ralloc_asprintf(this, "#anon_struct_%04x", count);
+      identifier = linear_asprintf(lin_ctx, "#anon_struct_%04x", count);
    }
    name = identifier;
    this->declarations.push_degenerate_list_at_head(&declarator_list->link);
@@ -1637,6 +1684,7 @@ set_shader_inout_layout(struct gl_shader *shader,
    if (shader->Stage != MESA_SHADER_COMPUTE) {
       /* Should have been prevented by the parser. */
       assert(!state->cs_input_local_size_specified);
+      assert(!state->cs_input_local_size_variable_specified);
    }
 
    if (shader->Stage != MESA_SHADER_FRAGMENT) {
@@ -1646,6 +1694,8 @@ set_shader_inout_layout(struct gl_shader *shader,
       assert(!state->fs_pixel_center_integer);
       assert(!state->fs_origin_upper_left);
       assert(!state->fs_early_fragment_tests);
+      assert(!state->fs_inner_coverage);
+      assert(!state->fs_post_depth_coverage);
    }
 
    for (unsigned i = 0; i < MAX_FEEDBACK_BUFFERS; i++) {
@@ -1700,7 +1750,7 @@ set_shader_inout_layout(struct gl_shader *shader,
          unsigned qual_max_vertices;
          if (state->out_qualifier->max_vertices->
                process_qualifier_constant(state, "max_vertices",
-                                          &qual_max_vertices, true, true)) {
+                                          &qual_max_vertices, true)) {
 
             if (qual_max_vertices > state->Const.MaxGeometryOutputVertices) {
                YYLTYPE loc = state->out_qualifier->max_vertices->get_location();
@@ -1752,6 +1802,9 @@ set_shader_inout_layout(struct gl_shader *shader,
          for (int i = 0; i < 3; i++)
             shader->info.Comp.LocalSize[i] = 0;
       }
+
+      shader->info.Comp.LocalSizeVariable =
+         state->cs_input_local_size_variable_specified;
       break;
 
    case MESA_SHADER_FRAGMENT:
@@ -1763,6 +1816,9 @@ set_shader_inout_layout(struct gl_shader *shader,
       shader->info.ARB_fragment_coord_conventions_enable =
          state->ARB_fragment_coord_conventions_enable;
       shader->info.EarlyFragmentTests = state->fs_early_fragment_tests;
+      shader->info.InnerCoverage = state->fs_inner_coverage;
+      shader->info.PostDepthCoverage = state->fs_post_depth_coverage;
+      shader->info.BlendSupport = state->fs_blend_support;
       break;
 
    default:
@@ -1831,6 +1887,18 @@ add_builtin_defines(struct _mesa_glsl_parse_state *state,
    }
 }
 
+/* Implements parsing checks that we can't do during parsing */
+static void
+do_late_parsing_checks(struct _mesa_glsl_parse_state *state)
+{
+   if (state->stage == MESA_SHADER_COMPUTE && !state->has_compute_shader()) {
+      YYLTYPE loc;
+      memset(&loc, 0, sizeof(loc));
+      _mesa_glsl_error(&loc, state, "Compute shaders require "
+                       "GLSL 4.30 or GLSL ES 3.10");
+   }
+}
+
 void
 _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
                           bool dump_ast, bool dump_hir)
@@ -1850,6 +1918,7 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
      _mesa_glsl_lexer_ctor(state, source);
      _mesa_glsl_parse(state);
      _mesa_glsl_lexer_dtor(state);
+     do_late_parsing_checks(state);
    }
 
    if (dump_ast) {
@@ -1921,7 +1990,6 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
    shader->InfoLog = state->info_log;
    shader->Version = state->language_version;
    shader->IsES = state->es_shader;
-   shader->info.uses_builtin_functions = state->uses_builtin_functions;
 
    /* Retain any live IR, but trash the rest. */
    reparent_ir(shader->ir, shader->ir);
@@ -1973,10 +2041,11 @@ _mesa_glsl_compile_shader(struct gl_context *ctx, struct gl_shader *shader,
  *                                    of unused uniforms from being removed.
  *                                    The setting of this flag only matters if
  *                                    \c linked is \c true.
- * \param max_unroll_iterations       Maximum number of loop iterations to be
- *                                    unrolled.  Setting to 0 disables loop
- *                                    unrolling.
  * \param options                     The driver's preferred shader options.
+ * \param native_integers             Selects optimizations that depend on the
+ *                                    implementations supporting integers
+ *                                    natively (as opposed to supporting
+ *                                    integers in floating point registers).
  */
 bool
 do_common_optimization(exec_list *ir, bool linked,
@@ -2046,12 +2115,14 @@ do_common_optimization(exec_list *ir, bool linked,
    OPT(optimize_split_arrays, ir, linked);
    OPT(optimize_redundant_jumps, ir);
 
-   loop_state *ls = analyze_loop_variables(ir);
-   if (ls->loop_found) {
-      OPT(set_loop_controls, ir, ls);
-      OPT(unroll_loops, ir, ls, options);
+   if (options->MaxUnrollIterations) {
+      loop_state *ls = analyze_loop_variables(ir);
+      if (ls->loop_found) {
+         OPT(set_loop_controls, ir, ls);
+         OPT(unroll_loops, ir, ls, options);
+      }
+      delete ls;
    }
-   delete ls;
 
 #undef OPT
 

@@ -39,7 +39,7 @@
 #include <xf86drm.h>
 #include <stdio.h>
 #include <sys/stat.h>
-#include "amdgpu_id.h"
+#include "amd/common/amdgpu_id.h"
 
 #define CIK_TILE_MODE_COLOR_2D			14
 
@@ -58,6 +58,10 @@
 #define     CIK__PIPE_CONFIG__ADDR_SURF_P8_32x64_32x32   14
 #define     CIK__PIPE_CONFIG__ADDR_SURF_P16_32X32_8X16   16
 #define     CIK__PIPE_CONFIG__ADDR_SURF_P16_32X32_16X16  17
+
+#ifndef AMDGPU_INFO_NUM_EVICTIONS
+#define AMDGPU_INFO_NUM_EVICTIONS		0x18
+#endif
 
 static struct util_hash_table *dev_tab = NULL;
 pipe_static_mutex(dev_tab_mutex);
@@ -211,6 +215,8 @@ static bool do_winsys_init(struct amdgpu_winsys *ws, int fd)
       ws->info.chip_class = VI;
    else if (ws->info.family >= CHIP_BONAIRE)
       ws->info.chip_class = CIK;
+   else if (ws->info.family >= CHIP_TAHITI)
+      ws->info.chip_class = SI;
    else {
       fprintf(stderr, "amdgpu: Unknown family.\n");
       goto fail;
@@ -226,6 +232,26 @@ static bool do_winsys_init(struct amdgpu_winsys *ws, int fd)
 
    /* family and rev_id are for addrlib */
    switch (ws->info.family) {
+   case CHIP_TAHITI:
+      ws->family = FAMILY_SI;
+      ws->rev_id = SI_TAHITI_P_A0;
+      break;
+   case CHIP_PITCAIRN:
+      ws->family = FAMILY_SI;
+      ws->rev_id = SI_PITCAIRN_PM_A0;
+      break;
+   case CHIP_VERDE:
+      ws->family = FAMILY_SI;
+      ws->rev_id = SI_CAPEVERDE_M_A0;
+      break;
+   case CHIP_OLAND:
+      ws->family = FAMILY_SI;
+      ws->rev_id = SI_OLAND_M_A0;
+      break;
+   case CHIP_HAINAN:
+      ws->family = FAMILY_SI;
+      ws->rev_id = SI_HAINAN_V_A0;
+      break;
    case CHIP_BONAIRE:
       ws->family = FAMILY_CI;
       ws->rev_id = CI_BONAIRE_M_A0;
@@ -274,6 +300,10 @@ static bool do_winsys_init(struct amdgpu_winsys *ws, int fd)
       ws->family = FAMILY_VI;
       ws->rev_id = VI_POLARIS11_M_A0;
       break;
+   case CHIP_POLARIS12:
+      ws->family = FAMILY_VI;
+      ws->rev_id = VI_POLARIS12_V_A0;
+      break;
    default:
       fprintf(stderr, "amdgpu: Unknown family.\n");
       goto fail;
@@ -292,8 +322,8 @@ static bool do_winsys_init(struct amdgpu_winsys *ws, int fd)
    /* Set hardware information. */
    ws->info.gart_size = gtt.heap_size;
    ws->info.vram_size = vram.heap_size;
-   /* TODO: the kernel reports vram/gart.max_allocation == 251 MB (bug?) */
-   ws->info.max_alloc_size = MAX2(ws->info.vram_size, ws->info.gart_size);
+   /* The kernel can split large buffers, so we can do large allocations. */
+   ws->info.max_alloc_size = MAX2(ws->info.vram_size, ws->info.gart_size) * 0.9;
    /* convert the shader clock from KHz to MHz */
    ws->info.max_shader_clock = ws->amdinfo.max_engine_clk / 1000;
    ws->info.max_se = ws->amdinfo.num_shader_engines;
@@ -327,6 +357,9 @@ static bool do_winsys_init(struct amdgpu_winsys *ws, int fd)
 
    ws->info.gart_page_size = alignment_info.size_remote;
 
+   if (ws->info.chip_class == SI)
+      ws->info.gfx_ib_pad_with_type2 = TRUE;
+
    ws->check_vm = strstr(debug_get_option("R600_DEBUG", ""), "check_vm") != NULL;
 
    return true;
@@ -339,6 +372,12 @@ fail:
    return false;
 }
 
+static void do_winsys_deinit(struct amdgpu_winsys *ws)
+{
+   AddrDestroy(ws->addrlib);
+   amdgpu_device_deinitialize(ws->dev);
+}
+
 static void amdgpu_winsys_destroy(struct radeon_winsys *rws)
 {
    struct amdgpu_winsys *ws = (struct amdgpu_winsys*)rws;
@@ -347,10 +386,10 @@ static void amdgpu_winsys_destroy(struct radeon_winsys *rws)
       util_queue_destroy(&ws->cs_queue);
 
    pipe_mutex_destroy(ws->bo_fence_lock);
+   pb_slabs_deinit(&ws->bo_slabs);
    pb_cache_deinit(&ws->bo_cache);
    pipe_mutex_destroy(ws->global_bo_list_lock);
-   AddrDestroy(ws->addrlib);
-   amdgpu_device_deinitialize(ws->dev);
+   do_winsys_deinit(ws);
    FREE(rws);
 }
 
@@ -379,6 +418,10 @@ static uint64_t amdgpu_query_value(struct radeon_winsys *rws,
       return ws->allocated_vram;
    case RADEON_REQUESTED_GTT_MEMORY:
       return ws->allocated_gtt;
+   case RADEON_MAPPED_VRAM:
+      return ws->mapped_vram;
+   case RADEON_MAPPED_GTT:
+      return ws->mapped_gtt;
    case RADEON_BUFFER_WAIT_TIME_NS:
       return ws->buffer_wait_time;
    case RADEON_TIMESTAMP:
@@ -388,6 +431,9 @@ static uint64_t amdgpu_query_value(struct radeon_winsys *rws,
       return ws->num_cs_flushes;
    case RADEON_NUM_BYTES_MOVED:
       amdgpu_query_info(ws->dev, AMDGPU_INFO_NUM_BYTES_MOVED, 8, &retval);
+      return retval;
+   case RADEON_NUM_EVICTIONS:
+      amdgpu_query_info(ws->dev, AMDGPU_INFO_NUM_EVICTIONS, 8, &retval);
       return retval;
    case RADEON_VRAM_USAGE:
       amdgpu_query_heap_info(ws->dev, AMDGPU_GEM_DOMAIN_VRAM, 0, &heap);
@@ -491,22 +537,31 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
 
    /* Create a new winsys. */
    ws = CALLOC_STRUCT(amdgpu_winsys);
-   if (!ws) {
-      pipe_mutex_unlock(dev_tab_mutex);
-      return NULL;
-   }
+   if (!ws)
+      goto fail;
 
    ws->dev = dev;
    ws->info.drm_major = drm_major;
    ws->info.drm_minor = drm_minor;
 
    if (!do_winsys_init(ws, fd))
-      goto fail;
+      goto fail_alloc;
 
    /* Create managers. */
    pb_cache_init(&ws->bo_cache, 500000, ws->check_vm ? 1.0f : 2.0f, 0,
                  (ws->info.vram_size + ws->info.gart_size) / 8,
                  amdgpu_bo_destroy, amdgpu_bo_can_reclaim);
+
+   if (!pb_slabs_init(&ws->bo_slabs,
+                      AMDGPU_SLAB_MIN_SIZE_LOG2, AMDGPU_SLAB_MAX_SIZE_LOG2,
+                      12, /* number of heaps (domain/flags combinations) */
+                      ws,
+                      amdgpu_bo_can_reclaim_slab,
+                      amdgpu_bo_slab_alloc,
+                      amdgpu_bo_slab_free))
+      goto fail_cache;
+
+   ws->info.min_alloc_size = 1 << AMDGPU_SLAB_MIN_SIZE_LOG2;
 
    /* init reference */
    pipe_reference_init(&ws->reference, 1);
@@ -551,9 +606,12 @@ amdgpu_winsys_create(int fd, radeon_screen_create_t screen_create)
 
    return &ws->base;
 
+fail_cache:
+   pb_cache_deinit(&ws->bo_cache);
+   do_winsys_deinit(ws);
+fail_alloc:
+   FREE(ws);
 fail:
    pipe_mutex_unlock(dev_tab_mutex);
-   pb_cache_deinit(&ws->bo_cache);
-   FREE(ws);
    return NULL;
 }

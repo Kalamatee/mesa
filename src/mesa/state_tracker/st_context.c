@@ -70,6 +70,7 @@
 #include "st_gen_mipmap.h"
 #include "st_pbo.h"
 #include "st_program.h"
+#include "st_sampler_view.h"
 #include "st_vdpau.h"
 #include "st_texture.h"
 #include "pipe/p_context.h"
@@ -123,6 +124,41 @@ st_query_memory_info(struct gl_context *ctx, struct gl_memory_info *out)
 }
 
 
+uint64_t
+st_get_active_states(struct gl_context *ctx)
+{
+   struct st_vertex_program *vp =
+      st_vertex_program(ctx->VertexProgram._Current);
+   struct st_tessctrl_program *tcp =
+      st_tessctrl_program(ctx->TessCtrlProgram._Current);
+   struct st_tesseval_program *tep =
+      st_tesseval_program(ctx->TessEvalProgram._Current);
+   struct st_geometry_program *gp =
+      st_geometry_program(ctx->GeometryProgram._Current);
+   struct st_fragment_program *fp =
+      st_fragment_program(ctx->FragmentProgram._Current);
+   struct st_compute_program *cp =
+      st_compute_program(ctx->ComputeProgram._Current);
+   uint64_t active_shader_states = 0;
+
+   if (vp)
+      active_shader_states |= vp->affected_states;
+   if (tcp)
+      active_shader_states |= tcp->affected_states;
+   if (tep)
+      active_shader_states |= tep->affected_states;
+   if (gp)
+      active_shader_states |= gp->affected_states;
+   if (fp)
+      active_shader_states |= fp->affected_states;
+   if (cp)
+      active_shader_states |= cp->affected_states;
+
+   /* Mark non-shader-resource shader states as "always active". */
+   return active_shader_states | ~ST_ALL_SHADER_RESOURCES;
+}
+
+
 /**
  * Called via ctx->Driver.UpdateState()
  */
@@ -131,7 +167,8 @@ void st_invalidate_state(struct gl_context * ctx, GLbitfield new_state)
    struct st_context *st = st_context(ctx);
 
    if (new_state & _NEW_BUFFERS) {
-      st->dirty |= ST_NEW_DSA |
+      st->dirty |= ST_NEW_BLEND |
+                   ST_NEW_DSA |
                    ST_NEW_FB_STATE |
                    ST_NEW_SAMPLE_MASK |
                    ST_NEW_SAMPLE_SHADING |
@@ -193,7 +230,8 @@ void st_invalidate_state(struct gl_context * ctx, GLbitfield new_state)
    }
 
    if (new_state & (_NEW_PROJECTION |
-                    _NEW_TRANSFORM))
+                    _NEW_TRANSFORM) &&
+       st_user_clip_planes_enabled(ctx))
       st->dirty |= ST_NEW_CLIP_STATE;
 
    if (new_state & _NEW_COLOR)
@@ -203,16 +241,8 @@ void st_invalidate_state(struct gl_context * ctx, GLbitfield new_state)
    if (new_state & _NEW_PIXEL)
       st->dirty |= ST_NEW_PIXEL_TRANSFER;
 
-   if (new_state & _NEW_TEXTURE)
-      st->dirty |= ST_NEW_SAMPLER_VIEWS |
-                   ST_NEW_SAMPLERS |
-                   ST_NEW_IMAGE_UNITS;
-
    if (new_state & _NEW_CURRENT_ATTRIB)
       st->dirty |= ST_NEW_VERTEX_ARRAYS;
-
-   if (new_state & _NEW_PROGRAM_CONSTANTS)
-      st->dirty |= ST_NEW_CONSTANTS;
 
    /* Update the vertex shader if ctx->Light._ClampVertexColor was changed. */
    if (st->clamp_vert_color_in_shader && (new_state & _NEW_LIGHT))
@@ -222,7 +252,23 @@ void st_invalidate_state(struct gl_context * ctx, GLbitfield new_state)
    if (new_state & _NEW_PROGRAM) {
       st->gfx_shaders_may_be_dirty = true;
       st->compute_shader_may_be_dirty = true;
+      /* This will mask out unused shader resources. */
+      st->active_states = st_get_active_states(ctx);
    }
+
+   if (new_state & _NEW_TEXTURE) {
+      st->dirty |= st->active_states &
+                   (ST_NEW_SAMPLER_VIEWS |
+                    ST_NEW_SAMPLERS |
+                    ST_NEW_IMAGE_UNITS);
+      if (ctx->FragmentProgram._Current &&
+          ctx->FragmentProgram._Current->ExternalSamplersUsed) {
+         st->dirty |= ST_NEW_FS_STATE;
+      }
+   }
+
+   if (new_state & _NEW_PROGRAM_CONSTANTS)
+      st->dirty |= st->active_states & ST_NEW_CONSTANTS;
 
    /* This is the only core Mesa module we depend upon.
     * No longer use swrast, swsetup, tnl.
@@ -298,11 +344,11 @@ st_create_context_priv( struct gl_context *ctx, struct pipe_context *pipe,
    /* Create upload manager for vertex data for glBitmap, glDrawPixels,
     * glClear, etc.
     */
-   st->uploader = u_upload_create(st->pipe, 65536, PIPE_BIND_VERTEX_BUFFER,
+   st->uploader = u_upload_create(pipe, 65536, PIPE_BIND_VERTEX_BUFFER,
                                   PIPE_USAGE_STREAM);
 
    if (!screen->get_param(screen, PIPE_CAP_USER_INDEX_BUFFERS)) {
-      st->indexbuf_uploader = u_upload_create(st->pipe, 128 * 1024,
+      st->indexbuf_uploader = u_upload_create(pipe, 128 * 1024,
                                               PIPE_BIND_INDEX_BUFFER,
                                               PIPE_USAGE_STREAM);
    }
@@ -394,8 +440,8 @@ st_create_context_priv( struct gl_context *ctx, struct pipe_context *pipe,
       screen->get_param(screen, PIPE_CAP_MULTI_DRAW_INDIRECT);
 
    /* GL limits and extensions */
-   st_init_limits(st->pipe->screen, &ctx->Const, &ctx->Extensions);
-   st_init_extensions(st->pipe->screen, &ctx->Const,
+   st_init_limits(pipe->screen, &ctx->Const, &ctx->Extensions);
+   st_init_extensions(pipe->screen, &ctx->Const,
                       &ctx->Extensions, &st->options, ctx->Mesa_DXTn);
 
    if (st_have_perfmon(st)) {

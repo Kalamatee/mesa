@@ -430,11 +430,13 @@ static void r300_clear_render_target(struct pipe_context *pipe,
                                      struct pipe_surface *dst,
                                      const union pipe_color_union *color,
                                      unsigned dstx, unsigned dsty,
-                                     unsigned width, unsigned height)
+                                     unsigned width, unsigned height,
+                                     bool render_condition_enabled)
 {
     struct r300_context *r300 = r300_context(pipe);
 
-    r300_blitter_begin(r300, R300_CLEAR_SURFACE);
+    r300_blitter_begin(r300, R300_CLEAR_SURFACE |
+                       (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_render_target(r300->blitter, dst, color,
                                      dstx, dsty, width, height);
     r300_blitter_end(r300);
@@ -447,7 +449,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
                                      double depth,
                                      unsigned stencil,
                                      unsigned dstx, unsigned dsty,
-                                     unsigned width, unsigned height)
+                                     unsigned width, unsigned height,
+                                     bool render_condition_enabled)
 {
     struct r300_context *r300 = r300_context(pipe);
     struct pipe_framebuffer_state *fb =
@@ -460,7 +463,8 @@ static void r300_clear_depth_stencil(struct pipe_context *pipe,
     }
 
     /* XXX Do not decompress ZMask of the currently-set zbuffer. */
-    r300_blitter_begin(r300, R300_CLEAR_SURFACE);
+    r300_blitter_begin(r300, R300_CLEAR_SURFACE |
+                       (render_condition_enabled ? 0 : R300_IGNORE_RENDER_COND));
     util_blitter_clear_depth_stencil(r300->blitter, dst, clear_flags, depth, stencil,
                                      dstx, dsty, width, height);
     r300_blitter_end(r300);

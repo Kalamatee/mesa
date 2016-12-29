@@ -85,12 +85,14 @@ public:
    {
       ir_variable *var = ir->variable_referenced();
 
-      if (!var || var->data.mode != this->mode || !var->type->is_array())
+      if (!var || var->data.mode != this->mode || !var->type->is_array() ||
+          !is_gl_identifier(var->name))
          return visit_continue;
 
-      /* Only match gl_FragData[], not gl_SecondaryFragDataEXT[] */
-      if (this->find_frag_outputs && var->data.location == FRAG_RESULT_DATA0 &&
-          var->data.index == 0) {
+      /* Only match gl_FragData[], not gl_SecondaryFragDataEXT[] or
+       * gl_LastFragData[].
+       */
+      if (this->find_frag_outputs && strcmp(var->name, "gl_FragData") == 0) {
          this->fragdata_array = var;
 
          ir_constant *index = ir->array_index->as_constant();

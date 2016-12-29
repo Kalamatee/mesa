@@ -123,7 +123,7 @@ static const struct {
 void fs_visitor::setup_fs_payload_gen4()
 {
    assert(stage == MESA_SHADER_FRAGMENT);
-   brw_wm_prog_data *prog_data = (brw_wm_prog_data*) this->prog_data;
+   struct brw_wm_prog_data *prog_data = brw_wm_prog_data(this->prog_data);
    brw_wm_prog_key *key = (brw_wm_prog_key*) this->key;
    GLuint reg = 2;
    bool kill_stats_promoted_workaround = false;
@@ -143,7 +143,7 @@ void fs_visitor::setup_fs_payload_gen4()
    }
 
    prog_data->uses_src_depth =
-      (nir->info.inputs_read & (1 << VARYING_SLOT_POS)) != 0;
+      (nir->info->inputs_read & (1 << VARYING_SLOT_POS)) != 0;
    if (wm_iz_table[lookup].sd_present || prog_data->uses_src_depth ||
        kill_stats_promoted_workaround) {
       payload.source_depth_reg = reg;

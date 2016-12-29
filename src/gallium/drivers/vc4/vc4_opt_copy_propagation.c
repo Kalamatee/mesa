@@ -67,7 +67,7 @@ try_copy_prop(struct vc4_compile *c, struct qinst *inst, struct qinst **movs)
         bool debug = false;
         bool progress = false;
 
-	for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
+	for (int i = 0; i < qir_get_nsrc(inst); i++) {
                 if (inst->src[i].file != QFILE_TEMP)
                         continue;
 
@@ -90,6 +90,14 @@ try_copy_prop(struct vc4_compile *c, struct qinst *inst, struct qinst **movs)
                                 continue;
                 }
 
+                /* Mul rotation's source needs to be in an r0-r3 accumulator,
+                 * so no uniforms or regfile-a/r4 unpacking allowed.
+                 */
+                if (inst->op == QOP_ROT_MUL &&
+                    (mov->src[0].file != QFILE_TEMP ||
+                     mov->src[0].pack))
+                        continue;
+
                 uint8_t unpack;
                 if (mov->src[0].pack) {
                         /* Make sure that the meaning of the unpack
@@ -105,7 +113,7 @@ try_copy_prop(struct vc4_compile *c, struct qinst *inst, struct qinst **movs)
                          * this instruction doesn't already use it.
                          */
                         bool already_has_unpack = false;
-                        for (int j = 0; j < qir_get_op_nsrc(inst->op); j++) {
+                        for (int j = 0; j < qir_get_nsrc(inst); j++) {
                                 if (inst->src[j].pack)
                                         already_has_unpack = true;
                         }

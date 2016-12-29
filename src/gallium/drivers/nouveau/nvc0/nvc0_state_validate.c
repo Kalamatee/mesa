@@ -1,7 +1,7 @@
 
-#include "util/u_format.h"
 #include "util/u_framebuffer.h"
 #include "util/u_math.h"
+#include "util/u_viewport.h"
 
 #include "nvc0/nvc0_context.h"
 
@@ -329,8 +329,12 @@ nvc0_validate_viewport(struct nvc0_context *nvc0)
       PUSH_DATA (push, (w << 16) | x);
       PUSH_DATA (push, (h << 16) | y);
 
-      zmin = vp->translate[2] - fabsf(vp->scale[2]);
-      zmax = vp->translate[2] + fabsf(vp->scale[2]);
+      /* If the halfz setting ever changes, the viewports will also get
+       * updated. The rast will get updated before the validate function has a
+       * chance to hit, so we can just use it directly without an atom
+       * dependency.
+       */
+      util_viewport_zmin_zmax(vp, nvc0->rast->pipe.clip_halfz, &zmin, &zmax);
 
       BEGIN_NVC0(push, NVC0_3D(DEPTH_RANGE_NEAR(i)), 2);
       PUSH_DATAf(push, zmin);
@@ -556,6 +560,7 @@ nvc0_validate_buffers(struct nvc0_context *nvc0)
             BCTX_REFN(nvc0->bufctx_3d, 3D_BUF, res, RDWR);
             util_range_add(&res->valid_buffer_range,
                            nvc0->buffers[s][i].buffer_offset,
+                           nvc0->buffers[s][i].buffer_offset +
                            nvc0->buffers[s][i].buffer_size);
          } else {
             PUSH_DATA (push, 0);
@@ -666,25 +671,6 @@ nvc0_validate_zsa_fb(struct nvc0_context *nvc0)
 }
 
 static void
-nvc0_validate_blend_fb(struct nvc0_context *nvc0)
-{
-   struct nouveau_pushbuf *push = nvc0->base.pushbuf;
-   struct pipe_framebuffer_state *fb = &nvc0->framebuffer;
-   uint32_t ms = 0;
-
-   if ((!fb->nr_cbufs || !fb->cbufs[0] ||
-        !util_format_is_pure_integer(fb->cbufs[0]->format)) && nvc0->blend) {
-      if (nvc0->blend->pipe.alpha_to_coverage)
-         ms |= NVC0_3D_MULTISAMPLE_CTRL_ALPHA_TO_COVERAGE;
-      if (nvc0->blend->pipe.alpha_to_one)
-         ms |= NVC0_3D_MULTISAMPLE_CTRL_ALPHA_TO_ONE;
-   }
-
-   BEGIN_NVC0(push, NVC0_3D(MULTISAMPLE_CTRL), 1);
-   PUSH_DATA (push, ms);
-}
-
-static void
 nvc0_validate_rast_fb(struct nvc0_context *nvc0)
 {
    struct nouveau_pushbuf *push = nvc0->base.pushbuf;
@@ -786,7 +772,6 @@ validate_list_3d[] = {
     { nvc0_validate_fp_zsa_rast,   NVC0_NEW_3D_FRAGPROG | NVC0_NEW_3D_ZSA |
                                    NVC0_NEW_3D_RASTERIZER },
     { nvc0_validate_zsa_fb,        NVC0_NEW_3D_ZSA | NVC0_NEW_3D_FRAMEBUFFER },
-    { nvc0_validate_blend_fb,      NVC0_NEW_3D_BLEND | NVC0_NEW_3D_FRAMEBUFFER },
     { nvc0_validate_rast_fb,       NVC0_NEW_3D_RASTERIZER | NVC0_NEW_3D_FRAMEBUFFER },
     { nvc0_validate_clip,          NVC0_NEW_3D_CLIP | NVC0_NEW_3D_RASTERIZER |
                                    NVC0_NEW_3D_VERTPROG |

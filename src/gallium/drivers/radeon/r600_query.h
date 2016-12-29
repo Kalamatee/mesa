@@ -29,10 +29,12 @@
 #define R600_QUERY_H
 
 #include "pipe/p_defines.h"
+#include "pipe/p_state.h"
 #include "util/list.h"
 
 struct pipe_context;
 struct pipe_query;
+struct pipe_resource;
 
 struct r600_common_context;
 struct r600_common_screen;
@@ -46,11 +48,18 @@ enum {
 	R600_QUERY_COMPUTE_CALLS,
 	R600_QUERY_SPILL_COMPUTE_CALLS,
 	R600_QUERY_DMA_CALLS,
+	R600_QUERY_CP_DMA_CALLS,
+	R600_QUERY_NUM_VS_FLUSHES,
+	R600_QUERY_NUM_PS_FLUSHES,
+	R600_QUERY_NUM_CS_FLUSHES,
 	R600_QUERY_REQUESTED_VRAM,
 	R600_QUERY_REQUESTED_GTT,
+	R600_QUERY_MAPPED_VRAM,
+	R600_QUERY_MAPPED_GTT,
 	R600_QUERY_BUFFER_WAIT_TIME,
-	R600_QUERY_NUM_CS_FLUSHES,
+	R600_QUERY_NUM_CTX_FLUSHES,
 	R600_QUERY_NUM_BYTES_MOVED,
+	R600_QUERY_NUM_EVICTIONS,
 	R600_QUERY_VRAM_USAGE,
 	R600_QUERY_GTT_USAGE,
 	R600_QUERY_GPU_TEMPERATURE,
@@ -60,6 +69,7 @@ enum {
 	R600_QUERY_NUM_COMPILATIONS,
 	R600_QUERY_NUM_SHADERS_CREATED,
 	R600_QUERY_BACK_BUFFER_PS_DRAW_RATIO,
+	R600_QUERY_NUM_SHADER_CACHE_HITS,
 	R600_QUERY_GPIN_ASIC_ID,
 	R600_QUERY_GPIN_NUM_SIMD,
 	R600_QUERY_GPIN_NUM_RB,
@@ -81,6 +91,12 @@ struct r600_query_ops {
 	bool (*get_result)(struct r600_common_context *,
 			   struct r600_query *, bool wait,
 			   union pipe_query_result *result);
+	void (*get_result_resource)(struct r600_common_context *,
+				    struct r600_query *, bool wait,
+				    enum pipe_query_value_type result_type,
+				    int index,
+				    struct pipe_resource *resource,
+				    unsigned offset);
 };
 
 struct r600_query {
@@ -92,7 +108,7 @@ struct r600_query {
 
 enum {
 	R600_QUERY_HW_FLAG_NO_START = (1 << 0),
-	R600_QUERY_HW_FLAG_PREDICATE = (1 << 1),
+	/* gap */
 	/* whether begin_query doesn't clear the result */
 	R600_QUERY_HW_FLAG_BEGIN_RESUMES = (1 << 2),
 };
@@ -260,5 +276,11 @@ void r600_perfcounters_add_block(struct r600_common_screen *,
 void r600_perfcounters_do_destroy(struct r600_perfcounters *);
 void r600_query_hw_reset_buffers(struct r600_common_context *rctx,
 				 struct r600_query_hw *query);
+
+struct r600_qbo_state {
+	void *saved_compute;
+	struct pipe_constant_buffer saved_const0;
+	struct pipe_shader_buffer saved_ssbo[3];
+};
 
 #endif /* R600_QUERY_H */

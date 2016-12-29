@@ -25,10 +25,10 @@
 #include "isl_priv.h"
 
 bool
-gen8_choose_msaa_layout(const struct isl_device *dev,
-                        const struct isl_surf_init_info *info,
-                        enum isl_tiling tiling,
-                        enum isl_msaa_layout *msaa_layout)
+isl_gen8_choose_msaa_layout(const struct isl_device *dev,
+                            const struct isl_surf_init_info *info,
+                            enum isl_tiling tiling,
+                            enum isl_msaa_layout *msaa_layout)
 {
    bool require_array = false;
    bool require_interleaved = false;
@@ -39,17 +39,6 @@ gen8_choose_msaa_layout(const struct isl_device *dev,
       *msaa_layout = ISL_MSAA_LAYOUT_NONE;
       return true;
    }
-
-   /* From the Broadwell PRM >> Volume2d: Command Structures >>
-    * RENDER_SURFACE_STATE Tile Mode:
-    *
-    *    - If Number of Multisamples is not MULTISAMPLECOUNT_1, this field
-    *      must be YMAJOR.
-    *
-    * As usual, though, stencil is special.
-    */
-   if (!isl_tiling_is_any_y(tiling) && !isl_surf_usage_is_stencil(info->usage))
-      return false;
 
    /* From the Broadwell PRM >> Volume2d: Command Structures >>
     * RENDER_SURFACE_STATE Multisampled Surface Storage Format:
@@ -79,9 +68,7 @@ gen8_choose_msaa_layout(const struct isl_device *dev,
    /* More obvious restrictions */
    if (isl_surf_usage_is_display(info->usage))
       return false;
-   if (isl_format_is_compressed(info->format))
-      return false;
-   if (isl_format_is_yuv(info->format))
+   if (!isl_format_supports_multisampling(dev->info, info->format))
       return false;
 
    if (isl_surf_usage_is_depth_or_stencil(info->usage) ||
@@ -193,11 +180,12 @@ gen8_choose_valign_el(const struct isl_device *dev,
 }
 
 void
-gen8_choose_image_alignment_el(const struct isl_device *dev,
-                               const struct isl_surf_init_info *restrict info,
-                               enum isl_tiling tiling,
-                               enum isl_msaa_layout msaa_layout,
-                               struct isl_extent3d *image_align_el)
+isl_gen8_choose_image_alignment_el(const struct isl_device *dev,
+                                   const struct isl_surf_init_info *restrict info,
+                                   enum isl_tiling tiling,
+                                   enum isl_dim_layout dim_layout,
+                                   enum isl_msaa_layout msaa_layout,
+                                   struct isl_extent3d *image_align_el)
 {
    /* Handled by isl_choose_image_alignment_el */
    assert(info->format != ISL_FORMAT_HIZ);

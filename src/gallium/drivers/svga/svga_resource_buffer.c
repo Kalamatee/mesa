@@ -29,7 +29,6 @@
 #include "pipe/p_defines.h"
 #include "util/u_inlines.h"
 #include "os/os_thread.h"
-#include "os/os_time.h"
 #include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_resource.h"
@@ -77,23 +76,34 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
    struct svga_screen *ss = svga_screen(pipe->screen);
    struct svga_buffer *sbuf = svga_buffer(resource);
    struct pipe_transfer *transfer;
-   uint8_t *map;
-   int64_t begin = os_time_get();
+   uint8_t *map = NULL;
+   int64_t begin = svga_get_time(svga);
+
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_BUFFERTRANSFERMAP);
 
    assert(box->y == 0);
    assert(box->z == 0);
    assert(box->height == 1);
    assert(box->depth == 1);
 
-   transfer = CALLOC_STRUCT(pipe_transfer);
+   transfer = MALLOC_STRUCT(pipe_transfer);
    if (!transfer) {
-      return NULL;
+      goto done;
    }
 
    transfer->resource = resource;
    transfer->level = level;
    transfer->usage = usage;
    transfer->box = *box;
+   transfer->stride = 0;
+   transfer->layer_stride = 0;
+
+   if (usage & PIPE_TRANSFER_WRITE) {
+      /* If we write to the buffer for any reason, free any saved translated
+       * vertices.
+       */
+      pipe_resource_reference(&sbuf->translated_indices.buffer, NULL);
+   }
 
    if ((usage & PIPE_TRANSFER_READ) && sbuf->dirty) {
       enum pipe_error ret;
@@ -202,7 +212,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
                    */
 
                   FREE(transfer);
-                  return NULL;
+                  goto done;
                }
 
                svga_context_flush(svga, NULL);
@@ -229,7 +239,7 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
          sbuf->swbuf = align_malloc(sbuf->b.b.width0, 16);
          if (!sbuf->swbuf) {
             FREE(transfer);
-            return NULL;
+            goto done;
          }
       }
    }
@@ -264,8 +274,10 @@ svga_buffer_transfer_map(struct pipe_context *pipe,
       FREE(transfer);
    }
 
-   svga->hud.map_buffer_time += (os_time_get() - begin);
+   svga->hud.map_buffer_time += (svga_get_time(svga) - begin);
 
+done:
+   SVGA_STATS_TIME_POP(svga_sws(svga));
    return map;
 }
 
@@ -298,6 +310,8 @@ svga_buffer_transfer_unmap( struct pipe_context *pipe,
    struct svga_context *svga = svga_context(pipe);
    struct svga_buffer *sbuf = svga_buffer(transfer->resource);
 
+   SVGA_STATS_TIME_PUSH(svga_sws(svga), SVGA_STATS_TIME_BUFFERTRANSFERUNMAP);
+
    pipe_mutex_lock(ss->swc_mutex);
 
    assert(sbuf->map.count);
@@ -327,6 +341,7 @@ svga_buffer_transfer_unmap( struct pipe_context *pipe,
 
    pipe_mutex_unlock(ss->swc_mutex);
    FREE(transfer);
+   SVGA_STATS_TIME_POP(svga_sws(svga));
 }
 
 
@@ -352,6 +367,8 @@ svga_buffer_destroy( struct pipe_screen *screen,
 
    if (sbuf->swbuf && !sbuf->user)
       align_free(sbuf->swbuf);
+
+   pipe_resource_reference(&sbuf->translated_indices.buffer, NULL);
 
    ss->hud.total_resource_bytes -= sbuf->size;
    assert(ss->hud.num_resources > 0);
@@ -379,6 +396,8 @@ svga_buffer_create(struct pipe_screen *screen,
 {
    struct svga_screen *ss = svga_screen(screen);
    struct svga_buffer *sbuf;
+
+   SVGA_STATS_TIME_PUSH(ss->sws, SVGA_STATS_TIME_CREATEBUFFER);
 
    sbuf = CALLOC_STRUCT(svga_buffer);
    if (!sbuf)
@@ -436,12 +455,14 @@ svga_buffer_create(struct pipe_screen *screen,
    ss->hud.total_resource_bytes += sbuf->size;
 
    ss->hud.num_resources++;
+   SVGA_STATS_TIME_POP(ss->sws);
 
    return &sbuf->b.b;
 
 error2:
    FREE(sbuf);
 error1:
+   SVGA_STATS_TIME_POP(ss->sws);
    return NULL;
 }
 

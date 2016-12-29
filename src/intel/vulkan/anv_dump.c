@@ -112,7 +112,11 @@ dump_image_do_blit(struct anv_device *device, struct dump_image *image,
                    VkImageAspectFlagBits aspect,
                    unsigned miplevel, unsigned array_layer)
 {
-   ANV_CALL(CmdPipelineBarrier)(anv_cmd_buffer_to_handle(cmd_buffer),
+   PFN_vkCmdPipelineBarrier CmdPipelineBarrier =
+      (void *)anv_GetDeviceProcAddr(anv_device_to_handle(device),
+                                    "vkCmdPipelineBarrier");
+
+   CmdPipelineBarrier(anv_cmd_buffer_to_handle(cmd_buffer),
       VK_PIPELINE_STAGE_TRANSFER_BIT,
       VK_PIPELINE_STAGE_TRANSFER_BIT,
       0, 0, NULL, 0, NULL, 1,
@@ -169,7 +173,7 @@ dump_image_do_blit(struct anv_device *device, struct dump_image *image,
 
    src->usage = old_usage;
 
-   ANV_CALL(CmdPipelineBarrier)(anv_cmd_buffer_to_handle(cmd_buffer),
+   CmdPipelineBarrier(anv_cmd_buffer_to_handle(cmd_buffer),
       VK_PIPELINE_STAGE_TRANSFER_BIT,
       VK_PIPELINE_STAGE_TRANSFER_BIT,
       0, 0, NULL, 0, NULL, 1,
@@ -247,6 +251,13 @@ anv_dump_image_to_ppm(struct anv_device *device,
    VkDevice vk_device = anv_device_to_handle(device);
    MAYBE_UNUSED VkResult result;
 
+   PFN_vkBeginCommandBuffer BeginCommandBuffer =
+      (void *)anv_GetDeviceProcAddr(anv_device_to_handle(device),
+                                    "vkBeginCommandBuffer");
+   PFN_vkEndCommandBuffer EndCommandBuffer =
+      (void *)anv_GetDeviceProcAddr(anv_device_to_handle(device),
+                                    "vkEndCommandBuffer");
+
    const uint32_t width = anv_minify(image->extent.width, miplevel);
    const uint32_t height = anv_minify(image->extent.height, miplevel);
 
@@ -272,7 +283,7 @@ anv_dump_image_to_ppm(struct anv_device *device,
       }, &cmd);
    assert(result == VK_SUCCESS);
 
-   result = anv_BeginCommandBuffer(cmd,
+   result = BeginCommandBuffer(cmd,
       &(VkCommandBufferBeginInfo) {
          .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
          .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
@@ -282,7 +293,7 @@ anv_dump_image_to_ppm(struct anv_device *device,
    dump_image_do_blit(device, &dump, anv_cmd_buffer_from_handle(cmd), image,
                       aspect, miplevel, array_layer);
 
-   result = anv_EndCommandBuffer(cmd);
+   result = EndCommandBuffer(cmd);
    assert(result == VK_SUCCESS);
 
    VkFence fence;
@@ -426,7 +437,8 @@ anv_dump_add_framebuffer(struct anv_cmd_buffer *cmd_buffer,
                                           dump_idx, i, suffix);
 
          dump_add_image(cmd_buffer, (struct anv_image *)iview->image, aspect,
-                        iview->base_mip, iview->base_layer, filename);
+                        iview->isl.base_level, iview->isl.base_array_layer,
+                        filename);
       }
    }
 

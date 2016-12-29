@@ -33,8 +33,8 @@ static void
 assign(unsigned int *reg_hw_locations, backend_reg *reg)
 {
    if (reg->file == VGRF) {
-      reg->nr = reg_hw_locations[reg->nr] + reg->reg_offset;
-      reg->reg_offset = 0;
+      reg->nr = reg_hw_locations[reg->nr] + reg->offset / REG_SIZE;
+      reg->offset %= REG_SIZE;
    }
 }
 
@@ -385,22 +385,23 @@ vec4_visitor::evaluate_spill_costs(float *spill_costs, bool *no_spill)
     */
    foreach_block_and_inst(block, vec4_instruction, inst, cfg) {
       for (unsigned int i = 0; i < 3; i++) {
-         if (inst->src[i].file == VGRF) {
+         if (inst->src[i].file == VGRF && !no_spill[inst->src[i].nr]) {
             /* We will only unspill src[i] it it wasn't unspilled for the
              * previous instruction, in which case we'll just reuse the scratch
              * reg for this instruction.
              */
             if (!can_use_scratch_for_source(inst, i, inst->src[i].nr)) {
                spill_costs[inst->src[i].nr] += loop_scale;
-               if (inst->src[i].reladdr)
+               if (inst->src[i].reladdr ||
+                   inst->src[i].offset % REG_SIZE != 0)
                   no_spill[inst->src[i].nr] = true;
             }
          }
       }
 
-      if (inst->dst.file == VGRF) {
+      if (inst->dst.file == VGRF && !no_spill[inst->dst.nr]) {
          spill_costs[inst->dst.nr] += loop_scale;
-         if (inst->dst.reladdr)
+         if (inst->dst.reladdr || inst->dst.offset % REG_SIZE != 0)
             no_spill[inst->dst.nr] = true;
       }
 

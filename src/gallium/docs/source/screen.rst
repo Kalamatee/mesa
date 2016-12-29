@@ -136,8 +136,8 @@ The integer capabilities:
   PIPE_BUFFER. In other words, the pointer returned by transfer_map is
   always aligned to this value.
 * ``PIPE_CAP_TEXTURE_BUFFER_OFFSET_ALIGNMENT``: Describes the required
-  alignment for pipe_sampler_view::u.buf.first_element, in bytes.
-  If a driver does not support first/last_element, it should return 0.
+  alignment for pipe_sampler_view::u.buf.offset, in bytes.
+  If a driver does not support offset/size, it should return 0.
 * ``PIPE_CAP_BUFFER_SAMPLER_VIEW_RGBA_ONLY``: Whether the driver only
   supports R, RG, RGB and RGBA formats for PIPE_BUFFER sampler views.
   When this is the case it should be assumed that the swizzle parameters
@@ -347,6 +347,25 @@ The integer capabilities:
   for ``pipe_rasterizer_state::offset_units_unscaled``.
 * ``PIPE_CAP_VIEWPORT_SUBPIXEL_BITS``: Number of bits of subpixel precision for
   floating point viewport bounds.
+* ``PIPE_CAP_MIXED_COLOR_DEPTH_BITS``: Whether there is non-fallback
+  support for color/depth format combinations that use a different
+  number of bits. For the purpose of this cap, Z24 is treated as
+  32-bit. If set to off, that means that a B5G6R5 + Z24 or RGBA8 + Z16
+  combination will require a driver fallback, and should not be
+  advertised in the GLX/EGL config list.
+* ``PIPE_CAP_TGSI_ARRAY_COMPONENTS``: If true, the driver interprets the
+  UsageMask of input and output declarations and allows declaring arrays
+  in overlapping ranges. The components must be a contiguous range, e.g. a
+  UsageMask of  xy or yzw is allowed, but xz or yw isn't. Declarations with
+  overlapping locations must have matching semantic names and indices, and
+  equal interpolation qualifiers.
+  Components may overlap, notably when the gaps in an array of dvec3 are
+  filled in.
+* ``PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS``: Whether interleaved stream
+  output mode is able to interleave across buffers. This is required for
+  ARB_transform_feedback3.
+* ``PIPE_CAP_TGSI_CAN_READ_OUTPUTS``: Whether every TGSI shader stage can read
+  from the output file.
 
 
 .. _pipe_capf:
@@ -446,6 +465,10 @@ to be 0.
 * ``PIPE_SHADER_CAP_SUPPORTED_IRS``: Supported representations of the
   program.  It should be a mask of ``pipe_shader_ir`` bits.
 * ``PIPE_SHADER_CAP_MAX_SHADER_IMAGES``: Maximum number of image units.
+* ``PIPE_SHADER_CAP_LOWER_IF_THRESHOLD``: IF and ELSE branches with a lower
+  cost than this value should be lowered by the state tracker for better
+  performance. This is a tunable for the GLSL compiler and the behavior is
+  specific to the compiler.
 
 
 .. _pipe_compute_cap:
@@ -490,6 +513,12 @@ pipe_screen::get_compute_param.
   non-zero means yes, zero means no. Value type: ``uint32_t``
 * ``PIPE_COMPUTE_CAP_SUBGROUP_SIZE``: The size of a basic execution unit in
   threads. Also known as wavefront size, warp size or SIMD width.
+* ``PIPE_COMPUTE_CAP_ADDRESS_BITS``: The default compute device address space
+  size specified as an unsigned integer value in bits.
+* ``PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK``: Maximum variable number
+  of threads that a single block can contain. This is similar to
+  PIPE_COMPUTE_CAP_MAX_THREADS_PER_BLOCK, except that the variable size is not
+  known a compile-time but at dispatch-time.
 
 .. _pipe_bind:
 
@@ -521,8 +550,6 @@ resources might be created and handled quite differently.
 * ``PIPE_BIND_VERTEX_BUFFER``: A vertex buffer.
 * ``PIPE_BIND_INDEX_BUFFER``: An vertex index/element buffer.
 * ``PIPE_BIND_CONSTANT_BUFFER``: A buffer of shader constants.
-* ``PIPE_BIND_TRANSFER_WRITE``: A transfer object which will be written to.
-* ``PIPE_BIND_TRANSFER_READ``: A transfer object which will be read from.
 * ``PIPE_BIND_STREAM_OUTPUT``: A stream output buffer.
 * ``PIPE_BIND_CUSTOM``:
 * ``PIPE_BIND_SCANOUT``: A front color buffer or scanout buffer.
@@ -710,3 +737,13 @@ query group at the specified **index** is returned in **info**.
 The function returns non-zero on success.
 The driver-specific query group is described with the
 pipe_driver_query_group_info structure.
+
+
+Thread safety
+-------------
+
+Screen methods are required to be thread safe. While gallium rendering
+contexts are not required to be thread safe, it is required to be safe to use
+different contexts created with the same screen in different threads without
+locks. It is also required to be safe using screen methods in a thread, while
+using one of its contexts in another (without locks).

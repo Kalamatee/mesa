@@ -86,6 +86,8 @@ svga_get_name( struct pipe_screen *pscreen )
     */
    build = "build: DEBUG;";
    mutex = "mutex: " PIPE_ATOMIC ";";
+#elif defined(VMX86_STATS)
+   build = "build: OPT;";
 #else
    build = "build: RELEASE;";
 #endif
@@ -179,6 +181,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    switch (param) {
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
+   case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
       return 1;
    case PIPE_CAP_TWO_SIDED_STENCIL:
       return 1;
@@ -295,6 +298,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return sws->have_vgpu10 ? SVGA3D_MAX_STREAMOUT_DECLS : 0;
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
+   case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
       return 0;
    case PIPE_CAP_TEXTURE_MULTISAMPLE:
       return svgascreen->ms_samples ? 1 : 0;
@@ -365,6 +369,7 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_PCI_DEVICE:
    case PIPE_CAP_PCI_FUNCTION:
    case PIPE_CAP_ROBUST_BUFFER_ACCESS_BEHAVIOR:
+   case PIPE_CAP_NATIVE_FENCE_FD:
       return 0;
    case PIPE_CAP_MIN_MAP_BUFFER_ALIGNMENT:
       return 64;
@@ -390,6 +395,8 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
       return 1;
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
       return sws->have_vgpu10;
+   case PIPE_CAP_CLEAR_TEXTURE:
+      return sws->have_vgpu10;
    case PIPE_CAP_UMA:
    case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
    case PIPE_CAP_DEVICE_RESET_STATUS_QUERY:
@@ -400,7 +407,6 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_TXQS:
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_SHAREABLE_SHADERS:
-   case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_TGSI_FS_POSITION_IS_SYSVAL:
    case PIPE_CAP_TGSI_FS_FACE_IS_INTEGER_SYSVAL:
@@ -413,6 +419,8 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_WINDOW_RECTANGLES:
    case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
+   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+   case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
       return 0;
    }
 
@@ -493,6 +501,7 @@ vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
       case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+      case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
          return 0;
       case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
          return 32;
@@ -555,6 +564,7 @@ vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
       case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
       case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
       case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+      case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
          return 0;
       case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
          return 32;
@@ -650,6 +660,7 @@ vgpu10_get_shader_param(struct pipe_screen *screen, unsigned shader,
    case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
    case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
    case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+   case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
       return 0;
    case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
       return 32;
@@ -804,18 +815,28 @@ svga_fence_reference(struct pipe_screen *screen,
 
 static boolean
 svga_fence_finish(struct pipe_screen *screen,
+                  struct pipe_context *ctx,
                   struct pipe_fence_handle *fence,
                   uint64_t timeout)
 {
    struct svga_winsys_screen *sws = svga_screen(screen)->sws;
+   boolean retVal;
 
-   if (!timeout)
-      return sws->fence_signalled(sws, fence, 0) == 0;
+   SVGA_STATS_TIME_PUSH(sws, SVGA_STATS_TIME_FENCEFINISH);
 
-   SVGA_DBG(DEBUG_DMA|DEBUG_PERF, "%s fence_ptr %p\n",
-            __FUNCTION__, fence);
+   if (!timeout) {
+      retVal = sws->fence_signalled(sws, fence, 0) == 0;
+   }
+   else {
+      SVGA_DBG(DEBUG_DMA|DEBUG_PERF, "%s fence_ptr %p\n",
+               __FUNCTION__, fence);
 
-   return sws->fence_finish(sws, fence, 0) == 0;
+      retVal = sws->fence_finish(sws, fence, 0) == 0;
+   }
+
+   SVGA_STATS_TIME_POP(sws);
+
+   return retVal;
 }
 
 
@@ -839,7 +860,9 @@ svga_get_driver_query_info(struct pipe_screen *screen,
             PIPE_DRIVER_QUERY_TYPE_UINT64),
       QUERY("map-buffer-time", SVGA_QUERY_MAP_BUFFER_TIME,
             PIPE_DRIVER_QUERY_TYPE_MICROSECONDS),
-      QUERY("num-resources-mapped", SVGA_QUERY_NUM_RESOURCES_MAPPED,
+      QUERY("num-buffers-mapped", SVGA_QUERY_NUM_BUFFERS_MAPPED,
+            PIPE_DRIVER_QUERY_TYPE_UINT64),
+      QUERY("num-textures-mapped", SVGA_QUERY_NUM_TEXTURES_MAPPED,
             PIPE_DRIVER_QUERY_TYPE_UINT64),
       QUERY("num-bytes-uploaded", SVGA_QUERY_NUM_BYTES_UPLOADED,
             PIPE_DRIVER_QUERY_TYPE_BYTES),
@@ -930,6 +953,8 @@ svga_screen_create(struct svga_winsys_screen *sws)
       debug_get_bool_option("SVGA_NO_SURFACE_VIEW", FALSE);
    svgascreen->debug.no_sampler_view =
       debug_get_bool_option("SVGA_NO_SAMPLER_VIEW", FALSE);
+   svgascreen->debug.no_cache_index_buffers =
+      debug_get_bool_option("SVGA_NO_CACHE_INDEX_BUFFERS", FALSE);
 
    screen = &svgascreen->screen;
 

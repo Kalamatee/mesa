@@ -21,371 +21,977 @@
  * IN THE SOFTWARE.
  */
 
-#include <errno.h>
-#include "intel_batchbuffer.h"
-#include "intel_fbo.h"
+#include "main/context.h"
+#include "main/teximage.h"
+#include "main/blend.h"
+#include "main/fbobject.h"
+#include "main/renderbuffer.h"
+#include "main/glformats.h"
 
 #include "brw_blorp.h"
-#include "brw_compiler.h"
-#include "brw_nir.h"
+#include "brw_context.h"
+#include "brw_defines.h"
+#include "brw_meta_util.h"
 #include "brw_state.h"
+#include "intel_fbo.h"
+#include "intel_debug.h"
 
 #define FILE_DEBUG_FLAG DEBUG_BLORP
 
-void
-brw_blorp_surface_info_init(struct brw_context *brw,
-                            struct brw_blorp_surface_info *info,
-                            struct intel_mipmap_tree *mt,
-                            unsigned int level, unsigned int layer,
-                            mesa_format format, bool is_render_target)
+static bool
+brw_blorp_lookup_shader(struct blorp_context *blorp,
+                        const void *key, uint32_t key_size,
+                        uint32_t *kernel_out, void *prog_data_out)
 {
-   /* Layer is a physical layer, so if this is a 2D multisample array texture
-    * using INTEL_MSAA_LAYOUT_UMS or INTEL_MSAA_LAYOUT_CMS, then it had better
-    * be a multiple of num_samples.
-    */
-   if (mt->msaa_layout == INTEL_MSAA_LAYOUT_UMS ||
-       mt->msaa_layout == INTEL_MSAA_LAYOUT_CMS) {
-      assert(mt->num_samples <= 1 || layer % mt->num_samples == 0);
+   struct brw_context *brw = blorp->driver_ctx;
+   return brw_search_cache(&brw->cache, BRW_CACHE_BLORP_PROG,
+                           key, key_size, kernel_out, prog_data_out);
+}
+
+static void
+brw_blorp_upload_shader(struct blorp_context *blorp,
+                        const void *key, uint32_t key_size,
+                        const void *kernel, uint32_t kernel_size,
+                        const struct brw_stage_prog_data *prog_data,
+                        uint32_t prog_data_size,
+                        uint32_t *kernel_out, void *prog_data_out)
+{
+   struct brw_context *brw = blorp->driver_ctx;
+   brw_upload_cache(&brw->cache, BRW_CACHE_BLORP_PROG, key, key_size,
+                    kernel, kernel_size, prog_data, prog_data_size,
+                    kernel_out, prog_data_out);
+}
+
+void
+brw_blorp_init(struct brw_context *brw)
+{
+   blorp_init(&brw->blorp, brw, &brw->isl_dev);
+
+   brw->blorp.compiler = brw->screen->compiler;
+
+   switch (brw->gen) {
+   case 6:
+      brw->blorp.mocs.tex = 0;
+      brw->blorp.mocs.rb = 0;
+      brw->blorp.mocs.vb = 0;
+      brw->blorp.exec = gen6_blorp_exec;
+      break;
+   case 7:
+      brw->blorp.mocs.tex = GEN7_MOCS_L3;
+      brw->blorp.mocs.rb = GEN7_MOCS_L3;
+      brw->blorp.mocs.vb = GEN7_MOCS_L3;
+      if (brw->is_haswell) {
+         brw->blorp.exec = gen75_blorp_exec;
+      } else {
+         brw->blorp.exec = gen7_blorp_exec;
+      }
+      break;
+   case 8:
+      brw->blorp.mocs.tex = BDW_MOCS_WB;
+      brw->blorp.mocs.rb = BDW_MOCS_PTE;
+      brw->blorp.mocs.vb = BDW_MOCS_WB;
+      brw->blorp.exec = gen8_blorp_exec;
+      break;
+   case 9:
+      brw->blorp.mocs.tex = SKL_MOCS_WB;
+      brw->blorp.mocs.rb = SKL_MOCS_PTE;
+      brw->blorp.mocs.vb = SKL_MOCS_WB;
+      brw->blorp.exec = gen9_blorp_exec;
+      break;
+   default:
+      unreachable("Invalid gen");
    }
 
-   intel_miptree_check_level_layer(mt, level, layer);
+   brw->blorp.lookup_shader = brw_blorp_lookup_shader;
+   brw->blorp.upload_shader = brw_blorp_upload_shader;
+}
 
-   info->mt = mt;
-   info->level = level;
-   info->layer = layer;
-   info->width = minify(mt->physical_width0, level - mt->first_level);
-   info->height = minify(mt->physical_height0, level - mt->first_level);
+static void
+apply_gen6_stencil_hiz_offset(struct isl_surf *surf,
+                              struct intel_mipmap_tree *mt,
+                              uint32_t lod,
+                              uint32_t *offset)
+{
+   assert(mt->array_layout == ALL_SLICES_AT_EACH_LOD);
 
-   intel_miptree_get_image_offset(mt, level, layer,
-                                  &info->x_offset, &info->y_offset);
-
-   info->num_samples = mt->num_samples;
-   info->array_layout = mt->array_layout;
-   info->map_stencil_as_y_tiled = false;
-   info->msaa_layout = mt->msaa_layout;
-   info->swizzle = SWIZZLE_XYZW;
-
-   if (format == MESA_FORMAT_NONE)
-      format = mt->format;
-
-   switch (format) {
-   case MESA_FORMAT_S_UINT8:
-      /* The miptree is a W-tiled stencil buffer.  Surface states can't be set
-       * up for W tiling, so we'll need to use Y tiling and have the WM
-       * program swizzle the coordinates.
+   if (mt->format == MESA_FORMAT_S_UINT8) {
+      /* Note: we can't compute the stencil offset using
+       * intel_miptree_get_aligned_offset(), because the miptree
+       * claims that the region is untiled even though it's W tiled.
        */
-      info->map_stencil_as_y_tiled = true;
-      info->brw_surfaceformat = brw->gen >= 8 ? BRW_SURFACEFORMAT_R8_UINT :
-                                                BRW_SURFACEFORMAT_R8_UNORM;
-      break;
-   case MESA_FORMAT_Z24_UNORM_X8_UINT:
-      /* It would make sense to use BRW_SURFACEFORMAT_R24_UNORM_X8_TYPELESS
-       * here, but unfortunately it isn't supported as a render target, which
-       * would prevent us from blitting to 24-bit depth.
+      *offset = mt->level[lod].level_y * mt->pitch +
+                mt->level[lod].level_x * 64;
+   } else {
+      *offset = intel_miptree_get_aligned_offset(mt,
+                                                 mt->level[lod].level_x,
+                                                 mt->level[lod].level_y);
+   }
+
+   surf->logical_level0_px.width = minify(surf->logical_level0_px.width, lod);
+   surf->logical_level0_px.height = minify(surf->logical_level0_px.height, lod);
+   surf->phys_level0_sa.width = minify(surf->phys_level0_sa.width, lod);
+   surf->phys_level0_sa.height = minify(surf->phys_level0_sa.height, lod);
+   surf->levels = 1;
+   surf->array_pitch_el_rows =
+      ALIGN(surf->phys_level0_sa.height, surf->image_alignment_el.height);
+}
+
+static void
+blorp_surf_for_miptree(struct brw_context *brw,
+                       struct blorp_surf *surf,
+                       struct intel_mipmap_tree *mt,
+                       bool is_render_target,
+                       uint32_t safe_aux_usage,
+                       unsigned *level,
+                       unsigned start_layer, unsigned num_layers,
+                       struct isl_surf tmp_surfs[2])
+{
+   if (mt->msaa_layout == INTEL_MSAA_LAYOUT_UMS ||
+       mt->msaa_layout == INTEL_MSAA_LAYOUT_CMS) {
+      const unsigned num_samples = MAX2(1, mt->num_samples);
+      for (unsigned i = 0; i < num_layers; i++) {
+         for (unsigned s = 0; s < num_samples; s++) {
+            const unsigned phys_layer = (start_layer + i) * num_samples + s;
+            intel_miptree_check_level_layer(mt, *level, phys_layer);
+         }
+      }
+   } else {
+      for (unsigned i = 0; i < num_layers; i++)
+         intel_miptree_check_level_layer(mt, *level, start_layer + i);
+   }
+
+   intel_miptree_get_isl_surf(brw, mt, &tmp_surfs[0]);
+   surf->surf = &tmp_surfs[0];
+   surf->addr = (struct blorp_address) {
+      .buffer = mt->bo,
+      .offset = mt->offset,
+      .read_domains = is_render_target ? I915_GEM_DOMAIN_RENDER :
+                                         I915_GEM_DOMAIN_SAMPLER,
+      .write_domain = is_render_target ? I915_GEM_DOMAIN_RENDER : 0,
+   };
+
+   if (brw->gen == 6 && mt->format == MESA_FORMAT_S_UINT8 &&
+       mt->array_layout == ALL_SLICES_AT_EACH_LOD) {
+      /* Sandy bridge stencil and HiZ use this ALL_SLICES_AT_EACH_LOD hack in
+       * order to allow for layered rendering.  The hack makes each LOD of the
+       * stencil or HiZ buffer a single tightly packed array surface at some
+       * offset into the surface.  Since ISL doesn't know how to deal with the
+       * crazy ALL_SLICES_AT_EACH_LOD layout and since we have to do a manual
+       * offset of it anyway, we might as well do the offset here and keep the
+       * hacks inside the i965 driver.
        *
-       * The miptree consists of 32 bits per pixel, arranged as 24-bit depth
-       * values interleaved with 8 "don't care" bits.  Since depth values don't
-       * require any blending, it doesn't matter how we interpret the bit
-       * pattern as long as we copy the right amount of data, so just map it
-       * as 8-bit BGRA.
+       * See also gen6_depth_stencil_state.c
        */
-      info->brw_surfaceformat = BRW_SURFACEFORMAT_B8G8R8A8_UNORM;
-      break;
+      uint32_t offset;
+      apply_gen6_stencil_hiz_offset(&tmp_surfs[0], mt, *level, &offset);
+      surf->addr.offset += offset;
+      *level = 0;
+   }
+
+   struct isl_surf *aux_surf = &tmp_surfs[1];
+   intel_miptree_get_aux_isl_surf(brw, mt, aux_surf, &surf->aux_usage);
+
+   if (surf->aux_usage != ISL_AUX_USAGE_NONE) {
+      if (surf->aux_usage == ISL_AUX_USAGE_HIZ) {
+         /* If we're not going to use it as a depth buffer, resolve HiZ */
+         if (!(safe_aux_usage & (1 << ISL_AUX_USAGE_HIZ))) {
+            for (unsigned i = 0; i < num_layers; i++) {
+               intel_miptree_slice_resolve_depth(brw, mt, *level,
+                                                 start_layer + i);
+
+               /* If we're rendering to it then we'll need a HiZ resolve once
+                * we're done before we can use it with HiZ again.
+                */
+               if (is_render_target)
+                  intel_miptree_slice_set_needs_hiz_resolve(mt, *level,
+                                                            start_layer + i);
+            }
+            surf->aux_usage = ISL_AUX_USAGE_NONE;
+         }
+      } else if (!(safe_aux_usage & (1 << surf->aux_usage))) {
+         uint32_t flags = 0;
+         if (safe_aux_usage & (1 << ISL_AUX_USAGE_CCS_E))
+            flags |= INTEL_MIPTREE_IGNORE_CCS_E;
+
+         intel_miptree_resolve_color(brw, mt,
+                                     *level, start_layer, num_layers, flags);
+
+         assert(!intel_miptree_has_color_unresolved(mt, *level, 1,
+                                                    start_layer, num_layers));
+         surf->aux_usage = ISL_AUX_USAGE_NONE;
+      }
+   }
+
+   if (is_render_target)
+      intel_miptree_used_for_rendering(brw, mt, *level,
+                                       start_layer, num_layers);
+
+   if (surf->aux_usage != ISL_AUX_USAGE_NONE) {
+      /* We only really need a clear color if we also have an auxiliary
+       * surface.  Without one, it does nothing.
+       */
+      surf->clear_color = intel_miptree_get_isl_clear_color(brw, mt);
+
+      surf->aux_surf = aux_surf;
+      surf->aux_addr = (struct blorp_address) {
+         .read_domains = is_render_target ? I915_GEM_DOMAIN_RENDER :
+                                            I915_GEM_DOMAIN_SAMPLER,
+         .write_domain = is_render_target ? I915_GEM_DOMAIN_RENDER : 0,
+      };
+
+      if (mt->mcs_buf) {
+         surf->aux_addr.buffer = mt->mcs_buf->bo;
+         surf->aux_addr.offset = mt->mcs_buf->offset;
+      } else {
+         assert(surf->aux_usage == ISL_AUX_USAGE_HIZ);
+         struct intel_mipmap_tree *hiz_mt = mt->hiz_buf->mt;
+         if (hiz_mt) {
+            surf->aux_addr.buffer = hiz_mt->bo;
+            if (brw->gen == 6 &&
+                hiz_mt->array_layout == ALL_SLICES_AT_EACH_LOD) {
+               /* gen6 requires the HiZ buffer to be manually offset to the
+                * right location.  We could fixup the surf but it doesn't
+                * matter since most of those fields don't matter.
+                */
+               apply_gen6_stencil_hiz_offset(aux_surf, hiz_mt, *level,
+                                             &surf->aux_addr.offset);
+            } else {
+               surf->aux_addr.offset = 0;
+            }
+            assert(hiz_mt->pitch == aux_surf->row_pitch);
+         } else {
+            surf->aux_addr.buffer = mt->hiz_buf->aux_base.bo;
+            surf->aux_addr.offset = mt->hiz_buf->aux_base.offset;
+         }
+      }
+   } else {
+      surf->aux_addr = (struct blorp_address) {
+         .buffer = NULL,
+      };
+      memset(&surf->clear_color, 0, sizeof(surf->clear_color));
+   }
+   assert((surf->aux_usage == ISL_AUX_USAGE_NONE) ==
+          (surf->aux_addr.buffer == NULL));
+}
+
+static enum isl_format
+brw_blorp_to_isl_format(struct brw_context *brw, mesa_format format,
+                        bool is_render_target)
+{
+   switch (format) {
+   case MESA_FORMAT_NONE:
+      return ISL_FORMAT_UNSUPPORTED;
+   case MESA_FORMAT_S_UINT8:
+      return ISL_FORMAT_R8_UINT;
+   case MESA_FORMAT_Z24_UNORM_X8_UINT:
+      return ISL_FORMAT_R24_UNORM_X8_TYPELESS;
    case MESA_FORMAT_Z_FLOAT32:
-      info->brw_surfaceformat = BRW_SURFACEFORMAT_R32_FLOAT;
-      break;
+      return ISL_FORMAT_R32_FLOAT;
    case MESA_FORMAT_Z_UNORM16:
-      info->brw_surfaceformat = BRW_SURFACEFORMAT_R16_UNORM;
-      break;
+      return ISL_FORMAT_R16_UNORM;
    default: {
       if (is_render_target) {
          assert(brw->format_supported_as_render_target[format]);
-         info->brw_surfaceformat = brw->render_target_format[format];
+         return brw->render_target_format[format];
       } else {
-         info->brw_surfaceformat = brw_format_for_mesa_format(format);
+         return brw_format_for_mesa_format(format);
       }
       break;
    }
    }
 }
 
+/**
+ * Convert an swizzle enumeration (i.e. SWIZZLE_X) to one of the Gen7.5+
+ * "Shader Channel Select" enumerations (i.e. HSW_SCS_RED).  The mappings are
+ *
+ * SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_W, SWIZZLE_ZERO, SWIZZLE_ONE
+ *         0          1          2          3             4            5
+ *         4          5          6          7             0            1
+ *   SCS_RED, SCS_GREEN,  SCS_BLUE, SCS_ALPHA,     SCS_ZERO,     SCS_ONE
+ *
+ * which is simply adding 4 then modding by 8 (or anding with 7).
+ *
+ * We then may need to apply workarounds for textureGather hardware bugs.
+ */
+static enum isl_channel_select
+swizzle_to_scs(GLenum swizzle)
+{
+   return (enum isl_channel_select)((swizzle + 4) & 7);
+}
+
+static unsigned
+physical_to_logical_layer(struct intel_mipmap_tree *mt,
+                          unsigned physical_layer)
+{
+   if (mt->num_samples > 1 &&
+       (mt->msaa_layout == INTEL_MSAA_LAYOUT_UMS ||
+        mt->msaa_layout == INTEL_MSAA_LAYOUT_CMS)) {
+      assert(physical_layer % mt->num_samples == 0);
+      return physical_layer / mt->num_samples;
+   } else {
+      return physical_layer;
+   }
+}
 
 /**
- * Split x_offset and y_offset into a base offset (in bytes) and a remaining
- * x/y offset (in pixels).  Note: we can't do this by calling
- * intel_renderbuffer_tile_offsets(), because the offsets may have been
- * adjusted to account for Y vs. W tiling differences.  So we compute it
- * directly from the adjusted offsets.
+ * Note: if the src (or dst) is a 2D multisample array texture on Gen7+ using
+ * INTEL_MSAA_LAYOUT_UMS or INTEL_MSAA_LAYOUT_CMS, src_layer (dst_layer) is
+ * the physical layer holding sample 0.  So, for example, if
+ * src_mt->num_samples == 4, then logical layer n corresponds to src_layer ==
+ * 4*n.
  */
-uint32_t
-brw_blorp_compute_tile_offsets(const struct brw_blorp_surface_info *info,
-                               uint32_t *tile_x, uint32_t *tile_y)
+void
+brw_blorp_blit_miptrees(struct brw_context *brw,
+                        struct intel_mipmap_tree *src_mt,
+                        unsigned src_level, unsigned src_layer,
+                        mesa_format src_format, int src_swizzle,
+                        struct intel_mipmap_tree *dst_mt,
+                        unsigned dst_level, unsigned dst_layer,
+                        mesa_format dst_format,
+                        float src_x0, float src_y0,
+                        float src_x1, float src_y1,
+                        float dst_x0, float dst_y0,
+                        float dst_x1, float dst_y1,
+                        GLenum filter, bool mirror_x, bool mirror_y,
+                        bool decode_srgb, bool encode_srgb)
 {
-   uint32_t mask_x, mask_y;
+   /* Blorp operates in logical layers */
+   src_layer = physical_to_logical_layer(src_mt, src_layer);
+   dst_layer = physical_to_logical_layer(dst_mt, dst_layer);
 
-   intel_get_tile_masks(info->mt->tiling, info->mt->tr_mode, info->mt->cpp,
-                        info->map_stencil_as_y_tiled,
-                        &mask_x, &mask_y);
+   DBG("%s from %dx %s mt %p %d %d (%f,%f) (%f,%f)"
+       "to %dx %s mt %p %d %d (%f,%f) (%f,%f) (flip %d,%d)\n",
+       __func__,
+       src_mt->num_samples, _mesa_get_format_name(src_mt->format), src_mt,
+       src_level, src_layer, src_x0, src_y0, src_x1, src_y1,
+       dst_mt->num_samples, _mesa_get_format_name(dst_mt->format), dst_mt,
+       dst_level, dst_layer, dst_x0, dst_y0, dst_x1, dst_y1,
+       mirror_x, mirror_y);
 
-   *tile_x = info->x_offset & mask_x;
-   *tile_y = info->y_offset & mask_y;
+   if (!decode_srgb && _mesa_get_format_color_encoding(src_format) == GL_SRGB)
+      src_format = _mesa_get_srgb_format_linear(src_format);
 
-   return intel_miptree_get_aligned_offset(info->mt, info->x_offset & ~mask_x,
-                                           info->y_offset & ~mask_y,
-                                           info->map_stencil_as_y_tiled);
+   if (!encode_srgb && _mesa_get_format_color_encoding(dst_format) == GL_SRGB)
+      dst_format = _mesa_get_srgb_format_linear(dst_format);
+
+   /* When doing a multisample resolve of a GL_LUMINANCE32F or GL_INTENSITY32F
+    * texture, the above code configures the source format for L32_FLOAT or
+    * I32_FLOAT, and the destination format for R32_FLOAT.  On Sandy Bridge,
+    * the SAMPLE message appears to handle multisampled L32_FLOAT and
+    * I32_FLOAT textures incorrectly, resulting in blocky artifacts.  So work
+    * around the problem by using a source format of R32_FLOAT.  This
+    * shouldn't affect rendering correctness, since the destination format is
+    * R32_FLOAT, so only the contents of the red channel matters.
+    */
+   if (brw->gen == 6 &&
+       src_mt->num_samples > 1 && dst_mt->num_samples <= 1 &&
+       src_mt->format == dst_mt->format &&
+       (dst_format == MESA_FORMAT_L_FLOAT32 ||
+        dst_format == MESA_FORMAT_I_FLOAT32)) {
+      src_format = dst_format = MESA_FORMAT_R_FLOAT32;
+   }
+
+   uint32_t src_usage_flags = (1 << ISL_AUX_USAGE_MCS);
+   if (src_format == src_mt->format)
+      src_usage_flags |= (1 << ISL_AUX_USAGE_CCS_E);
+
+   uint32_t dst_usage_flags = (1 << ISL_AUX_USAGE_MCS);
+   if (dst_format == dst_mt->format) {
+      dst_usage_flags |= (1 << ISL_AUX_USAGE_CCS_E) |
+                         (1 << ISL_AUX_USAGE_CCS_D);
+   }
+
+   struct isl_surf tmp_surfs[4];
+   struct blorp_surf src_surf, dst_surf;
+   blorp_surf_for_miptree(brw, &src_surf, src_mt, false, src_usage_flags,
+                          &src_level, src_layer, 1, &tmp_surfs[0]);
+   blorp_surf_for_miptree(brw, &dst_surf, dst_mt, true, dst_usage_flags,
+                          &dst_level, dst_layer, 1, &tmp_surfs[2]);
+
+   struct isl_swizzle src_isl_swizzle = {
+      .r = swizzle_to_scs(GET_SWZ(src_swizzle, 0)),
+      .g = swizzle_to_scs(GET_SWZ(src_swizzle, 1)),
+      .b = swizzle_to_scs(GET_SWZ(src_swizzle, 2)),
+      .a = swizzle_to_scs(GET_SWZ(src_swizzle, 3)),
+   };
+
+   struct blorp_batch batch;
+   blorp_batch_init(&brw->blorp, &batch, brw, 0);
+   blorp_blit(&batch, &src_surf, src_level, src_layer,
+              brw_blorp_to_isl_format(brw, src_format, false), src_isl_swizzle,
+              &dst_surf, dst_level, dst_layer,
+              brw_blorp_to_isl_format(brw, dst_format, true),
+              ISL_SWIZZLE_IDENTITY,
+              src_x0, src_y0, src_x1, src_y1,
+              dst_x0, dst_y0, dst_x1, dst_y1,
+              filter, mirror_x, mirror_y);
+   blorp_batch_finish(&batch);
 }
 
-
 void
-brw_blorp_params_init(struct brw_blorp_params *params)
+brw_blorp_copy_miptrees(struct brw_context *brw,
+                        struct intel_mipmap_tree *src_mt,
+                        unsigned src_level, unsigned src_layer,
+                        struct intel_mipmap_tree *dst_mt,
+                        unsigned dst_level, unsigned dst_layer,
+                        unsigned src_x, unsigned src_y,
+                        unsigned dst_x, unsigned dst_y,
+                        unsigned src_width, unsigned src_height)
 {
-   memset(params, 0, sizeof(*params));
-   params->hiz_op = GEN6_HIZ_OP_NONE;
-   params->fast_clear_op = 0;
-   params->num_draw_buffers = 1;
-   params->num_layers = 1;
+   DBG("%s from %dx %s mt %p %d %d (%d,%d) %dx%d"
+       "to %dx %s mt %p %d %d (%d,%d)\n",
+       __func__,
+       src_mt->num_samples, _mesa_get_format_name(src_mt->format), src_mt,
+       src_level, src_layer, src_x, src_y, src_width, src_height,
+       dst_mt->num_samples, _mesa_get_format_name(dst_mt->format), dst_mt,
+       dst_level, dst_layer, dst_x, dst_y);
+
+   struct isl_surf tmp_surfs[4];
+   struct blorp_surf src_surf, dst_surf;
+   blorp_surf_for_miptree(brw, &src_surf, src_mt, false,
+                          (1 << ISL_AUX_USAGE_MCS) |
+                          (1 << ISL_AUX_USAGE_CCS_E),
+                          &src_level, src_layer, 1, &tmp_surfs[0]);
+   blorp_surf_for_miptree(brw, &dst_surf, dst_mt, true,
+                          (1 << ISL_AUX_USAGE_MCS) |
+                          (1 << ISL_AUX_USAGE_CCS_E),
+                          &dst_level, dst_layer, 1, &tmp_surfs[2]);
+
+   struct blorp_batch batch;
+   blorp_batch_init(&brw->blorp, &batch, brw, 0);
+   blorp_copy(&batch, &src_surf, src_level, src_layer,
+              &dst_surf, dst_level, dst_layer,
+              src_x, src_y, dst_x, dst_y, src_width, src_height);
+   blorp_batch_finish(&batch);
 }
 
-void
-brw_blorp_init_wm_prog_key(struct brw_wm_prog_key *wm_key)
+static struct intel_mipmap_tree *
+find_miptree(GLbitfield buffer_bit, struct intel_renderbuffer *irb)
 {
-   memset(wm_key, 0, sizeof(*wm_key));
-   wm_key->nr_color_regions = 1;
-   for (int i = 0; i < MAX_SAMPLERS; i++)
-      wm_key->tex.swizzles[i] = SWIZZLE_XYZW;
+   struct intel_mipmap_tree *mt = irb->mt;
+   if (buffer_bit == GL_STENCIL_BUFFER_BIT && mt->stencil_mt)
+      mt = mt->stencil_mt;
+   return mt;
 }
 
 static int
-nir_uniform_type_size(const struct glsl_type *type)
+blorp_get_texture_swizzle(const struct intel_renderbuffer *irb)
 {
-   /* Only very basic types are allowed */
-   assert(glsl_type_is_vector_or_scalar(type));
-   assert(glsl_get_bit_size(type) == 32);
-
-   return glsl_get_vector_elements(type) * 4;
+   return irb->Base.Base._BaseFormat == GL_RGB ?
+      MAKE_SWIZZLE4(SWIZZLE_X, SWIZZLE_Y, SWIZZLE_Z, SWIZZLE_ONE) :
+      SWIZZLE_XYZW;
 }
 
-const unsigned *
-brw_blorp_compile_nir_shader(struct brw_context *brw, struct nir_shader *nir,
-                             const struct brw_wm_prog_key *wm_key,
-                             bool use_repclear,
-                             struct brw_blorp_prog_data *prog_data,
-                             unsigned *program_size)
+static void
+do_blorp_blit(struct brw_context *brw, GLbitfield buffer_bit,
+              struct intel_renderbuffer *src_irb, mesa_format src_format,
+              struct intel_renderbuffer *dst_irb, mesa_format dst_format,
+              GLfloat srcX0, GLfloat srcY0, GLfloat srcX1, GLfloat srcY1,
+              GLfloat dstX0, GLfloat dstY0, GLfloat dstX1, GLfloat dstY1,
+              GLenum filter, bool mirror_x, bool mirror_y)
 {
-   const struct brw_compiler *compiler = brw->intelScreen->compiler;
+   const struct gl_context *ctx = &brw->ctx;
 
-   void *mem_ctx = ralloc_context(NULL);
+   /* Find source/dst miptrees */
+   struct intel_mipmap_tree *src_mt = find_miptree(buffer_bit, src_irb);
+   struct intel_mipmap_tree *dst_mt = find_miptree(buffer_bit, dst_irb);
 
-   /* Calling brw_preprocess_nir and friends is destructive and, if cloning is
-    * enabled, may end up completely replacing the nir_shader.  Therefore, we
-    * own it and might as well put it in our context for easy cleanup.
-    */
-   ralloc_steal(mem_ctx, nir);
-   nir->options =
-      compiler->glsl_compiler_options[MESA_SHADER_FRAGMENT].NirOptions;
+   const bool do_srgb = ctx->Color.sRGBEnabled;
 
-   struct brw_wm_prog_data wm_prog_data;
-   memset(&wm_prog_data, 0, sizeof(wm_prog_data));
+   /* Do the blit */
+   brw_blorp_blit_miptrees(brw,
+                           src_mt, src_irb->mt_level, src_irb->mt_layer,
+                           src_format, blorp_get_texture_swizzle(src_irb),
+                           dst_mt, dst_irb->mt_level, dst_irb->mt_layer,
+                           dst_format,
+                           srcX0, srcY0, srcX1, srcY1,
+                           dstX0, dstY0, dstX1, dstY1,
+                           filter, mirror_x, mirror_y,
+                           do_srgb, do_srgb);
 
-   wm_prog_data.base.nr_params = 0;
-   wm_prog_data.base.param = NULL;
-
-   /* BLORP always just uses the first two binding table entries */
-   wm_prog_data.binding_table.render_target_start = 0;
-   wm_prog_data.base.binding_table.texture_start = 1;
-
-   nir = brw_preprocess_nir(compiler, nir);
-   nir_remove_dead_variables(nir, nir_var_shader_in);
-   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir)->impl);
-
-   /* Uniforms are required to be lowered before going into compile_fs.  For
-    * BLORP, we'll assume that whoever builds the shader sets the location
-    * they want so we just need to lower them and figure out how many we have
-    * in total.
-    */
-   nir->num_uniforms = 0;
-   nir_foreach_variable(var, &nir->uniforms) {
-      var->data.driver_location = var->data.location;
-      unsigned end = var->data.location + nir_uniform_type_size(var->type);
-      nir->num_uniforms = MAX2(nir->num_uniforms, end);
-   }
-   nir_lower_io(nir, nir_var_uniform, nir_uniform_type_size);
-
-   const unsigned *program =
-      brw_compile_fs(compiler, brw, mem_ctx, wm_key, &wm_prog_data, nir,
-                     NULL, -1, -1, false, use_repclear, program_size, NULL);
-
-   /* Copy the relavent bits of wm_prog_data over into the blorp prog data */
-   prog_data->dispatch_8 = wm_prog_data.dispatch_8;
-   prog_data->dispatch_16 = wm_prog_data.dispatch_16;
-   prog_data->first_curbe_grf_0 = wm_prog_data.base.dispatch_grf_start_reg;
-   prog_data->first_curbe_grf_2 = wm_prog_data.dispatch_grf_start_reg_2;
-   prog_data->ksp_offset_2 = wm_prog_data.prog_offset_2;
-   prog_data->persample_msaa_dispatch = wm_prog_data.persample_dispatch;
-   prog_data->flat_inputs = wm_prog_data.flat_inputs;
-   prog_data->num_varying_inputs = wm_prog_data.num_varying_inputs;
-   prog_data->inputs_read = nir->info.inputs_read;
-
-   assert(wm_prog_data.base.nr_params == 0);
-
-   return program;
+   dst_irb->need_downsample = true;
 }
 
-static enum isl_msaa_layout
-get_isl_msaa_layout(enum intel_msaa_layout layout)
+static bool
+try_blorp_blit(struct brw_context *brw,
+               const struct gl_framebuffer *read_fb,
+               const struct gl_framebuffer *draw_fb,
+               GLfloat srcX0, GLfloat srcY0, GLfloat srcX1, GLfloat srcY1,
+               GLfloat dstX0, GLfloat dstY0, GLfloat dstX1, GLfloat dstY1,
+               GLenum filter, GLbitfield buffer_bit)
 {
-   switch (layout) {
-   case INTEL_MSAA_LAYOUT_NONE:
-      return ISL_MSAA_LAYOUT_NONE;
-   case INTEL_MSAA_LAYOUT_IMS:
-      return ISL_MSAA_LAYOUT_INTERLEAVED;
-   case INTEL_MSAA_LAYOUT_UMS:
-   case INTEL_MSAA_LAYOUT_CMS:
-      return ISL_MSAA_LAYOUT_ARRAY;
+   struct gl_context *ctx = &brw->ctx;
+
+   /* Sync up the state of window system buffers.  We need to do this before
+    * we go looking for the buffers.
+    */
+   intel_prepare_render(brw);
+
+   bool mirror_x, mirror_y;
+   if (brw_meta_mirror_clip_and_scissor(ctx, read_fb, draw_fb,
+                                        &srcX0, &srcY0, &srcX1, &srcY1,
+                                        &dstX0, &dstY0, &dstX1, &dstY1,
+                                        &mirror_x, &mirror_y))
+      return true;
+
+   /* Find buffers */
+   struct intel_renderbuffer *src_irb;
+   struct intel_renderbuffer *dst_irb;
+   struct intel_mipmap_tree *src_mt;
+   struct intel_mipmap_tree *dst_mt;
+   switch (buffer_bit) {
+   case GL_COLOR_BUFFER_BIT:
+      src_irb = intel_renderbuffer(read_fb->_ColorReadBuffer);
+      for (unsigned i = 0; i < draw_fb->_NumColorDrawBuffers; ++i) {
+         dst_irb = intel_renderbuffer(draw_fb->_ColorDrawBuffers[i]);
+	 if (dst_irb)
+            do_blorp_blit(brw, buffer_bit,
+                          src_irb, src_irb->Base.Base.Format,
+                          dst_irb, dst_irb->Base.Base.Format,
+                          srcX0, srcY0, srcX1, srcY1,
+                          dstX0, dstY0, dstX1, dstY1,
+                          filter, mirror_x, mirror_y);
+      }
+      break;
+   case GL_DEPTH_BUFFER_BIT:
+      src_irb =
+         intel_renderbuffer(read_fb->Attachment[BUFFER_DEPTH].Renderbuffer);
+      dst_irb =
+         intel_renderbuffer(draw_fb->Attachment[BUFFER_DEPTH].Renderbuffer);
+      src_mt = find_miptree(buffer_bit, src_irb);
+      dst_mt = find_miptree(buffer_bit, dst_irb);
+
+      /* We can't handle format conversions between Z24 and other formats
+       * since we have to lie about the surface format. See the comments in
+       * brw_blorp_surface_info::set().
+       */
+      if ((src_mt->format == MESA_FORMAT_Z24_UNORM_X8_UINT) !=
+          (dst_mt->format == MESA_FORMAT_Z24_UNORM_X8_UINT))
+         return false;
+
+      do_blorp_blit(brw, buffer_bit, src_irb, MESA_FORMAT_NONE,
+                    dst_irb, MESA_FORMAT_NONE, srcX0, srcY0,
+                    srcX1, srcY1, dstX0, dstY0, dstX1, dstY1,
+                    filter, mirror_x, mirror_y);
+      break;
+   case GL_STENCIL_BUFFER_BIT:
+      src_irb =
+         intel_renderbuffer(read_fb->Attachment[BUFFER_STENCIL].Renderbuffer);
+      dst_irb =
+         intel_renderbuffer(draw_fb->Attachment[BUFFER_STENCIL].Renderbuffer);
+      do_blorp_blit(brw, buffer_bit, src_irb, MESA_FORMAT_NONE,
+                    dst_irb, MESA_FORMAT_NONE, srcX0, srcY0,
+                    srcX1, srcY1, dstX0, dstY0, dstX1, dstY1,
+                    filter, mirror_x, mirror_y);
+      break;
    default:
-      unreachable("Invalid MSAA layout");
+      unreachable("not reached");
    }
+
+   return true;
 }
 
-struct surface_state_info {
-   unsigned num_dwords;
-   unsigned ss_align; /* Required alignment of RENDER_SURFACE_STATE in bytes */
-   unsigned reloc_dw;
-   unsigned aux_reloc_dw;
-   unsigned tex_mocs;
-   unsigned rb_mocs;
-};
-
-static const struct surface_state_info surface_state_infos[] = {
-   [6] = {6,  32, 1,  0},
-   [7] = {8,  32, 1,  6,  GEN7_MOCS_L3, GEN7_MOCS_L3},
-   [8] = {13, 64, 8,  10, BDW_MOCS_WB,  BDW_MOCS_PTE},
-   [9] = {16, 64, 8,  10, SKL_MOCS_WB,  SKL_MOCS_PTE},
-};
-
-uint32_t
-brw_blorp_emit_surface_state(struct brw_context *brw,
-                             const struct brw_blorp_surface_info *surface,
-                             uint32_t read_domains, uint32_t write_domain,
-                             bool is_render_target)
+bool
+brw_blorp_copytexsubimage(struct brw_context *brw,
+                          struct gl_renderbuffer *src_rb,
+                          struct gl_texture_image *dst_image,
+                          int slice,
+                          int srcX0, int srcY0,
+                          int dstX0, int dstY0,
+                          int width, int height)
 {
-   const struct surface_state_info ss_info = surface_state_infos[brw->gen];
+   struct gl_context *ctx = &brw->ctx;
+   struct intel_renderbuffer *src_irb = intel_renderbuffer(src_rb);
+   struct intel_texture_image *intel_image = intel_texture_image(dst_image);
 
-   struct isl_surf surf;
-   intel_miptree_get_isl_surf(brw, surface->mt, &surf);
+   /* No pixel transfer operations (zoom, bias, mapping), just a blit */
+   if (brw->ctx._ImageTransferState)
+      return false;
 
-   /* Stomp surface dimensions and tiling (if needed) with info from blorp */
-   surf.dim = ISL_SURF_DIM_2D;
-   surf.dim_layout = ISL_DIM_LAYOUT_GEN4_2D;
-   surf.msaa_layout = get_isl_msaa_layout(surface->msaa_layout);
-   surf.logical_level0_px.width = surface->width;
-   surf.logical_level0_px.height = surface->height;
-   surf.logical_level0_px.depth = 1;
-   surf.logical_level0_px.array_len = 1;
-   surf.levels = 1;
-   surf.samples = MAX2(surface->num_samples, 1);
-
-   /* Alignment doesn't matter since we have 1 miplevel and 1 array slice so
-    * just pick something that works for everybody.
+   /* Sync up the state of window system buffers.  We need to do this before
+    * we go looking at the src renderbuffer's miptree.
     */
-   surf.image_alignment_el = isl_extent3d(4, 4, 1);
+   intel_prepare_render(brw);
 
-   if (brw->gen == 6 && surface->num_samples > 1) {
-      /* Since gen6 uses INTEL_MSAA_LAYOUT_IMS, width and height are measured
-       * in samples.  But SURFACE_STATE wants them in pixels, so we need to
-       * divide them each by 2.
-       */
-      surf.logical_level0_px.width /= 2;
-      surf.logical_level0_px.height /= 2;
+   struct intel_mipmap_tree *src_mt = src_irb->mt;
+   struct intel_mipmap_tree *dst_mt = intel_image->mt;
+
+   /* There is support for only up to eight samples. */
+   if (src_mt->num_samples > 8 || dst_mt->num_samples > 8)
+      return false;
+
+   /* BLORP is only supported from Gen6 onwards. */
+   if (brw->gen < 6)
+      return false;
+
+   if (_mesa_get_format_base_format(src_rb->Format) !=
+       _mesa_get_format_base_format(dst_image->TexFormat)) {
+      return false;
    }
 
-   if (brw->gen == 6 && surf.image_alignment_el.height > 4) {
-      /* This can happen on stencil buffers on Sandy Bridge due to the
-       * single-LOD work-around.  It's fairly harmless as long as we don't
-       * pass a bogus value into isl_surf_fill_state().
-       */
-      surf.image_alignment_el = isl_extent3d(4, 2, 1);
+   /* We can't handle format conversions between Z24 and other formats since
+    * we have to lie about the surface format.  See the comments in
+    * brw_blorp_surface_info::set().
+    */
+   if ((src_mt->format == MESA_FORMAT_Z24_UNORM_X8_UINT) !=
+       (dst_mt->format == MESA_FORMAT_Z24_UNORM_X8_UINT)) {
+      return false;
    }
 
-   /* We need to fake W-tiling with Y-tiling */
-   if (surface->map_stencil_as_y_tiled)
-      surf.tiling = ISL_TILING_Y0;
+   if (!brw->format_supported_as_render_target[dst_image->TexFormat])
+      return false;
 
-   union isl_color_value clear_color = { .u32 = { 0, 0, 0, 0 } };
+   /* Source clipping shouldn't be necessary, since copytexsubimage (in
+    * src/mesa/main/teximage.c) calls _mesa_clip_copytexsubimage() which
+    * takes care of it.
+    *
+    * Destination clipping shouldn't be necessary since the restrictions on
+    * glCopyTexSubImage prevent the user from specifying a destination rectangle
+    * that falls outside the bounds of the destination texture.
+    * See error_check_subtexture_dimensions().
+    */
 
-   struct isl_surf *aux_surf = NULL, aux_surf_s;
-   uint64_t aux_offset = 0;
-   enum isl_aux_usage aux_usage = ISL_AUX_USAGE_NONE;
-   if (surface->mt->mcs_mt) {
-      /* We should probably to similar stomping to above but most of the aux
-       * surf gets ignored when we fill out the surface state anyway so
-       * there's no point.
-       */
-      intel_miptree_get_aux_isl_surf(brw, surface->mt, &aux_surf_s, &aux_usage);
-      aux_surf = &aux_surf_s;
-      assert(surface->mt->mcs_mt->offset == 0);
-      aux_offset = surface->mt->mcs_mt->bo->offset64;
+   int srcY1 = srcY0 + height;
+   int srcX1 = srcX0 + width;
+   int dstX1 = dstX0 + width;
+   int dstY1 = dstY0 + height;
 
-      /* We only really need a clear color if we also have an auxiliary
-       * surface.  Without one, it does nothing.
-       */
-      clear_color = intel_miptree_get_isl_clear_color(brw, surface->mt);
+   /* Account for the fact that in the system framebuffer, the origin is at
+    * the lower left.
+    */
+   bool mirror_y = false;
+   if (_mesa_is_winsys_fbo(ctx->ReadBuffer)) {
+      GLint tmp = src_rb->Height - srcY0;
+      srcY0 = src_rb->Height - srcY1;
+      srcY1 = tmp;
+      mirror_y = true;
    }
 
-   struct isl_view view = {
-      .format = surface->brw_surfaceformat,
-      .base_level = 0,
-      .levels = 1,
-      .base_array_layer = 0,
-      .array_len = 1,
-      .channel_select = {
-         ISL_CHANNEL_SELECT_RED,
-         ISL_CHANNEL_SELECT_GREEN,
-         ISL_CHANNEL_SELECT_BLUE,
-         ISL_CHANNEL_SELECT_ALPHA,
-      },
-      .usage = is_render_target ? ISL_SURF_USAGE_RENDER_TARGET_BIT :
-                                  ISL_SURF_USAGE_TEXTURE_BIT,
+   /* Account for face selection and texture view MinLayer */
+   int dst_slice = slice + dst_image->TexObject->MinLayer + dst_image->Face;
+   int dst_level = dst_image->Level + dst_image->TexObject->MinLevel;
+
+   brw_blorp_blit_miptrees(brw,
+                           src_mt, src_irb->mt_level, src_irb->mt_layer,
+                           src_rb->Format, blorp_get_texture_swizzle(src_irb),
+                           dst_mt, dst_level, dst_slice,
+                           dst_image->TexFormat,
+                           srcX0, srcY0, srcX1, srcY1,
+                           dstX0, dstY0, dstX1, dstY1,
+                           GL_NEAREST, false, mirror_y,
+                           false, false);
+
+   /* If we're copying to a packed depth stencil texture and the source
+    * framebuffer has separate stencil, we need to also copy the stencil data
+    * over.
+    */
+   src_rb = ctx->ReadBuffer->Attachment[BUFFER_STENCIL].Renderbuffer;
+   if (_mesa_get_format_bits(dst_image->TexFormat, GL_STENCIL_BITS) > 0 &&
+       src_rb != NULL) {
+      src_irb = intel_renderbuffer(src_rb);
+      src_mt = src_irb->mt;
+
+      if (src_mt->stencil_mt)
+         src_mt = src_mt->stencil_mt;
+      if (dst_mt->stencil_mt)
+         dst_mt = dst_mt->stencil_mt;
+
+      if (src_mt != dst_mt) {
+         brw_blorp_blit_miptrees(brw,
+                                 src_mt, src_irb->mt_level, src_irb->mt_layer,
+                                 src_mt->format,
+                                 blorp_get_texture_swizzle(src_irb),
+                                 dst_mt, dst_level, dst_slice,
+                                 dst_mt->format,
+                                 srcX0, srcY0, srcX1, srcY1,
+                                 dstX0, dstY0, dstX1, dstY1,
+                                 GL_NEAREST, false, mirror_y,
+                                 false, false);
+      }
+   }
+
+   return true;
+}
+
+
+GLbitfield
+brw_blorp_framebuffer(struct brw_context *brw,
+                      struct gl_framebuffer *readFb,
+                      struct gl_framebuffer *drawFb,
+                      GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1,
+                      GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1,
+                      GLbitfield mask, GLenum filter)
+{
+   /* BLORP is not supported before Gen6. */
+   if (brw->gen < 6)
+      return mask;
+
+   static GLbitfield buffer_bits[] = {
+      GL_COLOR_BUFFER_BIT,
+      GL_DEPTH_BUFFER_BIT,
+      GL_STENCIL_BUFFER_BIT,
    };
 
-   uint32_t offset, tile_x, tile_y;
-   offset = brw_blorp_compute_tile_offsets(surface, &tile_x, &tile_y);
-
-   uint32_t surf_offset;
-   uint32_t *dw = brw_state_batch(brw, AUB_TRACE_SURFACE_STATE,
-                                  ss_info.num_dwords * 4, ss_info.ss_align,
-                                  &surf_offset);
-
-   const uint32_t mocs = is_render_target ? ss_info.rb_mocs : ss_info.tex_mocs;
-
-   isl_surf_fill_state(&brw->isl_dev, dw, .surf = &surf, .view = &view,
-                       .address = surface->mt->bo->offset64 + offset,
-                       .aux_surf = aux_surf, .aux_usage = aux_usage,
-                       .aux_address = aux_offset,
-                       .mocs = mocs, .clear_color = clear_color,
-                       .x_offset_sa = tile_x, .y_offset_sa = tile_y);
-
-   /* Emit relocation to surface contents */
-   drm_intel_bo_emit_reloc(brw->batch.bo,
-                           surf_offset + ss_info.reloc_dw * 4,
-                           surface->mt->bo,
-                           dw[ss_info.reloc_dw] - surface->mt->bo->offset64,
-                           read_domains, write_domain);
-
-   if (aux_surf) {
-      /* On gen7 and prior, the bottom 12 bits of the MCS base address are
-       * used to store other information.  This should be ok, however, because
-       * surface buffer addresses are always 4K page alinged.
-       */
-      assert((aux_offset & 0xfff) == 0);
-      drm_intel_bo_emit_reloc(brw->batch.bo,
-                              surf_offset + ss_info.aux_reloc_dw * 4,
-                              surface->mt->mcs_mt->bo,
-                              dw[ss_info.aux_reloc_dw] & 0xfff,
-                              read_domains, write_domain);
+   for (unsigned int i = 0; i < ARRAY_SIZE(buffer_bits); ++i) {
+      if ((mask & buffer_bits[i]) &&
+       try_blorp_blit(brw, readFb, drawFb,
+                      srcX0, srcY0, srcX1, srcY1,
+                      dstX0, dstY0, dstX1, dstY1,
+                      filter, buffer_bits[i])) {
+         mask &= ~buffer_bits[i];
+      }
    }
 
-   return surf_offset;
+   return mask;
+}
+
+static bool
+set_write_disables(const struct intel_renderbuffer *irb,
+                   const GLubyte *color_mask, bool *color_write_disable)
+{
+   /* Format information in the renderbuffer represents the requirements
+    * given by the client. There are cases where the backing miptree uses,
+    * for example, RGBA to represent RGBX. Since the client is only expecting
+    * RGB we can treat alpha as not used and write whatever we like into it.
+    */
+   const GLenum base_format = irb->Base.Base._BaseFormat;
+   const int components = _mesa_base_format_component_count(base_format);
+   bool disables = false;
+
+   assert(components > 0);
+
+   for (int i = 0; i < components; i++) {
+      color_write_disable[i] = !color_mask[i];
+      disables = disables || !color_mask[i];
+   }
+
+   return disables;
+}
+
+static unsigned
+irb_logical_mt_layer(struct intel_renderbuffer *irb)
+{
+   return physical_to_logical_layer(irb->mt, irb->mt_layer);
+}
+
+static bool
+do_single_blorp_clear(struct brw_context *brw, struct gl_framebuffer *fb,
+                      struct gl_renderbuffer *rb, unsigned buf,
+                      bool partial_clear, bool encode_srgb)
+{
+   struct gl_context *ctx = &brw->ctx;
+   struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+   mesa_format format = irb->mt->format;
+   uint32_t x0, x1, y0, y1;
+
+   if (!encode_srgb && _mesa_get_format_color_encoding(format) == GL_SRGB)
+      format = _mesa_get_srgb_format_linear(format);
+
+   x0 = fb->_Xmin;
+   x1 = fb->_Xmax;
+   if (rb->Name != 0) {
+      y0 = fb->_Ymin;
+      y1 = fb->_Ymax;
+   } else {
+      y0 = rb->Height - fb->_Ymax;
+      y1 = rb->Height - fb->_Ymin;
+   }
+
+   /* If the clear region is empty, just return. */
+   if (x0 == x1 || y0 == y1)
+      return true;
+
+   bool can_fast_clear = !partial_clear;
+
+   bool color_write_disable[4] = { false, false, false, false };
+   if (set_write_disables(irb, ctx->Color.ColorMask[buf], color_write_disable))
+      can_fast_clear = false;
+
+   if (irb->mt->no_ccs ||
+       !brw_is_color_fast_clear_compatible(brw, irb->mt, &ctx->Color.ClearColor))
+      can_fast_clear = false;
+
+   const unsigned logical_layer = irb_logical_mt_layer(irb);
+   const enum intel_fast_clear_state fast_clear_state =
+      intel_miptree_get_fast_clear_state(irb->mt, irb->mt_level,
+                                         logical_layer);
+
+   /* Surface state can only record one fast clear color value. Therefore
+    * unless different levels/layers agree on the color it can be used to
+    * represent only single level/layer. Here it will be reserved for the
+    * first slice (level 0, layer 0).
+    */
+   if (irb->layer_count > 1 || irb->mt_level || irb->mt_layer)
+      can_fast_clear = false;
+
+   if (can_fast_clear) {
+      union gl_color_union override_color =
+         brw_meta_convert_fast_clear_color(brw, irb->mt,
+                                           &ctx->Color.ClearColor);
+
+      /* Record the clear color in the miptree so that it will be
+       * programmed in SURFACE_STATE by later rendering and resolve
+       * operations.
+       */
+      const bool color_updated = brw_meta_set_fast_clear_color(
+                                    brw, &irb->mt->gen9_fast_clear_color,
+                                    &override_color);
+
+      /* If the buffer is already in INTEL_FAST_CLEAR_STATE_CLEAR, the clear
+       * is redundant and can be skipped.
+       */
+      if (!color_updated && fast_clear_state == INTEL_FAST_CLEAR_STATE_CLEAR)
+         return true;
+
+      /* If the MCS buffer hasn't been allocated yet, we need to allocate
+       * it now.
+       */
+      if (!irb->mt->mcs_buf) {
+         assert(!intel_miptree_is_lossless_compressed(brw, irb->mt));
+         if (!intel_miptree_alloc_non_msrt_mcs(brw, irb->mt, false)) {
+            /* MCS allocation failed--probably this will only happen in
+             * out-of-memory conditions.  But in any case, try to recover
+             * by falling back to a non-blorp clear technique.
+             */
+            return false;
+         }
+      }
+   }
+
+   const unsigned num_layers = fb->MaxNumLayers ? irb->layer_count : 1;
+
+   /* We can't setup the blorp_surf until we've allocated the MCS above */
+   struct isl_surf isl_tmp[2];
+   struct blorp_surf surf;
+   unsigned level = irb->mt_level;
+   blorp_surf_for_miptree(brw, &surf, irb->mt, true,
+                          (1 << ISL_AUX_USAGE_MCS) |
+                          (1 << ISL_AUX_USAGE_CCS_E) |
+                          (1 << ISL_AUX_USAGE_CCS_D),
+                          &level, logical_layer, num_layers, isl_tmp);
+
+   if (can_fast_clear) {
+      DBG("%s (fast) to mt %p level %d layers %d+%d\n", __FUNCTION__,
+          irb->mt, irb->mt_level, irb->mt_layer, num_layers);
+
+      struct blorp_batch batch;
+      blorp_batch_init(&brw->blorp, &batch, brw, 0);
+      blorp_fast_clear(&batch, &surf,
+                       (enum isl_format)brw->render_target_format[format],
+                       level, logical_layer, num_layers,
+                       x0, y0, x1, y1);
+      blorp_batch_finish(&batch);
+
+      /* Now that the fast clear has occurred, put the buffer in
+       * INTEL_FAST_CLEAR_STATE_CLEAR so that we won't waste time doing
+       * redundant clears.
+       */
+      intel_miptree_set_fast_clear_state(brw, irb->mt, irb->mt_level,
+                                         logical_layer, num_layers,
+                                         INTEL_FAST_CLEAR_STATE_CLEAR);
+   } else {
+      DBG("%s (slow) to mt %p level %d layer %d+%d\n", __FUNCTION__,
+          irb->mt, irb->mt_level, irb->mt_layer, num_layers);
+
+      union isl_color_value clear_color;
+      memcpy(clear_color.f32, ctx->Color.ClearColor.f, sizeof(float) * 4);
+
+      struct blorp_batch batch;
+      blorp_batch_init(&brw->blorp, &batch, brw, 0);
+      blorp_clear(&batch, &surf,
+                  (enum isl_format)brw->render_target_format[format],
+                  ISL_SWIZZLE_IDENTITY,
+                  level, irb_logical_mt_layer(irb), num_layers,
+                  x0, y0, x1, y1,
+                  clear_color, color_write_disable);
+      blorp_batch_finish(&batch);
+   }
+
+   return true;
+}
+
+bool
+brw_blorp_clear_color(struct brw_context *brw, struct gl_framebuffer *fb,
+                      GLbitfield mask, bool partial_clear, bool encode_srgb)
+{
+   for (unsigned buf = 0; buf < fb->_NumColorDrawBuffers; buf++) {
+      struct gl_renderbuffer *rb = fb->_ColorDrawBuffers[buf];
+      struct intel_renderbuffer *irb = intel_renderbuffer(rb);
+
+      /* Only clear the buffers present in the provided mask */
+      if (((1 << fb->_ColorDrawBufferIndexes[buf]) & mask) == 0)
+         continue;
+
+      /* If this is an ES2 context or GL_ARB_ES2_compatibility is supported,
+       * the framebuffer can be complete with some attachments missing.  In
+       * this case the _ColorDrawBuffers pointer will be NULL.
+       */
+      if (rb == NULL)
+         continue;
+
+      if (!do_single_blorp_clear(brw, fb, rb, buf, partial_clear,
+                                 encode_srgb)) {
+         return false;
+      }
+
+      irb->need_downsample = true;
+   }
+
+   return true;
+}
+
+void
+brw_blorp_resolve_color(struct brw_context *brw, struct intel_mipmap_tree *mt,
+                        unsigned level, unsigned layer)
+{
+   DBG("%s to mt %p level %u layer %u\n", __FUNCTION__, mt, level, layer);
+
+   const mesa_format format = _mesa_get_srgb_format_linear(mt->format);
+
+   struct isl_surf isl_tmp[2];
+   struct blorp_surf surf;
+   blorp_surf_for_miptree(brw, &surf, mt, true,
+                          (1 << ISL_AUX_USAGE_CCS_E) |
+                          (1 << ISL_AUX_USAGE_CCS_D),
+                          &level, layer, 1 /* num_layers */,
+                          isl_tmp);
+
+   enum blorp_fast_clear_op resolve_op;
+   if (brw->gen >= 9) {
+      if (surf.aux_usage == ISL_AUX_USAGE_CCS_E)
+         resolve_op = BLORP_FAST_CLEAR_OP_RESOLVE_FULL;
+      else
+         resolve_op = BLORP_FAST_CLEAR_OP_RESOLVE_PARTIAL;
+   } else {
+      assert(surf.aux_usage == ISL_AUX_USAGE_CCS_D);
+      /* Broadwell and earlier do not have a partial resolve */
+      resolve_op = BLORP_FAST_CLEAR_OP_RESOLVE_FULL;
+   }
+
+   struct blorp_batch batch;
+   blorp_batch_init(&brw->blorp, &batch, brw, 0);
+   blorp_ccs_resolve(&batch, &surf, level, layer,
+                     brw_blorp_to_isl_format(brw, format, true),
+                     resolve_op);
+   blorp_batch_finish(&batch);
+}
+
+static void
+gen6_blorp_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
+                    unsigned int level, unsigned int layer, enum blorp_hiz_op op)
+{
+   assert(intel_miptree_level_has_hiz(mt, level));
+
+   struct isl_surf isl_tmp[2];
+   struct blorp_surf surf;
+   blorp_surf_for_miptree(brw, &surf, mt, true, (1 << ISL_AUX_USAGE_HIZ),
+                          &level, layer, 1, isl_tmp);
+
+   struct blorp_batch batch;
+   blorp_batch_init(&brw->blorp, &batch, brw, 0);
+   blorp_gen6_hiz_op(&batch, &surf, level, layer, op);
+   blorp_batch_finish(&batch);
 }
 
 /**
@@ -399,21 +1005,21 @@ brw_blorp_emit_surface_state(struct brw_context *brw,
  */
 void
 intel_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
-	       unsigned int level, unsigned int layer, enum gen6_hiz_op op)
+	       unsigned int level, unsigned int layer, enum blorp_hiz_op op)
 {
    const char *opname = NULL;
 
    switch (op) {
-   case GEN6_HIZ_OP_DEPTH_RESOLVE:
+   case BLORP_HIZ_OP_DEPTH_RESOLVE:
       opname = "depth resolve";
       break;
-   case GEN6_HIZ_OP_HIZ_RESOLVE:
+   case BLORP_HIZ_OP_HIZ_RESOLVE:
       opname = "hiz ambiguate";
       break;
-   case GEN6_HIZ_OP_DEPTH_CLEAR:
+   case BLORP_HIZ_OP_DEPTH_CLEAR:
       opname = "depth clear";
       break;
-   case GEN6_HIZ_OP_NONE:
+   case BLORP_HIZ_OP_NONE:
       opname = "noop?";
       break;
    }
@@ -426,158 +1032,4 @@ intel_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
    } else {
       gen6_blorp_hiz_exec(brw, mt, level, layer, op);
    }
-}
-
-void
-brw_blorp_exec(struct brw_context *brw, const struct brw_blorp_params *params)
-{
-   struct gl_context *ctx = &brw->ctx;
-   const uint32_t estimated_max_batch_usage = brw->gen >= 8 ? 1800 : 1500;
-   bool check_aperture_failed_once = false;
-
-   /* Flush the sampler and render caches.  We definitely need to flush the
-    * sampler cache so that we get updated contents from the render cache for
-    * the glBlitFramebuffer() source.  Also, we are sometimes warned in the
-    * docs to flush the cache between reinterpretations of the same surface
-    * data with different formats, which blorp does for stencil and depth
-    * data.
-    */
-   brw_emit_mi_flush(brw);
-
-   brw_select_pipeline(brw, BRW_RENDER_PIPELINE);
-
-retry:
-   intel_batchbuffer_require_space(brw, estimated_max_batch_usage, RENDER_RING);
-   intel_batchbuffer_save_state(brw);
-   drm_intel_bo *saved_bo = brw->batch.bo;
-   uint32_t saved_used = USED_BATCH(brw->batch);
-   uint32_t saved_state_batch_offset = brw->batch.state_batch_offset;
-
-   switch (brw->gen) {
-   case 6:
-      gen6_blorp_exec(brw, params);
-      break;
-   case 7:
-      gen7_blorp_exec(brw, params);
-      break;
-   case 8:
-   case 9:
-      gen8_blorp_exec(brw, params);
-      break;
-   default:
-      /* BLORP is not supported before Gen6. */
-      unreachable("not reached");
-   }
-
-   /* Make sure we didn't wrap the batch unintentionally, and make sure we
-    * reserved enough space that a wrap will never happen.
-    */
-   assert(brw->batch.bo == saved_bo);
-   assert((USED_BATCH(brw->batch) - saved_used) * 4 +
-          (saved_state_batch_offset - brw->batch.state_batch_offset) <
-          estimated_max_batch_usage);
-   /* Shut up compiler warnings on release build */
-   (void)saved_bo;
-   (void)saved_used;
-   (void)saved_state_batch_offset;
-
-   /* Check if the blorp op we just did would make our batch likely to fail to
-    * map all the BOs into the GPU at batch exec time later.  If so, flush the
-    * batch and try again with nothing else in the batch.
-    */
-   if (dri_bufmgr_check_aperture_space(&brw->batch.bo, 1)) {
-      if (!check_aperture_failed_once) {
-         check_aperture_failed_once = true;
-         intel_batchbuffer_reset_to_saved(brw);
-         intel_batchbuffer_flush(brw);
-         goto retry;
-      } else {
-         int ret = intel_batchbuffer_flush(brw);
-         WARN_ONCE(ret == -ENOSPC,
-                   "i965: blorp emit exceeded available aperture space\n");
-      }
-   }
-
-   if (unlikely(brw->always_flush_batch))
-      intel_batchbuffer_flush(brw);
-
-   /* We've smashed all state compared to what the normal 3D pipeline
-    * rendering tracks for GL.
-    */
-   brw->ctx.NewDriverState |= BRW_NEW_BLORP;
-   brw->no_depth_or_stencil = false;
-   brw->ib.type = -1;
-
-   /* Flush the sampler cache so any texturing from the destination is
-    * coherent.
-    */
-   brw_emit_mi_flush(brw);
-}
-
-void
-gen6_blorp_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
-                    unsigned int level, unsigned int layer, enum gen6_hiz_op op)
-{
-   struct brw_blorp_params params;
-   brw_blorp_params_init(&params);
-
-   params.hiz_op = op;
-
-   brw_blorp_surface_info_init(brw, &params.depth, mt, level, layer,
-                               mt->format, true);
-
-   /* Align the rectangle primitive to 8x4 pixels.
-    *
-    * During fast depth clears, the emitted rectangle primitive  must be
-    * aligned to 8x4 pixels.  From the Ivybridge PRM, Vol 2 Part 1 Section
-    * 11.5.3.1 Depth Buffer Clear (and the matching section in the Sandybridge
-    * PRM):
-    *     If Number of Multisamples is NUMSAMPLES_1, the rectangle must be
-    *     aligned to an 8x4 pixel block relative to the upper left corner
-    *     of the depth buffer [...]
-    *
-    * For hiz resolves, the rectangle must also be 8x4 aligned. Item
-    * WaHizAmbiguate8x4Aligned from the Haswell workarounds page and the
-    * Ivybridge simulator require the alignment.
-    *
-    * To be safe, let's just align the rect for all hiz operations and all
-    * hardware generations.
-    *
-    * However, for some miptree slices of a Z24 texture, emitting an 8x4
-    * aligned rectangle that covers the slice may clobber adjacent slices if
-    * we strictly adhered to the texture alignments specified in the PRM.  The
-    * Ivybridge PRM, Section "Alignment Unit Size", states that
-    * SURFACE_STATE.Surface_Horizontal_Alignment should be 4 for Z24 surfaces,
-    * not 8. But commit 1f112cc increased the alignment from 4 to 8, which
-    * prevents the clobbering.
-    */
-   params.dst.num_samples = mt->num_samples;
-   if (params.dst.num_samples > 1) {
-      params.depth.width = ALIGN(mt->logical_width0, 8);
-      params.depth.height = ALIGN(mt->logical_height0, 4);
-   } else {
-      params.depth.width = ALIGN(params.depth.width, 8);
-      params.depth.height = ALIGN(params.depth.height, 4);
-   }
-
-   params.x1 = params.depth.width;
-   params.y1 = params.depth.height;
-
-   assert(intel_miptree_level_has_hiz(mt, level));
-
-   switch (mt->format) {
-   case MESA_FORMAT_Z_UNORM16:
-      params.depth_format = BRW_DEPTHFORMAT_D16_UNORM;
-      break;
-   case MESA_FORMAT_Z_FLOAT32:
-      params.depth_format = BRW_DEPTHFORMAT_D32_FLOAT;
-      break;
-   case MESA_FORMAT_Z24_UNORM_X8_UINT:
-      params.depth_format = BRW_DEPTHFORMAT_D24_UNORM_X8_UINT;
-      break;
-   default:
-      unreachable("not reached");
-   }
-
-   brw_blorp_exec(brw, &params);
 }

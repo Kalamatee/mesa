@@ -143,11 +143,14 @@ uint64_t qpu_m_alu2(enum qpu_op_mul op, struct qpu_reg dst,
                     struct qpu_reg src0, struct qpu_reg src1) ATTRIBUTE_CONST;
 uint64_t qpu_merge_inst(uint64_t a, uint64_t b) ATTRIBUTE_CONST;
 uint64_t qpu_load_imm_ui(struct qpu_reg dst, uint32_t val) ATTRIBUTE_CONST;
+uint64_t qpu_load_imm_u2(struct qpu_reg dst, uint32_t val) ATTRIBUTE_CONST;
+uint64_t qpu_load_imm_i2(struct qpu_reg dst, uint32_t val) ATTRIBUTE_CONST;
 uint64_t qpu_branch(uint32_t cond, uint32_t target) ATTRIBUTE_CONST;
 uint64_t qpu_set_sig(uint64_t inst, uint32_t sig) ATTRIBUTE_CONST;
 uint64_t qpu_set_cond_add(uint64_t inst, uint32_t cond) ATTRIBUTE_CONST;
 uint64_t qpu_set_cond_mul(uint64_t inst, uint32_t cond) ATTRIBUTE_CONST;
 uint32_t qpu_encode_small_immediate(uint32_t i) ATTRIBUTE_CONST;
+uint64_t qpu_m_rot(struct qpu_reg dst, struct qpu_reg src, int rot) ATTRIBUTE_CONST;
 
 bool qpu_waddr_is_tlb(uint32_t waddr) ATTRIBUTE_CONST;
 bool qpu_inst_is_tlb(uint64_t inst) ATTRIBUTE_CONST;

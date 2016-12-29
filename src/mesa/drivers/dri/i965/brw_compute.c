@@ -115,7 +115,8 @@ prepare_indirect_gpgpu_walker(struct brw_context *brw)
 static void
 brw_emit_gpgpu_walker(struct brw_context *brw)
 {
-   const struct brw_cs_prog_data *prog_data = brw->cs.prog_data;
+   const struct brw_cs_prog_data *prog_data =
+      brw_cs_prog_data(brw->cs.base.prog_data);
 
    const GLuint *num_groups = brw->compute.num_work_groups;
    uint32_t indirect_flag;
@@ -148,7 +149,7 @@ brw_emit_gpgpu_walker(struct brw_context *brw)
       OUT_BATCH(0);                     /* Indirect Data Length */
       OUT_BATCH(0);                     /* Indirect Data Start Address */
    }
-   assert(thread_width_max <= brw->max_cs_threads);
+   assert(thread_width_max <= brw->screen->devinfo.max_cs_threads);
    OUT_BATCH(SET_FIELD(simd_size / 16, GPGPU_WALKER_SIMD_SIZE) |
              SET_FIELD(thread_width_max - 1, GPGPU_WALKER_THREAD_WIDTH_MAX));
    OUT_BATCH(0);                        /* Thread Group ID Starting X */
@@ -238,7 +239,7 @@ brw_dispatch_compute_common(struct gl_context *ctx)
    if (brw->always_flush_batch)
       intel_batchbuffer_flush(brw);
 
-   brw_state_cache_check_size(brw);
+   brw_program_cache_check_size(brw);
 
    /* Note: since compute shaders can't write to framebuffers, there's no need
     * to call brw_postdraw_set_buffers_need_resolve().

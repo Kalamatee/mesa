@@ -95,6 +95,7 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         /* Supported features (boolean caps). */
         case PIPE_CAP_NPOT_TEXTURES:
         case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
+        case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
         case PIPE_CAP_TWO_SIDED_STENCIL:
         case PIPE_CAP_ANISOTROPIC_FILTER:
         case PIPE_CAP_POINT_SPRITE:
@@ -164,6 +165,7 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS:
         case PIPE_CAP_MAX_VERTEX_STREAMS:
         case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
+        case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
         case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
         case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
         case PIPE_CAP_COMPUTE:
@@ -222,6 +224,9 @@ static int r300_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
         case PIPE_CAP_MAX_WINDOW_RECTANGLES:
         case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
         case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
+        case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+        case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
+        case PIPE_CAP_NATIVE_FENCE_FD:
             return 0;
 
         /* SWTCL-only features. */
@@ -336,6 +341,7 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
         case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+        case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
             return 0;
         case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
             return 32;
@@ -398,6 +404,7 @@ static int r300_get_shader_param(struct pipe_screen *pscreen, unsigned shader, e
         case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
         case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
         case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
+        case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
             return 0;
         case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
             return 32;
@@ -663,12 +670,6 @@ static boolean r300_is_format_supported(struct pipe_screen* screen,
         }
     }
 
-    /* Transfers are always supported. */
-    if (usage & PIPE_BIND_TRANSFER_READ)
-        retval |= PIPE_BIND_TRANSFER_READ;
-    if (usage & PIPE_BIND_TRANSFER_WRITE)
-        retval |= PIPE_BIND_TRANSFER_WRITE;
-
     return retval == usage;
 }
 
@@ -681,6 +682,7 @@ static void r300_destroy_screen(struct pipe_screen* pscreen)
       return;
 
     pipe_mutex_destroy(r300screen->cmask_mutex);
+    slab_destroy_parent(&r300screen->pool_transfers);
 
     if (rws)
       rws->destroy(rws);
@@ -698,6 +700,7 @@ static void r300_fence_reference(struct pipe_screen *screen,
 }
 
 static boolean r300_fence_finish(struct pipe_screen *screen,
+                                 struct pipe_context *ctx,
                                  struct pipe_fence_handle *fence,
                                  uint64_t timeout)
 {
@@ -741,6 +744,8 @@ struct pipe_screen* r300_screen_create(struct radeon_winsys *rws)
     r300screen->screen.fence_finish = r300_fence_finish;
 
     r300_init_screen_resource_functions(r300screen);
+
+    slab_create_parent(&r300screen->pool_transfers, sizeof(struct pipe_transfer), 64);
 
     util_format_s3tc_init();
     pipe_mutex_init(r300screen->cmask_mutex);

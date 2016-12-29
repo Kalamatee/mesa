@@ -21,7 +21,10 @@
  * USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 #include <stdint.h>
+#include <assert.h>
+#include <string.h>
 
+#include "util/u_format.h"
 #include "util/u_memory.h"
 #include "util/u_math.h"
 #include "pipe/p_state.h"
@@ -314,12 +317,16 @@ int virgl_encode_clear(struct virgl_context *ctx,
                       double depth, unsigned stencil)
 {
    int i;
+   uint64_t qword;
+
+   STATIC_ASSERT(sizeof(qword) == sizeof(depth));
+   memcpy(&qword, &depth, sizeof(qword));
 
    virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_CLEAR, 0, VIRGL_OBJ_CLEAR_SIZE));
    virgl_encoder_write_dword(ctx->cbuf, buffers);
    for (i = 0; i < 4; i++)
       virgl_encoder_write_dword(ctx->cbuf, color->ui[i]);
-   virgl_encoder_write_qword(ctx->cbuf, *(uint64_t *)&depth);
+   virgl_encoder_write_qword(ctx->cbuf, qword);
    virgl_encoder_write_dword(ctx->cbuf, stencil);
    return 0;
 }
@@ -562,14 +569,16 @@ int virgl_encode_sampler_view(struct virgl_context *ctx,
                              struct virgl_resource *res,
                              const struct pipe_sampler_view *state)
 {
+   unsigned elem_size = util_format_get_blocksize(state->format);
+
    uint32_t tmp;
    virgl_encoder_write_cmd_dword(ctx, VIRGL_CMD0(VIRGL_CCMD_CREATE_OBJECT, VIRGL_OBJECT_SAMPLER_VIEW, VIRGL_OBJ_SAMPLER_VIEW_SIZE));
    virgl_encoder_write_dword(ctx->cbuf, handle);
    virgl_encoder_write_res(ctx, res);
    virgl_encoder_write_dword(ctx->cbuf, state->format);
    if (res->u.b.target == PIPE_BUFFER) {
-      virgl_encoder_write_dword(ctx->cbuf, state->u.buf.first_element);
-      virgl_encoder_write_dword(ctx->cbuf, state->u.buf.last_element);
+      virgl_encoder_write_dword(ctx->cbuf, state->u.buf.offset / elem_size);
+      virgl_encoder_write_dword(ctx->cbuf, (state->u.buf.offset + state->u.buf.size) / elem_size - 1);
    } else {
       virgl_encoder_write_dword(ctx->cbuf, state->u.tex.first_layer | state->u.tex.last_layer << 16);
       virgl_encoder_write_dword(ctx->cbuf, state->u.tex.first_level | state->u.tex.last_level << 8);

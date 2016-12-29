@@ -152,9 +152,6 @@ _mesa_get_dispatch(struct gl_context *ctx);
 extern void
 _mesa_set_context_lost_dispatch(struct gl_context *ctx);
 
-extern GLboolean
-_mesa_valid_to_render(struct gl_context *ctx, const char *where);
-
 
 
 /** \name Miscellaneous */
@@ -318,6 +315,16 @@ _mesa_is_gles31(const struct gl_context *ctx)
 
 
 /**
+ * Checks if the context is for GLES 3.2 or later
+ */
+static inline bool
+_mesa_is_gles32(const struct gl_context *ctx)
+{
+   return ctx->API == API_OPENGLES2 && ctx->Version >= 32;
+}
+
+
+/**
  * Checks if the context supports geometry shaders.
  */
 static inline bool
@@ -339,16 +346,6 @@ _mesa_has_compute_shaders(const struct gl_context *ctx)
 }
 
 /**
- * Checks if the context supports shader subroutines.
- */
-static inline bool
-_mesa_has_shader_subroutine(const struct gl_context *ctx)
-{
-   return ctx->API == API_OPENGL_CORE &&
-      (ctx->Version >= 40 || ctx->Extensions.ARB_shader_subroutine);
-}
-
-/**
  * Checks if the context supports tessellation.
  */
 static inline GLboolean
@@ -361,6 +358,12 @@ _mesa_has_tessellation(const struct gl_context *ctx)
           _mesa_has_ARB_tessellation_shader(ctx);
 }
 
+static inline bool
+_mesa_has_texture_cube_map_array(const struct gl_context *ctx)
+{
+   return _mesa_has_ARB_texture_cube_map_array(ctx) ||
+          _mesa_has_OES_texture_cube_map_array(ctx);
+}
 
 #ifdef __cplusplus
 }

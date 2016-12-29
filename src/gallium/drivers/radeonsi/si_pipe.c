@@ -22,11 +22,10 @@
  */
 
 #include "si_pipe.h"
-#include "si_shader.h"
 #include "si_public.h"
+#include "si_shader_internal.h"
 #include "sid.h"
 
-#include "radeon/radeon_llvm_emit.h"
 #include "radeon/radeon_uvd.h"
 #include "util/u_memory.h"
 #include "util/u_suballoc.h"
@@ -34,7 +33,7 @@
 #include "../ddebug/dd_util.h"
 
 #define SI_LLVM_DEFAULT_FEATURES \
-	"+DumpCode,+vgpr-spilling,-fp32-denormals,+fp64-denormals"
+	"+DumpCode,+vgpr-spilling,-fp32-denormals,+fp64-denormals,-xnack"
 
 /*
  * pipe_context
@@ -127,7 +126,7 @@ si_create_llvm_target_machine(struct si_screen *sscreen)
 {
 	const char *triple = "amdgcn--";
 
-	return LLVMCreateTargetMachine(radeon_llvm_get_r600_target(triple), triple,
+	return LLVMCreateTargetMachine(si_llvm_get_amdgpu_target(triple), triple,
 				       r600_get_llvm_processor_name(sscreen->b.family),
 #if HAVE_LLVM >= 0x0308
 				       sscreen->b.debug_flags & DBG_SI_SCHED ?
@@ -186,7 +185,12 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	sctx->b.gfx.cs = ws->cs_create(sctx->b.ctx, RING_GFX,
 				       si_context_gfx_flush, sctx);
 
-	if (!(sscreen->b.debug_flags & DBG_NO_CE) && ws->cs_add_const_ib) {
+	/* SI + AMDGPU + CE = GPU hang */
+	if (!(sscreen->b.debug_flags & DBG_NO_CE) && ws->cs_add_const_ib &&
+	    sscreen->b.chip_class != SI &&
+	    /* These can't use CE due to a power gating bug in the kernel. */
+	    sscreen->b.family != CHIP_CARRIZO &&
+	    sscreen->b.family != CHIP_STONEY) {
 		sctx->ce_ib = ws->cs_add_const_ib(sctx->b.gfx.cs);
 		if (!sctx->ce_ib)
 			goto fail;
@@ -201,8 +205,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 
 		sctx->ce_suballocator =
 				u_suballocator_create(&sctx->b.b, 1024 * 1024,
-						      PIPE_BIND_CUSTOM,
-						      PIPE_USAGE_DEFAULT, false);
+						      0, PIPE_USAGE_DEFAULT, false);
 		if (!sctx->ce_suballocator)
 			goto fail;
 	}
@@ -216,7 +219,7 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 		goto fail;
 
 	sctx->border_color_buffer = (struct r600_resource*)
-		pipe_buffer_create(screen, PIPE_BIND_CUSTOM, PIPE_USAGE_DEFAULT,
+		pipe_buffer_create(screen, 0, PIPE_USAGE_DEFAULT,
 				   SI_MAX_BORDER_COLORS *
 				   sizeof(*sctx->border_color_table));
 	if (!sctx->border_color_buffer)
@@ -251,8 +254,8 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 	si_begin_new_cs(sctx);
 	r600_query_init_backend_mask(&sctx->b); /* this emits commands and must be last */
 
-	/* CIK cannot unbind a constant buffer (S_BUFFER_LOAD is buggy
-	 * with a NULL buffer). We need to use a dummy buffer instead. */
+	/* CIK cannot unbind a constant buffer (S_BUFFER_LOAD doesn't skip loads
+	 * if NUM_RECORDS == 0). We need to use a dummy buffer instead. */
 	if (sctx->b.chip_class == CIK) {
 		sctx->null_const_buf.buffer = pipe_buffer_create(screen, PIPE_BIND_CONSTANT_BUFFER,
 								 PIPE_USAGE_DEFAULT, 16);
@@ -266,6 +269,15 @@ static struct pipe_context *si_create_context(struct pipe_screen *screen,
 							      &sctx->null_const_buf);
 			}
 		}
+
+		si_set_rw_buffer(sctx, SI_HS_CONST_DEFAULT_TESS_LEVELS,
+				 &sctx->null_const_buf);
+		si_set_rw_buffer(sctx, SI_VS_CONST_CLIP_PLANES,
+				 &sctx->null_const_buf);
+		si_set_rw_buffer(sctx, SI_PS_CONST_POLY_STIPPLE,
+				 &sctx->null_const_buf);
+		si_set_rw_buffer(sctx, SI_PS_CONST_SAMPLE_POSITIONS,
+				 &sctx->null_const_buf);
 
 		/* Clear the NULL constant buffer, because loads should return zeros. */
 		sctx->b.clear_buffer(&sctx->b.b, sctx->null_const_buf.buffer, 0,
@@ -305,6 +317,16 @@ fail:
 /*
  * pipe_screen
  */
+static bool si_have_tgsi_compute(struct si_screen *sscreen)
+{
+	/* Old kernels disallowed some register writes for SI
+	 * that are used for indirect dispatches. */
+	return HAVE_LLVM >= 0x309 &&
+	       (sscreen->b.chip_class >= CIK ||
+		sscreen->b.info.drm_major == 3 ||
+		(sscreen->b.info.drm_major == 2 &&
+		 sscreen->b.info.drm_minor >= 45));
+}
 
 static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 {
@@ -345,6 +367,7 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_START_INSTANCE:
 	case PIPE_CAP_NPOT_TEXTURES:
 	case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
+	case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
 	case PIPE_CAP_VERTEX_COLOR_CLAMPED:
 	case PIPE_CAP_FRAGMENT_COLOR_CLAMPED:
         case PIPE_CAP_PREFER_BLIT_BASED_TEXTURE_TRANSFER:
@@ -386,6 +409,10 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_GENERATE_MIPMAP:
 	case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
 	case PIPE_CAP_STRING_MARKER:
+	case PIPE_CAP_CLEAR_TEXTURE:
+	case PIPE_CAP_CULL_DISTANCE:
+	case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+	case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
 		return 1;
 
 	case PIPE_CAP_RESOURCE_FROM_USER_MEMORY:
@@ -414,10 +441,8 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 		return HAVE_LLVM >= 0x0309 ? 4 : 0;
 
 	case PIPE_CAP_GLSL_FEATURE_LEVEL:
-		if (pscreen->get_shader_param(pscreen, PIPE_SHADER_COMPUTE,
-		                              PIPE_SHADER_CAP_SUPPORTED_IRS) &
-		    (1 << PIPE_SHADER_IR_TGSI))
-			return 430;
+		if (si_have_tgsi_compute(sscreen))
+			return 450;
 		return HAVE_LLVM >= 0x0309 ? 420 :
 		       HAVE_LLVM >= 0x0307 ? 410 : 330;
 
@@ -434,13 +459,14 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_FAKE_SW_MSAA:
 	case PIPE_CAP_TEXTURE_GATHER_OFFSETS:
 	case PIPE_CAP_VERTEXID_NOBASE:
-	case PIPE_CAP_CLEAR_TEXTURE:
-	case PIPE_CAP_QUERY_BUFFER_OBJECT:
-	case PIPE_CAP_CULL_DISTANCE:
 	case PIPE_CAP_PRIMITIVE_RESTART_FOR_PATCHES:
 	case PIPE_CAP_TGSI_VOTE:
 	case PIPE_CAP_MAX_WINDOW_RECTANGLES:
+	case PIPE_CAP_NATIVE_FENCE_FD:
 		return 0;
+
+	case PIPE_CAP_QUERY_BUFFER_OBJECT:
+		return si_have_tgsi_compute(sscreen);
 
 	case PIPE_CAP_DRAW_PARAMETERS:
 	case PIPE_CAP_MULTI_DRAW_INDIRECT:
@@ -457,6 +483,7 @@ static int si_get_param(struct pipe_screen* pscreen, enum pipe_cap param)
 	case PIPE_CAP_MAX_STREAM_OUTPUT_BUFFERS:
 		return sscreen->b.has_streamout ? 4 : 0;
 	case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
+	case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
 		return sscreen->b.has_streamout ? 1 : 0;
 	case PIPE_CAP_MAX_STREAM_OUTPUT_SEPARATE_COMPONENTS:
 	case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
@@ -555,12 +582,7 @@ static int si_get_shader_param(struct pipe_screen* pscreen, unsigned shader, enu
 		case PIPE_SHADER_CAP_SUPPORTED_IRS: {
 			int ir = 1 << PIPE_SHADER_IR_NATIVE;
 
-			/* Old kernels disallowed some register writes for SI
-			 * that are used for indirect dispatches. */
-			if (HAVE_LLVM >= 0x309 && (sscreen->b.chip_class >= CIK ||
-			                           sscreen->b.info.drm_major == 3 ||
-			                           (sscreen->b.info.drm_major == 2 &&
-			                            sscreen->b.info.drm_minor >= 45)))
+			if (si_have_tgsi_compute(sscreen))
 				ir |= 1 << PIPE_SHADER_IR_TGSI;
 
 			return ir;
@@ -587,13 +609,13 @@ static int si_get_shader_param(struct pipe_screen* pscreen, unsigned shader, enu
 	}
 
 	switch (param) {
+	/* Shader limits. */
 	case PIPE_SHADER_CAP_MAX_INSTRUCTIONS:
 	case PIPE_SHADER_CAP_MAX_ALU_INSTRUCTIONS:
 	case PIPE_SHADER_CAP_MAX_TEX_INSTRUCTIONS:
 	case PIPE_SHADER_CAP_MAX_TEX_INDIRECTIONS:
-		return 16384;
 	case PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH:
-		return 32;
+		return 16384;
 	case PIPE_SHADER_CAP_MAX_INPUTS:
 		return shader == PIPE_SHADER_VERTEX ? SI_NUM_VERTEX_BUFFERS : 32;
 	case PIPE_SHADER_CAP_MAX_OUTPUTS:
@@ -604,46 +626,47 @@ static int si_get_shader_param(struct pipe_screen* pscreen, unsigned shader, enu
 		return 4096 * sizeof(float[4]); /* actually only memory limits this */
 	case PIPE_SHADER_CAP_MAX_CONST_BUFFERS:
 		return SI_NUM_CONST_BUFFERS;
-	case PIPE_SHADER_CAP_MAX_PREDS:
-		return 0; /* FIXME */
-	case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
-		return 1;
-	case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
-		return 1;
-	case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
-		/* Indirection of geometry shader input dimension is not
-		 * handled yet
-		 */
-		return shader != PIPE_SHADER_GEOMETRY;
-	case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
-	case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
-	case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
-		return 1;
-	case PIPE_SHADER_CAP_INTEGERS:
-		return 1;
-	case PIPE_SHADER_CAP_SUBROUTINES:
-		return 0;
 	case PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS:
 	case PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS:
 		return SI_NUM_SAMPLERS;
-	case PIPE_SHADER_CAP_PREFERRED_IR:
-		return PIPE_SHADER_IR_TGSI;
-	case PIPE_SHADER_CAP_SUPPORTED_IRS:
-		return 0;
-	case PIPE_SHADER_CAP_DOUBLES:
-		return HAVE_LLVM >= 0x0307;
-	case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
-	case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
-		return 0;
-	case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
-	case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
-		return 1;
-	case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
-		return 32;
 	case PIPE_SHADER_CAP_MAX_SHADER_BUFFERS:
 		return HAVE_LLVM >= 0x0309 ? SI_NUM_SHADER_BUFFERS : 0;
 	case PIPE_SHADER_CAP_MAX_SHADER_IMAGES:
 		return HAVE_LLVM >= 0x0309 ? SI_NUM_IMAGES : 0;
+	case PIPE_SHADER_CAP_MAX_UNROLL_ITERATIONS_HINT:
+		return 32;
+	case PIPE_SHADER_CAP_PREFERRED_IR:
+		return PIPE_SHADER_IR_TGSI;
+	case PIPE_SHADER_CAP_LOWER_IF_THRESHOLD:
+		return 3;
+
+	/* Supported boolean features. */
+	case PIPE_SHADER_CAP_TGSI_CONT_SUPPORTED:
+	case PIPE_SHADER_CAP_TGSI_SQRT_SUPPORTED:
+	case PIPE_SHADER_CAP_INDIRECT_OUTPUT_ADDR:
+	case PIPE_SHADER_CAP_INDIRECT_TEMP_ADDR:
+	case PIPE_SHADER_CAP_INDIRECT_CONST_ADDR:
+	case PIPE_SHADER_CAP_INTEGERS:
+	case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
+	case PIPE_SHADER_CAP_TGSI_ANY_INOUT_DECL_RANGE:
+		return 1;
+
+	case PIPE_SHADER_CAP_DOUBLES:
+		return HAVE_LLVM >= 0x0307;
+
+	case PIPE_SHADER_CAP_INDIRECT_INPUT_ADDR:
+		/* TODO: Indirection of geometry shader input dimension is not
+		 * handled yet
+		 */
+		return shader != PIPE_SHADER_GEOMETRY;
+
+	/* Unsupported boolean features. */
+	case PIPE_SHADER_CAP_MAX_PREDS:
+	case PIPE_SHADER_CAP_SUBROUTINES:
+	case PIPE_SHADER_CAP_SUPPORTED_IRS:
+	case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
+	case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
+		return 0;
 	}
 	return 0;
 }
@@ -655,6 +678,7 @@ static void si_destroy_screen(struct pipe_screen* pscreen)
 		sscreen->vs_prologs,
 		sscreen->vs_epilogs,
 		sscreen->tcs_epilogs,
+		sscreen->gs_prologs,
 		sscreen->ps_prologs,
 		sscreen->ps_epilogs
 	};
@@ -710,6 +734,7 @@ static bool si_init_gs_info(struct si_screen *sscreen)
 	case CHIP_FIJI:
 	case CHIP_POLARIS10:
 	case CHIP_POLARIS11:
+	case CHIP_POLARIS12:
 		sscreen->gs_table_depth = 32;
 		return true;
 	default:
@@ -799,12 +824,20 @@ struct pipe_screen *radeonsi_screen_create(struct radeon_winsys *ws)
 		 sscreen->b.info.pfp_fw_version >= 121 &&
 		 sscreen->b.info.me_fw_version >= 87);
 
+	sscreen->has_ds_bpermute = HAVE_LLVM >= 0x0309 &&
+				   sscreen->b.chip_class >= VI;
+
 	sscreen->b.has_cp_dma = true;
 	sscreen->b.has_streamout = true;
 	pipe_mutex_init(sscreen->shader_parts_mutex);
 	sscreen->use_monolithic_shaders =
 		HAVE_LLVM < 0x0308 ||
 		(sscreen->b.debug_flags & DBG_MONOLITHIC_SHADERS) != 0;
+
+	sscreen->b.barrier_flags.cp_to_L2 = SI_CONTEXT_INV_SMEM_L1 |
+					    SI_CONTEXT_INV_VMEM_L1 |
+					    SI_CONTEXT_INV_GLOBAL_L2;
+	sscreen->b.barrier_flags.compute_to_L2 = SI_CONTEXT_CS_PARTIAL_FLUSH;
 
 	if (debug_get_bool_option("RADEON_DUMP_SHADERS", false))
 		sscreen->b.debug_flags |= DBG_FS | DBG_VS | DBG_GS | DBG_PS | DBG_CS;

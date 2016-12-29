@@ -108,7 +108,8 @@ bool do_lower_texture_projection(exec_list *instructions);
 bool do_if_simplification(exec_list *instructions);
 bool opt_flatten_nested_if_blocks(exec_list *instructions);
 bool do_discard_simplification(exec_list *instructions);
-bool lower_if_to_cond_assign(exec_list *instructions, unsigned max_depth = 0);
+bool lower_if_to_cond_assign(gl_shader_stage stage, exec_list *instructions,
+                             unsigned max_depth = 0, unsigned min_branch_cost = 0);
 bool do_mat_op_to_vec(exec_list *instructions);
 bool do_minmax_prune(exec_list *instructions);
 bool do_noop_swizzle(exec_list *instructions);
@@ -126,7 +127,7 @@ bool lower_variable_index_to_cond_assign(gl_shader_stage stage,
     exec_list *instructions, bool lower_input, bool lower_output,
     bool lower_temp, bool lower_uniform);
 bool lower_quadop_vector(exec_list *instructions, bool dont_lower_swz);
-bool lower_const_arrays_to_uniforms(exec_list *instructions);
+bool lower_const_arrays_to_uniforms(exec_list *instructions, unsigned stage);
 bool lower_clip_cull_distance(struct gl_shader_program *prog,
                               gl_linked_shader *shader);
 void lower_output_reads(unsigned stage, exec_list *instructions);
@@ -136,7 +137,9 @@ void lower_shared_reference(struct gl_linked_shader *shader,
 void lower_ubo_reference(struct gl_linked_shader *shader,
                          bool clamp_block_indices);
 void lower_packed_varyings(void *mem_ctx,
-                           unsigned locations_used, ir_variable_mode mode,
+                           unsigned locations_used,
+                           const uint8_t *components,
+                           ir_variable_mode mode,
                            unsigned gs_input_vertices,
                            gl_linked_shader *shader,
                            bool disable_varying_packing, bool xfb_enabled);
@@ -151,6 +154,7 @@ void optimize_dead_builtin_variables(exec_list *instructions,
 bool lower_tess_level(gl_linked_shader *shader);
 
 bool lower_vertex_id(gl_linked_shader *shader);
+bool lower_blend_equation_advanced(gl_linked_shader *shader);
 
 bool lower_subroutine(exec_list *instructions, struct _mesa_glsl_parse_state *state);
 void propagate_invariance(exec_list *instructions);

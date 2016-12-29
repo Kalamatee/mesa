@@ -25,7 +25,7 @@
 
 #include "util/u_math.h"
 #include "util/u_memory.h"
-#include "util/u_hash.h"
+#include "util/crc32.h"
 
 #include "svga_debug.h"
 #include "svga_format.h"
@@ -332,7 +332,7 @@ svga_screen_cache_flush(struct svga_screen *svgascreen,
          /* remove entry from the invalidated list */
          LIST_DEL(&entry->head);
 
-         svgascreen->sws->fence_reference(svgascreen->sws, &entry->fence, fence);
+         sws->fence_reference(sws, &entry->fence, fence);
 
          /* Add entry to the unused list */
          LIST_ADD(&entry->head, &cache->unused);
@@ -393,8 +393,7 @@ svga_screen_cache_cleanup(struct svga_screen *svgascreen)
       }
 
       if (cache->entries[i].fence)
-         svgascreen->sws->fence_reference(svgascreen->sws,
-                                          &cache->entries[i].fence, NULL);
+         sws->fence_reference(sws, &cache->entries[i].fence, NULL);
    }
 
    pipe_mutex_destroy(cache->mutex);
@@ -434,10 +433,12 @@ svga_screen_cache_init(struct svga_screen *svgascreen)
  * allocate a new surface.
  * \param bind_flags  bitmask of PIPE_BIND_x flags
  * \param usage  one of PIPE_USAGE_x values
+ * \param validated return True if the surface is a reused surface
  */
 struct svga_winsys_surface *
 svga_screen_surface_create(struct svga_screen *svgascreen,
                            unsigned bind_flags, enum pipe_resource_usage usage,
+                           boolean *validated,
                            struct svga_host_surface_cache_key *key)
 {
    struct svga_winsys_screen *sws = svgascreen->sws;
@@ -511,6 +512,7 @@ svga_screen_surface_create(struct svga_screen *svgascreen,
                      key->numMipLevels,
                      key->numFaces,
                      key->arraySize);
+         *validated = TRUE;
       }
    }
 
@@ -537,6 +539,8 @@ svga_screen_surface_create(struct svga_screen *svgascreen,
                   key->size.width,
                   key->size.height,
                   key->size.depth);
+
+      *validated = FALSE;
    }
 
    return handle;
@@ -559,11 +563,6 @@ svga_screen_surface_destroy(struct svga_screen *svgascreen,
     * that case.
     */
    if (SVGA_SURFACE_CACHE_ENABLED && key->cachable) {
-
-      /* Invalidate the surface before putting it into the recycle pool */
-      if (key->format != SVGA3D_BUFFER)
-         sws->surface_invalidate(sws, *p_handle);
-
       svga_screen_cache_add(svgascreen, key, p_handle);
    }
    else {

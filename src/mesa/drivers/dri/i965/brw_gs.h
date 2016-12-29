@@ -37,10 +37,14 @@ struct gl_shader_program;
 void
 brw_upload_gs_prog(struct brw_context *brw);
 
+void
+brw_gs_populate_key(struct brw_context *brw,
+                    struct brw_gs_prog_key *key);
+
 bool
 brw_codegen_gs_prog(struct brw_context *brw,
                     struct gl_shader_program *prog,
-                    struct brw_geometry_program *gp,
+                    struct brw_program *gp,
                     struct brw_gs_prog_key *key);
 
 #ifdef __cplusplus

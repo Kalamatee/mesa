@@ -109,6 +109,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    switch (param) {
    case PIPE_CAP_NPOT_TEXTURES:
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
+   case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
       return 1;
    case PIPE_CAP_TWO_SIDED_STENCIL:
       return 1;
@@ -199,6 +200,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_VERTEX_ATTRIB_STRIDE:
       return 2048;
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
+   case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
       return 1;
    case PIPE_CAP_TGSI_CAN_COMPACT_CONSTANTS:
       return 0;
@@ -264,6 +266,7 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_FAKE_SW_MSAA:
       return 1;
    case PIPE_CAP_CONDITIONAL_RENDER_INVERTED:
+   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
       return 1;
 
    case PIPE_CAP_VENDOR_ID:
@@ -278,6 +281,12 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
       if (!os_get_total_physical_memory(&system_memory))
          return 0;
+
+      if (sizeof(void *) == 4)
+         /* Cap to 2 GB on 32 bits system. We do this because llvmpipe does
+          * eat application memory, which is quite limited on 32 bits. App
+          * shouldn't expect too much available memory. */
+         system_memory = MIN2(system_memory, 2048 << 20);
 
       return (int)(system_memory >> 20);
    }
@@ -329,6 +338,8 @@ llvmpipe_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_WINDOW_RECTANGLES:
    case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
+   case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
+   case PIPE_CAP_NATIVE_FENCE_FD:
       return 0;
    }
    /* should only get here on unhandled cases */
@@ -572,6 +583,7 @@ llvmpipe_fence_reference(struct pipe_screen *screen,
  */
 static boolean
 llvmpipe_fence_finish(struct pipe_screen *screen,
+                      struct pipe_context *ctx,
                       struct pipe_fence_handle *fence_handle,
                       uint64_t timeout)
 {

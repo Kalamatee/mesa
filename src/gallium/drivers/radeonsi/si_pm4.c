@@ -103,11 +103,18 @@ void si_pm4_add_bo(struct si_pm4_state *state,
 	state->bo_priority[idx] = priority;
 }
 
-void si_pm4_free_state_simple(struct si_pm4_state *state)
+void si_pm4_clear_state(struct si_pm4_state *state)
 {
 	for (int i = 0; i < state->nbo; ++i)
 		r600_resource_reference(&state->bo[i], NULL);
 	r600_resource_reference(&state->indirect_buffer, NULL);
+	state->nbo = 0;
+	state->ndw = 0;
+}
+
+void si_pm4_free_state_simple(struct si_pm4_state *state)
+{
+	si_pm4_clear_state(state);
 	FREE(state);
 }
 
@@ -183,7 +190,7 @@ void si_pm4_upload_indirect_buffer(struct si_context *sctx,
 
 	r600_resource_reference(&state->indirect_buffer, NULL);
 	state->indirect_buffer = (struct r600_resource*)
-		pipe_buffer_create(screen, PIPE_BIND_CUSTOM,
+		pipe_buffer_create(screen, 0,
 				   PIPE_USAGE_DEFAULT, aligned_ndw * 4);
 	if (!state->indirect_buffer)
 		return;

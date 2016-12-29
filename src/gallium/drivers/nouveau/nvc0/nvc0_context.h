@@ -27,6 +27,7 @@
 #include "nv50/nv50_2d.xml.h"
 #include "nvc0/nvc0_m2mf.xml.h"
 #include "nvc0/nve4_p2mf.xml.h"
+#include "nvc0/nvc0_compute.xml.h"
 #include "nvc0/nvc0_macros.h"
 
 /* NOTE: must keep NVC0_NEW_3D_...PROG in consecutive bits in this order */
@@ -81,7 +82,8 @@
 #define NVC0_BIND_3D_BUF         246
 #define NVC0_BIND_3D_SCREEN      247
 #define NVC0_BIND_3D_TLS         249
-#define NVC0_BIND_3D_COUNT       250
+#define NVC0_BIND_3D_TEXT        250
+#define NVC0_BIND_3D_COUNT       251
 
 /* compute bufctx (during launch_grid) */
 #define NVC0_BIND_CP_CB(i)     (  0 + (i))
@@ -92,7 +94,8 @@
 #define NVC0_BIND_CP_SCREEN      51
 #define NVC0_BIND_CP_QUERY       52
 #define NVC0_BIND_CP_BUF         53
-#define NVC0_BIND_CP_COUNT       54
+#define NVC0_BIND_CP_TEXT        54
+#define NVC0_BIND_CP_COUNT       55
 
 /* bufctx for other operations */
 #define NVC0_BIND_2D            0
@@ -289,7 +292,7 @@ extern struct draw_stage *nvc0_draw_render_stage(struct nvc0_context *);
 /* nvc0_program.c */
 bool nvc0_program_translate(struct nvc0_program *, uint16_t chipset,
                             struct pipe_debug_callback *);
-bool nvc0_program_upload_code(struct nvc0_context *, struct nvc0_program *);
+bool nvc0_program_upload(struct nvc0_context *, struct nvc0_program *);
 void nvc0_program_destroy(struct nvc0_context *, struct nvc0_program *);
 void nvc0_program_library_upload(struct nvc0_context *);
 uint32_t nvc0_program_symbol_offset(const struct nvc0_program *,

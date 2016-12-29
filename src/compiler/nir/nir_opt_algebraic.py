@@ -66,6 +66,10 @@ optimizations = [
 
    (('imul', a, '#b@32(is_pos_power_of_two)'), ('ishl', a, ('find_lsb', b))),
    (('imul', a, '#b@32(is_neg_power_of_two)'), ('ineg', ('ishl', a, ('find_lsb', ('iabs', b))))),
+   (('udiv', a, 1), a),
+   (('idiv', a, 1), a),
+   (('umod', a, 1), 0),
+   (('imod', a, 1), 0),
    (('udiv', a, '#b@32(is_pos_power_of_two)'), ('ushr', a, ('find_lsb', b))),
    (('idiv', a, '#b@32(is_pos_power_of_two)'), ('imul', ('isign', a), ('ushr', ('iabs', a), ('find_lsb', b))), 'options->lower_idiv'),
    (('idiv', a, '#b@32(is_neg_power_of_two)'), ('ineg', ('imul', ('isign', a), ('ushr', ('iabs', a), ('find_lsb', ('iabs', b))))), 'options->lower_idiv'),
@@ -119,6 +123,17 @@ optimizations = [
    (('~fadd@64', a, ('fmul',         c , ('fadd', b, ('fneg', a)))), ('flrp', a, b, c), '!options->lower_flrp64'),
    (('ffma', a, b, c), ('fadd', ('fmul', a, b), c), 'options->lower_ffma'),
    (('~fadd', ('fmul', a, b), c), ('ffma', a, b, c), 'options->fuse_ffma'),
+
+   # (a * #b + #c) << #d
+   # ((a * #b) << #d) + (#c << #d)
+   # (a * (#b << #d)) + (#c << #d)
+   (('ishl', ('iadd', ('imul', a, '#b'), '#c'), '#d'),
+    ('iadd', ('imul', a, ('ishl', b, d)), ('ishl', c, d))),
+
+   # (a * #b) << #c
+   # a * (#b << #c)
+   (('ishl', ('imul', a, '#b'), '#c'), ('imul', a, ('ishl', b, c))),
+
    # Comparison simplifications
    (('~inot', ('flt', a, b)), ('fge', a, b)),
    (('~inot', ('fge', a, b)), ('flt', a, b)),
@@ -144,7 +159,7 @@ optimizations = [
    (('fge', ('fneg', ('fabs', a)), 0.0), ('feq', a, 0.0)),
    (('bcsel', ('flt', b, a), b, a), ('fmin', a, b)),
    (('bcsel', ('flt', a, b), b, a), ('fmax', a, b)),
-   (('bcsel', ('inot', 'a@bool'), b, c), ('bcsel', a, c, b)),
+   (('bcsel', ('inot', a), b, c), ('bcsel', a, c, b)),
    (('bcsel', a, ('bcsel', a, b, c), d), ('bcsel', a, b, d)),
    (('bcsel', a, True, 'b@bool'), ('ior', a, b)),
    (('fmin', a, a), a),
@@ -160,6 +175,8 @@ optimizations = [
    (('fmin', ('fmax', ('fmin', ('fmax', a, b), c), b), c), ('fmin', ('fmax', a, b), c)),
    (('imin', ('imax', ('imin', ('imax', a, b), c), b), c), ('imin', ('imax', a, b), c)),
    (('umin', ('umax', ('umin', ('umax', a, b), c), b), c), ('umin', ('umax', a, b), c)),
+   (('fmax', ('fsat', a), '#b@32(is_zero_to_one)'), ('fsat', ('fmax', a, b))),
+   (('fmin', ('fsat', a), '#b@32(is_zero_to_one)'), ('fsat', ('fmin', a, b))),
    (('extract_u8', ('imin', ('imax', a, 0), 0xff), 0), ('imin', ('imax', a, 0), 0xff)),
    (('~ior', ('flt', a, b), ('flt', a, c)), ('flt', a, ('fmax', b, c))),
    (('~ior', ('flt', a, c), ('flt', b, c)), ('flt', ('fmin', a, b), c)),
@@ -248,8 +265,8 @@ optimizations = [
    (('ine', 'a@bool', True), ('inot', a)),
    (('ine', 'a@bool', False), a),
    (('ieq', 'a@bool', False), ('inot', 'a')),
-   (('bcsel', a, True, False), ('ine', a, 0)),
-   (('bcsel', a, False, True), ('ieq', a, 0)),
+   (('bcsel', a, True, False), a),
+   (('bcsel', a, False, True), ('inot', a)),
    (('bcsel', True, b, c), b),
    (('bcsel', False, b, c), c),
    # The result of this should be hit by constant propagation and, in the
@@ -447,6 +464,14 @@ def bitfield_reverse(u):
 
 optimizations += [(bitfield_reverse('x@32'), ('bitfield_reverse', 'x'))]
 
+# For any float comparison operation, "cmp", if you have "a == a && a cmp b"
+# then the "a == a" is redundant because it's equivalent to "a is not NaN"
+# and, if a is a NaN then the second comparison will fail anyway.
+for op in ['flt', 'fge', 'feq']:
+   optimizations += [
+      (('iand', ('feq', a, a), (op, a, b)), (op, a, b)),
+      (('iand', ('feq', a, a), (op, b, a)), (op, b, a)),
+   ]
 
 # Add optimizations to handle the case where the result of a ternary is
 # compared to a constant.  This way we can take things like

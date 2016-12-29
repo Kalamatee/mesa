@@ -28,7 +28,7 @@
 #include "util/u_memory.h"
 #include "r600_query.h"
 #include "r600_pipe_common.h"
-#include "r600d_common.h"
+#include "amd/common/r600d_common.h"
 
 /* Max counters per HW block */
 #define R600_QUERY_MAX_COUNTERS 16
@@ -113,6 +113,14 @@ static void r600_pc_query_destroy(struct r600_common_context *ctx,
 	FREE(query->counters);
 
 	r600_query_hw_destroy(ctx, rquery);
+}
+
+static bool r600_pc_query_prepare_buffer(struct r600_common_context *ctx,
+					 struct r600_query_hw *hwquery,
+					 struct r600_resource *buffer)
+{
+	/* no-op */
+	return true;
 }
 
 static void r600_pc_query_emit_start(struct r600_common_context *ctx,
@@ -215,6 +223,7 @@ static struct r600_query_ops batch_query_ops = {
 };
 
 static struct r600_query_hw_ops batch_query_hw_ops = {
+	.prepare_buffer = r600_pc_query_prepare_buffer,
 	.emit_start = r600_pc_query_emit_start,
 	.emit_stop = r600_pc_query_emit_stop,
 	.clear_result = r600_pc_query_clear_result,

@@ -62,6 +62,10 @@ C_SOURCES := \
 	hud/hud_context.c \
 	hud/hud_context.h \
 	hud/hud_cpu.c \
+	hud/hud_nic.c \
+	hud/hud_cpufreq.c \
+	hud/hud_diskstat.c \
+	hud/hud_sensors_temp.c \
 	hud/hud_driver_query.c \
 	hud/hud_fps.c \
 	hud/hud_private.h \
@@ -95,6 +99,8 @@ C_SOURCES := \
 	pipebuffer/pb_bufmgr_slab.c \
 	pipebuffer/pb_cache.c \
 	pipebuffer/pb_cache.h \
+	pipebuffer/pb_slab.c \
+	pipebuffer/pb_slab.h \
 	pipebuffer/pb_validate.c \
 	pipebuffer/pb_validate.h \
 	postprocess/filters.h \
@@ -188,7 +194,6 @@ C_SOURCES := \
 	util/u_cache.h \
 	util/u_caps.c \
 	util/u_caps.h \
-	util/u_clear.h \
 	util/u_cpu_detect.c \
 	util/u_cpu_detect.h \
 	util/u_debug.c \
@@ -245,8 +250,6 @@ C_SOURCES := \
 	util/u_half.h \
 	util/u_handle_table.c \
 	util/u_handle_table.h \
-	util/u_hash.c \
-	util/u_hash.h \
 	util/u_hash_table.c \
 	util/u_hash_table.h \
 	util/u_helpers.c \
@@ -285,8 +288,6 @@ C_SOURCES := \
 	util/u_sampler.h \
 	util/u_simple_shaders.c \
 	util/u_simple_shaders.h \
-	util/u_slab.c \
-	util/u_slab.h \
 	util/u_split_prim.h \
 	util/u_sse.h \
 	util/u_string.h \
@@ -309,7 +310,8 @@ C_SOURCES := \
 	util/u_upload_mgr.h \
 	util/u_vbuf.c \
 	util/u_vbuf.h \
-	util/u_video.h
+	util/u_video.h \
+	util/u_viewport.h
 
 NIR_SOURCES := \
 	nir/tgsi_to_nir.c \

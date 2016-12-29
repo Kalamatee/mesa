@@ -358,7 +358,8 @@ static void i915_bind_fragment_sampler_states(struct pipe_context *pipe,
 
 
 static void
-i915_bind_sampler_states(struct pipe_context *pipe, unsigned shader,
+i915_bind_sampler_states(struct pipe_context *pipe,
+                         enum pipe_shader_type shader,
                          unsigned start, unsigned num_samplers,
                          void **samplers)
 {
@@ -793,7 +794,7 @@ i915_set_vertex_sampler_views(struct pipe_context *pipe,
 
 
 static void
-i915_set_sampler_views(struct pipe_context *pipe, unsigned shader,
+i915_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
                        unsigned start, unsigned num,
                        struct pipe_sampler_view **views)
 {

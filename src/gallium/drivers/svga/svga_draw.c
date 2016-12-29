@@ -311,7 +311,7 @@ xlate_index_format(unsigned indexWidth)
 static enum pipe_error
 validate_sampler_resources(struct svga_context *svga)
 {
-   unsigned shader;
+   enum pipe_shader_type shader;
 
    assert(svga_have_vgpu10(svga));
 
@@ -376,7 +376,7 @@ validate_sampler_resources(struct svga_context *svga)
 static enum pipe_error
 validate_constant_buffers(struct svga_context *svga)
 {
-   unsigned shader;
+   enum pipe_shader_type shader;
 
    assert(svga_have_vgpu10(svga));
 
@@ -424,6 +424,32 @@ validate_constant_buffers(struct svga_context *svga)
    svga->rebind.flags.constbufs = FALSE;
 
    return PIPE_OK;
+}
+
+
+/**
+ * Was the last command put into the command buffer a drawing command?
+ * We use this to determine if we can skip emitting buffer re-bind
+ * commands when we have a sequence of drawing commands that use the
+ * same vertex/index buffers with no intervening commands.
+ *
+ * The first drawing command will bind the vertex/index buffers.  If
+ * the immediately following command is also a drawing command using the
+ * same buffers, we shouldn't have to rebind them.
+ */
+static bool
+last_command_was_draw(const struct svga_context *svga)
+{
+   switch (SVGA3D_GetLastCommand(svga->swc)) {
+   case SVGA_3D_CMD_DX_DRAW:
+   case SVGA_3D_CMD_DX_DRAW_INDEXED:
+   case SVGA_3D_CMD_DX_DRAW_INSTANCED:
+   case SVGA_3D_CMD_DX_DRAW_INDEXED_INSTANCED:
+   case SVGA_3D_CMD_DX_DRAW_AUTO:
+      return true;
+   default:
+      return false;
+   }
 }
 
 
@@ -533,11 +559,10 @@ draw_vgpu10(struct svga_hwtnl *hwtnl,
    {
       SVGA3dVertexBuffer vbuffer_attrs[PIPE_MAX_ATTRIBS];
 
-      memset(vbuffer_attrs, 0, sizeof(vbuffer_attrs));
-
       for (i = 0; i < vbuf_count; i++) {
          vbuffer_attrs[i].stride = hwtnl->cmd.vbufs[i].stride;
          vbuffer_attrs[i].offset = hwtnl->cmd.vbufs[i].buffer_offset;
+         vbuffer_attrs[i].sid = 0;
       }
 
       /* If we haven't yet emitted a drawing command or if any
@@ -584,7 +609,7 @@ draw_vgpu10(struct svga_hwtnl *hwtnl,
           * command, we still need to reference the vertex buffers surfaces.
           */
          for (i = 0; i < vbuf_count; i++) {
-            if (vbuffer_handles[i]) {
+            if (vbuffer_handles[i] && !last_command_was_draw(svga)) {
                ret = svga->swc->resource_rebind(svga->swc, vbuffer_handles[i],
                                                 NULL, SVGA_RELOC_READ);
                if (ret != PIPE_OK)
@@ -627,10 +652,12 @@ draw_vgpu10(struct svga_hwtnl *hwtnl,
          /* Even though we can avoid emitting the redundant SetIndexBuffer
           * command, we still need to reference the index buffer surface.
           */
-         ret = svga->swc->resource_rebind(svga->swc, ib_handle,
-                                          NULL, SVGA_RELOC_READ);
-         if (ret != PIPE_OK)
-            return ret;
+         if (!last_command_was_draw(svga)) {
+            ret = svga->swc->resource_rebind(svga->swc, ib_handle,
+                                             NULL, SVGA_RELOC_READ);
+            if (ret != PIPE_OK)
+               return ret;
+         }
       }
 
       if (instance_count > 1) {
@@ -704,11 +731,17 @@ draw_vgpu10(struct svga_hwtnl *hwtnl,
 enum pipe_error
 svga_hwtnl_flush(struct svga_hwtnl *hwtnl)
 {
+   enum pipe_error ret = PIPE_OK;
+
+   SVGA_STATS_TIME_PUSH(svga_sws(hwtnl->svga), SVGA_STATS_TIME_HWTNLFLUSH);
+
    if (!svga_have_vgpu10(hwtnl->svga) && hwtnl->cmd.prim_count) {
       /* we only queue up primitive for VGPU9 */
-      return draw_vgpu9(hwtnl);
+      ret = draw_vgpu9(hwtnl);
    }
-   return PIPE_OK;
+
+   SVGA_STATS_TIME_POP(svga_screen(hwtnl->svga->pipe.screen)->sws);
+   return ret;
 }
 
 
@@ -882,6 +915,8 @@ svga_hwtnl_prim(struct svga_hwtnl *hwtnl,
 {
    enum pipe_error ret = PIPE_OK;
 
+   SVGA_STATS_TIME_PUSH(svga_sws(hwtnl->svga), SVGA_STATS_TIME_HWTNLPRIM);
+
    if (svga_have_vgpu10(hwtnl->svga)) {
       /* draw immediately */
       ret = draw_vgpu10(hwtnl, range, vcount, min_index, max_index, ib,
@@ -906,7 +941,7 @@ svga_hwtnl_prim(struct svga_hwtnl *hwtnl,
       if (hwtnl->cmd.prim_count + 1 >= QSZ) {
          ret = svga_hwtnl_flush(hwtnl);
          if (ret != PIPE_OK)
-            return ret;
+            goto done;
       }
 
       /* min/max indices are relative to bias */
@@ -920,5 +955,7 @@ svga_hwtnl_prim(struct svga_hwtnl *hwtnl,
       hwtnl->cmd.prim_count++;
    }
 
+done:
+   SVGA_STATS_TIME_POP(svga_screen(hwtnl->svga->pipe.screen)->sws);
    return ret;
 }

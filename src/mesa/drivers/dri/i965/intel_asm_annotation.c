@@ -29,7 +29,7 @@
 
 void
 dump_assembly(void *assembly, int num_annotations, struct annotation *annotation,
-              const struct brw_device_info *devinfo)
+              const struct gen_device_info *devinfo)
 {
    const char *last_annotation_string = NULL;
    const void *last_annotation_ir = NULL;
@@ -45,7 +45,7 @@ dump_assembly(void *assembly, int num_annotations, struct annotation *annotation
             struct bblock_t *predecessor_block = predecessor_link->block;
             fprintf(stderr, " <-B%d", predecessor_block->num);
          }
-         fprintf(stderr, "\n");
+         fprintf(stderr, " (%u cycles)\n", annotation[i].block_start->cycle_count);
       }
 
       if (last_annotation_ir != annotation[i].ir) {
@@ -100,7 +100,7 @@ annotation_array_ensure_space(struct annotation_info *annotation)
    return true;
 }
 
-void annotate(const struct brw_device_info *devinfo,
+void annotate(const struct gen_device_info *devinfo,
               struct annotation_info *annotation, const struct cfg_t *cfg,
               struct backend_instruction *inst, unsigned offset)
 {

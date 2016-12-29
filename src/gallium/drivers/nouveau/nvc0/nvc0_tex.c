@@ -132,9 +132,9 @@ gm107_create_texture_view(struct pipe_context *pipe,
    if (unlikely(!nouveau_bo_memtype(nv04_resource(texture)->bo))) {
       if (texture->target == PIPE_BUFFER) {
          assert(!(tic[5] & GM107_TIC2_5_NORMALIZED_COORDS));
-         width = view->pipe.u.buf.last_element - view->pipe.u.buf.first_element;
+         width = view->pipe.u.buf.size / (desc->block.bits / 8) - 1;
          address +=
-            view->pipe.u.buf.first_element * desc->block.bits / 8;
+            view->pipe.u.buf.offset;
          tic[2]  = GM107_TIC2_2_HEADER_VERSION_ONE_D_BUFFER;
          tic[3] |= width >> 16;
          tic[4] |= GM107_TIC2_4_TEXTURE_TYPE_ONE_D_BUFFER;
@@ -259,8 +259,8 @@ gm107_create_texture_view_from_image(struct pipe_context *pipe,
    templ.swizzle_a = PIPE_SWIZZLE_W;
 
    if (target == PIPE_BUFFER) {
-      templ.u.buf.first_element = view->u.buf.first_element;
-      templ.u.buf.last_element = view->u.buf.last_element;
+      templ.u.buf.offset = view->u.buf.offset;
+      templ.u.buf.size = view->u.buf.size;
    } else {
       templ.u.tex.first_layer = view->u.tex.first_layer;
       templ.u.tex.last_layer = view->u.tex.last_layer;
@@ -344,11 +344,11 @@ gf100_create_texture_view(struct pipe_context *pipe,
       if (texture->target == PIPE_BUFFER) {
          assert(!(tic[2] & G80_TIC_2_NORMALIZED_COORDS));
          address +=
-            view->pipe.u.buf.first_element * desc->block.bits / 8;
+            view->pipe.u.buf.offset;
          tic[2] |= G80_TIC_2_LAYOUT_PITCH | G80_TIC_2_TEXTURE_TYPE_ONE_D_BUFFER;
          tic[3] = 0;
          tic[4] = /* width */
-            view->pipe.u.buf.last_element - view->pipe.u.buf.first_element + 1;
+            view->pipe.u.buf.size / (desc->block.bits / 8);
          tic[5] = 0;
       } else {
          /* must be 2D texture without mip maps */
@@ -456,8 +456,7 @@ nvc0_update_tic(struct nvc0_context *nvc0, struct nv50_tic_entry *tic,
    uint64_t address = res->address;
    if (res->base.target != PIPE_BUFFER)
       return;
-   address += tic->pipe.u.buf.first_element *
-      util_format_get_blocksize(tic->pipe.format);
+   address += tic->pipe.u.buf.offset;
    if (tic->tic[1] == (uint32_t)address &&
        (tic->tic[2] & 0xff) == address >> 32)
       return;
@@ -606,13 +605,11 @@ void nvc0_validate_textures(struct nvc0_context *nvc0)
       PUSH_DATA (nvc0->base.pushbuf, 0);
    }
 
-   if (nvc0->screen->base.class_3d < NVE4_3D_CLASS) {
-      /* Invalidate all CP textures because they are aliased. */
-      for (int i = 0; i < nvc0->num_textures[5]; i++)
-         nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_CP_TEX(i));
-      nvc0->textures_dirty[5] = ~0;
-      nvc0->dirty_cp |= NVC0_NEW_CP_TEXTURES;
-   }
+   /* Invalidate all CP textures because they are aliased. */
+   for (int i = 0; i < nvc0->num_textures[5]; i++)
+      nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_TEX(i));
+   nvc0->textures_dirty[5] = ~0;
+   nvc0->dirty_cp |= NVC0_NEW_CP_TEXTURES;
 }
 
 bool
@@ -717,11 +714,9 @@ void nvc0_validate_samplers(struct nvc0_context *nvc0)
       PUSH_DATA (nvc0->base.pushbuf, 0);
    }
 
-   if (nvc0->screen->base.class_3d < NVE4_3D_CLASS) {
-      /* Invalidate all CP samplers because they are aliased. */
-      nvc0->samplers_dirty[5] = ~0;
-      nvc0->dirty_cp |= NVC0_NEW_CP_SAMPLERS;
-   }
+   /* Invalidate all CP samplers because they are aliased. */
+   nvc0->samplers_dirty[5] = ~0;
+   nvc0->dirty_cp |= NVC0_NEW_CP_SAMPLERS;
 }
 
 /* Upload the "diagonal" entries for the possible texture sources ($t == $s).
@@ -774,7 +769,7 @@ nvc0_get_surface_dims(struct pipe_image_view *view, int *width, int *height,
 
    *width = *height = *depth = 1;
    if (res->base.target == PIPE_BUFFER) {
-      *width = view->u.buf.last_element - view->u.buf.first_element + 1;
+      *width = view->u.buf.size / util_format_get_blocksize(view->format);
       return;
    }
 
@@ -805,17 +800,12 @@ void
 nvc0_mark_image_range_valid(const struct pipe_image_view *view)
 {
    struct nv04_resource *res = (struct nv04_resource *)view->resource;
-   const struct util_format_description *desc;
-   unsigned stride;
 
    assert(view->resource->target == PIPE_BUFFER);
 
-   desc = util_format_description(view->format);
-   stride = desc->block.bits / 8;
-
    util_range_add(&res->valid_buffer_range,
-                  stride * (view->u.buf.first_element),
-                  stride * (view->u.buf.last_element + 1));
+                  view->u.buf.offset,
+                  view->u.buf.offset + view->u.buf.size);
 }
 
 void
@@ -901,9 +891,7 @@ nve4_set_surface_info(struct nouveau_pushbuf *push,
 #endif
 
    if (res->base.target == PIPE_BUFFER) {
-      unsigned blocksize = util_format_get_blocksize(view->format);
-
-      address += view->u.buf.first_element * blocksize;
+      address += view->u.buf.offset;
 
       info[0]  = address >> 8;
       info[2]  = width - 1;
@@ -1028,7 +1016,7 @@ nvc0_validate_suf(struct nvc0_context *nvc0, int s)
          if (res->base.target == PIPE_BUFFER) {
             unsigned blocksize = util_format_get_blocksize(view->format);
 
-            address += view->u.buf.first_element * blocksize;
+            address += view->u.buf.offset;
             assert(!(address & 0xff));
 
             if (view->access & PIPE_IMAGE_ACCESS_WRITE)

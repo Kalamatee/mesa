@@ -35,7 +35,6 @@ struct NineSurface9
     struct NineResource9 base;
 
     /* G3D state */
-    struct pipe_context *pipe;
     struct pipe_transfer *transfer;
     struct pipe_surface *surface[2]; /* created on-demand (linear, sRGB) */
     int lock_count;
@@ -52,6 +51,8 @@ struct NineSurface9
     enum pipe_format format_conversion;
     unsigned stride; /* for system memory backing */
     unsigned stride_conversion;
+
+    unsigned pending_uploads_counter; /* pending uploads */
 };
 static inline struct NineSurface9 *
 NineSurface9( void *data )
@@ -95,9 +96,8 @@ NineSurface9_CreatePipeSurface( struct NineSurface9 *This, const int sRGB );
 static inline struct pipe_surface *
 NineSurface9_GetSurface( struct NineSurface9 *This, int sRGB )
 {
-    if (This->surface[sRGB])
-        return This->surface[sRGB];
-    return NineSurface9_CreatePipeSurface(This, sRGB);
+    assert(This->surface[sRGB]);
+    return This->surface[sRGB];
 }
 
 static inline struct pipe_resource *
@@ -114,6 +114,13 @@ NineSurface9_SetResource( struct NineSurface9 *This,
     pipe_resource_reference(&This->base.resource, resource);
     pipe_surface_reference(&This->surface[0], NULL);
     pipe_surface_reference(&This->surface[1], NULL);
+}
+
+static inline void
+NineSurface9_SetMultiSampleType( struct NineSurface9 *This,
+                                 D3DMULTISAMPLE_TYPE mst )
+{
+    This->desc.MultiSampleType = mst;
 }
 
 void

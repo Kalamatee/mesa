@@ -159,6 +159,12 @@ convert_sampler(struct st_context *st,
       sampler->normalized_coords = 1;
 
    sampler->lod_bias = ctx->Texture.Unit[texUnit].LodBias + msamp->LodBias;
+   /* Reduce the number of states by allowing only the values that AMD GCN
+    * can represent. Apps use lod_bias for smooth transitions to bigger mipmap
+    * levels.
+    */
+   sampler->lod_bias = CLAMP(sampler->lod_bias, -16, 16);
+   sampler->lod_bias = floorf(sampler->lod_bias * 256) / 256;
 
    sampler->min_lod = MAX2(msamp->MinLod, 0.0f);
    sampler->max_lod = msamp->MaxLod;
@@ -237,18 +243,18 @@ convert_sampler(struct st_context *st,
  */
 static void
 update_shader_samplers(struct st_context *st,
-                       unsigned shader_stage,
+                       enum pipe_shader_type shader_stage,
                        const struct gl_program *prog,
                        unsigned max_units,
                        struct pipe_sampler_state *samplers,
                        unsigned *num_samplers)
 {
+   GLbitfield samplers_used = prog->SamplersUsed;
+   GLbitfield free_slots = ~prog->SamplersUsed;
+   GLbitfield external_samplers_used = prog->ExternalSamplersUsed;
    GLuint unit;
-   GLbitfield samplers_used;
    const GLuint old_max = *num_samplers;
    const struct pipe_sampler_state *states[PIPE_MAX_SAMPLERS];
-
-   samplers_used = prog->SamplersUsed;
 
    if (*num_samplers == 0 && samplers_used == 0x0)
       return;
@@ -275,6 +281,41 @@ update_shader_samplers(struct st_context *st,
       }
    }
 
+   /* For any external samplers with multiplaner YUV, stuff the additional
+    * sampler states we need at the end.
+    *
+    * Just re-use the existing sampler-state from the primary slot.
+    */
+   while (unlikely(external_samplers_used)) {
+      GLuint unit = u_bit_scan(&external_samplers_used);
+      GLuint extra = 0;
+      struct st_texture_object *stObj =
+            st_get_texture_object(st->ctx, prog, unit);
+      struct pipe_sampler_state *sampler = samplers + unit;
+
+      if (!stObj)
+         continue;
+
+      switch (st_get_view_format(stObj)) {
+      case PIPE_FORMAT_NV12:
+         /* we need one additional sampler: */
+         extra = u_bit_scan(&free_slots);
+         states[extra] = sampler;
+         break;
+      case PIPE_FORMAT_IYUV:
+         /* we need two additional samplers: */
+         extra = u_bit_scan(&free_slots);
+         states[extra] = sampler;
+         extra = u_bit_scan(&free_slots);
+         states[extra] = sampler;
+         break;
+      default:
+         break;
+      }
+
+      *num_samplers = MAX2(*num_samplers, extra + 1);
+   }
+
    cso_set_samplers(st->cso_context, shader_stage, *num_samplers, states);
 }
 
@@ -286,14 +327,14 @@ update_samplers(struct st_context *st)
 
    update_shader_samplers(st,
                           PIPE_SHADER_FRAGMENT,
-                          &ctx->FragmentProgram._Current->Base,
+                          ctx->FragmentProgram._Current,
                           ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxTextureImageUnits,
                           st->state.samplers[PIPE_SHADER_FRAGMENT],
                           &st->state.num_samplers[PIPE_SHADER_FRAGMENT]);
 
    update_shader_samplers(st,
                           PIPE_SHADER_VERTEX,
-                          &ctx->VertexProgram._Current->Base,
+                          ctx->VertexProgram._Current,
                           ctx->Const.Program[MESA_SHADER_VERTEX].MaxTextureImageUnits,
                           st->state.samplers[PIPE_SHADER_VERTEX],
                           &st->state.num_samplers[PIPE_SHADER_VERTEX]);
@@ -301,7 +342,7 @@ update_samplers(struct st_context *st)
    if (ctx->GeometryProgram._Current) {
       update_shader_samplers(st,
                              PIPE_SHADER_GEOMETRY,
-                             &ctx->GeometryProgram._Current->Base,
+                             ctx->GeometryProgram._Current,
                              ctx->Const.Program[MESA_SHADER_GEOMETRY].MaxTextureImageUnits,
                              st->state.samplers[PIPE_SHADER_GEOMETRY],
                              &st->state.num_samplers[PIPE_SHADER_GEOMETRY]);
@@ -309,7 +350,7 @@ update_samplers(struct st_context *st)
    if (ctx->TessCtrlProgram._Current) {
       update_shader_samplers(st,
                              PIPE_SHADER_TESS_CTRL,
-                             &ctx->TessCtrlProgram._Current->Base,
+                             ctx->TessCtrlProgram._Current,
                              ctx->Const.Program[MESA_SHADER_TESS_CTRL].MaxTextureImageUnits,
                              st->state.samplers[PIPE_SHADER_TESS_CTRL],
                              &st->state.num_samplers[PIPE_SHADER_TESS_CTRL]);
@@ -317,7 +358,7 @@ update_samplers(struct st_context *st)
    if (ctx->TessEvalProgram._Current) {
       update_shader_samplers(st,
                              PIPE_SHADER_TESS_EVAL,
-                             &ctx->TessEvalProgram._Current->Base,
+                             ctx->TessEvalProgram._Current,
                              ctx->Const.Program[MESA_SHADER_TESS_EVAL].MaxTextureImageUnits,
                              st->state.samplers[PIPE_SHADER_TESS_EVAL],
                              &st->state.num_samplers[PIPE_SHADER_TESS_EVAL]);
@@ -325,7 +366,7 @@ update_samplers(struct st_context *st)
    if (ctx->ComputeProgram._Current) {
       update_shader_samplers(st,
                              PIPE_SHADER_COMPUTE,
-                             &ctx->ComputeProgram._Current->Base,
+                             ctx->ComputeProgram._Current,
                              ctx->Const.Program[MESA_SHADER_COMPUTE].MaxTextureImageUnits,
                              st->state.samplers[PIPE_SHADER_COMPUTE],
                              &st->state.num_samplers[PIPE_SHADER_COMPUTE]);

@@ -27,7 +27,7 @@
  * compute invariant or precise values.
  *
  * The GLSL spec (depending on what version you read) says, among the
- * conditions for geting bit-for-bit the same values on an invariant output:
+ * conditions for getting bit-for-bit the same values on an invariant output:
  *
  *    "All operations in the consuming expressions and any intermediate
  *    expressions must be the same, with the same order of operands and same
@@ -83,7 +83,7 @@ ir_invariance_propagation_visitor::visit_enter(ir_assignment *ir)
 }
 
 ir_visitor_status
-ir_invariance_propagation_visitor::visit_leave(ir_assignment *ir)
+ir_invariance_propagation_visitor::visit_leave(ir_assignment *)
 {
    this->dst_var = NULL;
 

@@ -43,12 +43,10 @@ noinst_LTLIBRARIES = $(PER_GEN_LIBS)
 # The gallium includes are for the util/u_math.h include from main/macros.h
 
 AM_CPPFLAGS = \
-	$(INTEL_CFLAGS) \
-	$(VALGRIND_CFLAGS) \
-	$(DEFINES) \
 	-I$(top_srcdir)/include \
 	-I$(top_builddir)/src \
 	-I$(top_srcdir)/src \
+	-I$(top_srcdir)/src/vulkan/wsi \
 	-I$(top_builddir)/src/compiler \
 	-I$(top_srcdir)/src/compiler \
 	-I$(top_builddir)/src/compiler/nir \
@@ -61,7 +59,20 @@ AM_CPPFLAGS = \
 	-I$(top_builddir)/src/intel \
 	-I$(top_srcdir)/src/intel
 
-AM_CFLAGS = -Wno-override-init -msse2
+if HAVE_PLATFORM_WAYLAND
+AM_CPPFLAGS += \
+	-I$(top_builddir)/src/egl/wayland/wayland-drm \
+	-I$(top_srcdir)/src/egl/wayland/wayland-drm
+endif
+
+AM_CPPFLAGS += \
+	$(INTEL_CFLAGS) \
+	$(VALGRIND_CFLAGS) \
+	$(DEFINES)
+
+AM_CFLAGS = \
+	$(VISIBILITY_CFLAGS) \
+	-Wno-override-init -msse2
 
 libanv_gen7_la_CFLAGS = $(AM_CFLAGS) -DGEN_VERSIONx10=70
 libanv_gen7_la_SOURCES = $(GEN7_FILES)
@@ -85,17 +96,18 @@ VULKAN_LIB_DEPS =
 if HAVE_PLATFORM_X11
 AM_CPPFLAGS += \
 	$(XCB_DRI3_CFLAGS) \
-	-DVK_USE_PLATFORM_XCB_KHR
+	-DVK_USE_PLATFORM_XCB_KHR \
+	-DVK_USE_PLATFORM_XLIB_KHR
 
 VULKAN_SOURCES += $(VULKAN_WSI_X11_FILES)
-VULKAN_LIB_DEPS += $(XCB_DRI3_LIBS)
+
+# FIXME: Use pkg-config for X11-xcb ldflags.
+VULKAN_LIB_DEPS += $(XCB_DRI3_LIBS) -lX11-xcb
 endif
 
 
 if HAVE_PLATFORM_WAYLAND
 AM_CPPFLAGS += \
-	-I$(top_builddir)/src/egl/wayland/wayland-drm \
-	-I$(top_srcdir)/src/egl/wayland/wayland-drm \
 	$(WAYLAND_CFLAGS) \
 	-DVK_USE_PLATFORM_WAYLAND_KHR
 
@@ -111,10 +123,13 @@ libvulkan_common_la_SOURCES = $(VULKAN_SOURCES)
 
 VULKAN_LIB_DEPS += \
 	libvulkan_common.la \
+	$(top_builddir)/src/vulkan/wsi/libvulkan_wsi.la \
 	$(top_builddir)/src/mesa/drivers/dri/i965/libi965_compiler.la \
 	$(top_builddir)/src/compiler/nir/libnir.la \
 	$(top_builddir)/src/util/libmesautil.la \
+	$(top_builddir)/src/intel/common/libintel_common.la \
 	$(top_builddir)/src/intel/isl/libisl.la \
+	$(top_builddir)/src/intel/blorp/libblorp.la \
 	$(PER_GEN_LIBS) \
 	$(PTHREAD_LIBS) \
 	$(DLOPEN_LIBS) \
@@ -131,19 +146,13 @@ anv_entrypoints.c : anv_entrypoints_gen.py $(vulkan_include_HEADERS)
 	$(AM_V_GEN) cat $(vulkan_include_HEADERS) |\
 	$(PYTHON2) $(srcdir)/anv_entrypoints_gen.py code > $@
 
-.PHONY: anv_timestamp.h
-
-anv_timestamp.h:
-	@echo "Updating anv_timestamp.h"
-	$(AM_V_GEN) echo "#define ANV_TIMESTAMP \"$(TIMESTAMP_CMD)\"" > $@
-
 BUILT_SOURCES = $(VULKAN_GENERATED_FILES)
-CLEANFILES = $(BUILT_SOURCES) dev_icd.json
+CLEANFILES = $(BUILT_SOURCES) dev_icd.json intel_icd.@host_cpu@.json
 EXTRA_DIST = \
 	$(top_srcdir)/include/vulkan/vk_icd.h \
 	anv_entrypoints_gen.py \
 	dev_icd.json.in \
-	intel_icd.json
+	intel_icd.json.in
 
 libvulkan_intel_la_LIBADD = $(VULKAN_LIB_DEPS)
 
@@ -152,12 +161,13 @@ libvulkan_intel_la_LDFLAGS = \
 	-module \
 	-no-undefined \
 	-avoid-version \
+	$(BSYMBOLIC) \
 	$(GC_SECTIONS) \
 	$(LD_NO_UNDEFINED)
 
 
 icdconfdir = @VULKAN_ICD_INSTALL_DIR@
-icdconf_DATA = intel_icd.json
+icdconf_DATA = intel_icd.@host_cpu@.json
 # The following is used for development purposes, by setting VK_ICD_FILENAMES.
 noinst_DATA = dev_icd.json
 
@@ -165,6 +175,11 @@ dev_icd.json : dev_icd.json.in
 	$(AM_V_GEN) $(SED) \
 		-e "s#@build_libdir@#${abs_top_builddir}/${LIB_DIR}#" \
 		< $(srcdir)/dev_icd.json.in > $@
+
+intel_icd.@host_cpu@.json : intel_icd.json.in
+	$(AM_V_GEN) $(SED) \
+		-e "s#@install_libdir@#${libdir}#" \
+		< $(srcdir)/intel_icd.json.in > $@
 
 # Libvulkan with dummy gem. Used for unit tests.
 libvulkan_test_la_SOURCES = $(VULKAN_GEM_STUB_FILES)

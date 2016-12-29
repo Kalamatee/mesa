@@ -24,7 +24,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <values.h>
+#include <limits.h>
 #include <assert.h>
 #include <linux/futex.h>
 #include <linux/memfd.h>
@@ -246,34 +246,39 @@ anv_ptr_free_list_push(void **list, void *elem)
 static uint32_t
 anv_block_pool_grow(struct anv_block_pool *pool, struct anv_block_state *state);
 
-void
+VkResult
 anv_block_pool_init(struct anv_block_pool *pool,
                     struct anv_device *device, uint32_t block_size)
 {
+   VkResult result;
+
    assert(util_is_power_of_two(block_size));
 
    pool->device = device;
-   pool->bo.gem_handle = 0;
-   pool->bo.offset = 0;
-   pool->bo.size = 0;
-   pool->bo.is_winsys_bo = false;
+   anv_bo_init(&pool->bo, 0, 0);
    pool->block_size = block_size;
    pool->free_list = ANV_FREE_LIST_EMPTY;
    pool->back_free_list = ANV_FREE_LIST_EMPTY;
 
    pool->fd = memfd_create("block pool", MFD_CLOEXEC);
    if (pool->fd == -1)
-      return;
+      return vk_error(VK_ERROR_INITIALIZATION_FAILED);
 
    /* Just make it 2GB up-front.  The Linux kernel won't actually back it
     * with pages until we either map and fault on one of them or we use
     * userptr and send a chunk of it off to the GPU.
     */
-   if (ftruncate(pool->fd, BLOCK_POOL_MEMFD_SIZE) == -1)
-      return;
+   if (ftruncate(pool->fd, BLOCK_POOL_MEMFD_SIZE) == -1) {
+      result = vk_error(VK_ERROR_INITIALIZATION_FAILED);
+      goto fail_fd;
+   }
 
-   anv_vector_init(&pool->mmap_cleanups,
-                   round_to_power_of_two(sizeof(struct anv_mmap_cleanup)), 128);
+   if (!u_vector_init(&pool->mmap_cleanups,
+                      round_to_power_of_two(sizeof(struct anv_mmap_cleanup)),
+                      128)) {
+      result = vk_error(VK_ERROR_INITIALIZATION_FAILED);
+      goto fail_fd;
+   }
 
    pool->state.next = 0;
    pool->state.end = 0;
@@ -282,6 +287,13 @@ anv_block_pool_init(struct anv_block_pool *pool,
 
    /* Immediately grow the pool so we'll have a backing bo. */
    pool->state.end = anv_block_pool_grow(pool, &pool->state);
+
+   return VK_SUCCESS;
+
+ fail_fd:
+   close(pool->fd);
+
+   return result;
 }
 
 void
@@ -289,14 +301,14 @@ anv_block_pool_finish(struct anv_block_pool *pool)
 {
    struct anv_mmap_cleanup *cleanup;
 
-   anv_vector_foreach(cleanup, &pool->mmap_cleanups) {
+   u_vector_foreach(cleanup, &pool->mmap_cleanups) {
       if (cleanup->map)
          munmap(cleanup->map, cleanup->size);
       if (cleanup->gem_handle)
          anv_gem_close(pool->device, cleanup->gem_handle);
    }
 
-   anv_vector_finish(&pool->mmap_cleanups);
+   u_vector_finish(&pool->mmap_cleanups);
 
    close(pool->fd);
 }
@@ -420,7 +432,7 @@ anv_block_pool_grow(struct anv_block_pool *pool, struct anv_block_state *state)
    assert(center_bo_offset >= pool->back_state.end);
    assert(size - center_bo_offset >= pool->state.end);
 
-   cleanup = anv_vector_add(&pool->mmap_cleanups);
+   cleanup = u_vector_add(&pool->mmap_cleanups);
    if (!cleanup)
       goto fail;
    *cleanup = ANV_MMAP_CLEANUP_INIT;
@@ -463,10 +475,8 @@ anv_block_pool_grow(struct anv_block_pool *pool, struct anv_block_state *state)
     * values back into pool. */
    pool->map = map + center_bo_offset;
    pool->center_bo_offset = center_bo_offset;
-   pool->bo.gem_handle = gem_handle;
-   pool->bo.size = size;
+   anv_bo_init(&pool->bo, gem_handle, size);
    pool->bo.map = map;
-   pool->bo.index = 0;
 
 done:
    pthread_mutex_unlock(&pool->device->mutex);
@@ -831,6 +841,7 @@ anv_bo_pool_alloc(struct anv_bo_pool *pool, struct anv_bo *bo, uint32_t size)
    if (anv_ptr_free_list_pop(&pool->free_list[bucket], &next_free_void)) {
       struct bo_pool_bo_link *next_free = next_free_void;
       *bo = VG_NOACCESS_READ(&next_free->bo);
+      assert(bo->gem_handle);
       assert(bo->map == next_free);
       assert(size <= bo->size);
 
@@ -865,15 +876,17 @@ anv_bo_pool_free(struct anv_bo_pool *pool, const struct anv_bo *bo_in)
 {
    /* Make a copy in case the anv_bo happens to be storred in the BO */
    struct anv_bo bo = *bo_in;
+
+   VG(VALGRIND_MEMPOOL_FREE(pool, bo.map));
+
    struct bo_pool_bo_link *link = bo.map;
-   link->bo = bo;
+   VG_NOACCESS_WRITE(&link->bo, bo);
 
    assert(util_is_power_of_two(bo.size));
    const unsigned size_log2 = ilog2_round_up(bo.size);
    const unsigned bucket = size_log2 - 12;
    assert(bucket < ARRAY_SIZE(pool->free_list));
 
-   VG(VALGRIND_MEMPOOL_FREE(pool, bo.map));
    anv_ptr_free_list_push(&pool->free_list[bucket], link);
 }
 
@@ -890,9 +903,9 @@ anv_scratch_pool_finish(struct anv_device *device, struct anv_scratch_pool *pool
 {
    for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
       for (unsigned i = 0; i < 16; i++) {
-         struct anv_bo *bo = &pool->bos[i][s];
-         if (bo->size > 0)
-            anv_gem_close(device, bo->gem_handle);
+         struct anv_scratch_bo *bo = &pool->bos[i][s];
+         if (bo->exists > 0)
+            anv_gem_close(device, bo->bo.gem_handle);
       }
    }
 }
@@ -907,48 +920,59 @@ anv_scratch_pool_alloc(struct anv_device *device, struct anv_scratch_pool *pool,
    unsigned scratch_size_log2 = ffs(per_thread_scratch / 2048);
    assert(scratch_size_log2 < 16);
 
-   struct anv_bo *bo = &pool->bos[scratch_size_log2][stage];
+   struct anv_scratch_bo *bo = &pool->bos[scratch_size_log2][stage];
 
-   /* From now on, we go into a critical section.  In order to remain
-    * thread-safe, we use the bo size as a lock.  A value of 0 means we don't
-    * have a valid BO yet.  A value of 1 means locked.  A value greater than 1
-    * means we have a bo of the given size.
+   /* We can use "exists" to shortcut and ignore the critical section */
+   if (bo->exists)
+      return &bo->bo;
+
+   pthread_mutex_lock(&device->mutex);
+
+   __sync_synchronize();
+   if (bo->exists)
+      return &bo->bo;
+
+   const struct anv_physical_device *physical_device =
+      &device->instance->physicalDevice;
+   const struct gen_device_info *devinfo = &physical_device->info;
+
+   /* WaCSScratchSize:hsw
+    *
+    * Haswell's scratch space address calculation appears to be sparse
+    * rather than tightly packed. The Thread ID has bits indicating which
+    * subslice, EU within a subslice, and thread within an EU it is.
+    * There's a maximum of two slices and two subslices, so these can be
+    * stored with a single bit. Even though there are only 10 EUs per
+    * subslice, this is stored in 4 bits, so there's an effective maximum
+    * value of 16 EUs. Similarly, although there are only 7 threads per EU,
+    * this is stored in a 3 bit number, giving an effective maximum value
+    * of 8 threads per EU.
+    *
+    * This means that we need to use 16 * 8 instead of 10 * 7 for the
+    * number of threads per subslice.
     */
+   const unsigned subslices = MAX2(physical_device->subslice_total, 1);
+   const unsigned scratch_ids_per_subslice =
+      device->info.is_haswell ? 16 * 8 : devinfo->max_cs_threads;
 
-   if (bo->size > 1)
-      return bo;
+   uint32_t max_threads[] = {
+      [MESA_SHADER_VERTEX]           = devinfo->max_vs_threads,
+      [MESA_SHADER_TESS_CTRL]        = devinfo->max_tcs_threads,
+      [MESA_SHADER_TESS_EVAL]        = devinfo->max_tes_threads,
+      [MESA_SHADER_GEOMETRY]         = devinfo->max_gs_threads,
+      [MESA_SHADER_FRAGMENT]         = devinfo->max_wm_threads,
+      [MESA_SHADER_COMPUTE]          = scratch_ids_per_subslice * subslices,
+   };
 
-   uint64_t size = __sync_val_compare_and_swap(&bo->size, 0, 1);
-   if (size == 0) {
-      /* We own the lock.  Allocate a buffer */
+   uint32_t size = per_thread_scratch * max_threads[stage];
 
-      struct brw_device_info *devinfo = &device->info;
-      uint32_t max_threads[] = {
-         [MESA_SHADER_VERTEX]                  = devinfo->max_vs_threads,
-         [MESA_SHADER_TESS_CTRL]               = devinfo->max_hs_threads,
-         [MESA_SHADER_TESS_EVAL]               = devinfo->max_ds_threads,
-         [MESA_SHADER_GEOMETRY]                = devinfo->max_gs_threads,
-         [MESA_SHADER_FRAGMENT]                = devinfo->max_wm_threads,
-         [MESA_SHADER_COMPUTE]                 = devinfo->max_cs_threads,
-      };
+   anv_bo_init_new(&bo->bo, device, size);
 
-      size = per_thread_scratch * max_threads[stage];
+   /* Set the exists last because it may be read by other threads */
+   __sync_synchronize();
+   bo->exists = true;
 
-      struct anv_bo new_bo;
-      anv_bo_init_new(&new_bo, device, size);
+   pthread_mutex_unlock(&device->mutex);
 
-      bo->gem_handle = new_bo.gem_handle;
-
-      /* Set the size last because we use it as a lock */
-      __sync_synchronize();
-      bo->size = size;
-
-      futex_wake((uint32_t *)&bo->size, INT_MAX);
-   } else {
-      /* Someone else got here first */
-      while (bo->size == 1)
-         futex_wait((uint32_t *)&bo->size, 1);
-   }
-
-   return bo;
+   return &bo->bo;
 }

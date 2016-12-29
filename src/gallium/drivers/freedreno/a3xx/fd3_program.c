@@ -28,6 +28,7 @@
 
 #include "pipe/p_state.h"
 #include "util/u_string.h"
+#include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_inlines.h"
 #include "util/u_format.h"
@@ -85,6 +86,20 @@ fd3_vp_state_delete(struct pipe_context *pctx, void *hwcso)
 	delete_shader_stateobj(so);
 }
 
+bool
+fd3_needs_manual_clipping(const struct fd3_shader_stateobj *so,
+						  const struct pipe_rasterizer_state *rast)
+{
+	uint64_t outputs = ir3_shader_outputs(so->shader);
+
+	return (!rast->depth_clip ||
+			util_bitcount(rast->clip_plane_enable) > 6 ||
+			outputs & ((1ULL << VARYING_SLOT_CLIP_VERTEX) |
+					   (1ULL << VARYING_SLOT_CLIP_DIST0) |
+					   (1ULL << VARYING_SLOT_CLIP_DIST1)));
+}
+
+
 static void
 emit_shader(struct fd_ringbuffer *ring, const struct ir3_shader_variant *so)
 {
@@ -136,7 +151,7 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit,
 	uint32_t fpbuffersz, vpbuffersz, fsoff;
 	uint32_t pos_regid, posz_regid, psize_regid, color_regid[4] = {0};
 	int constmode;
-	int i, j, k;
+	int i, j;
 
 	debug_assert(nr <= ARRAY_SIZE(color_regid));
 
@@ -260,45 +275,34 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit,
 			A3XX_SP_VS_PARAM_REG_PSIZEREGID(psize_regid) |
 			A3XX_SP_VS_PARAM_REG_TOTALVSOUTVAR(fp->varying_in));
 
-	for (i = 0, j = -1; (i < 8) && (j < (int)fp->inputs_count); i++) {
+	struct ir3_shader_linkage l = {0};
+	ir3_link_shaders(&l, vp, fp);
+
+	for (i = 0, j = 0; (i < 16) && (j < l.cnt); i++) {
 		uint32_t reg = 0;
 
 		OUT_PKT0(ring, REG_A3XX_SP_VS_OUT_REG(i), 1);
 
-		j = ir3_next_varying(fp, j);
-		if (j < fp->inputs_count) {
-			k = ir3_find_output(vp, fp->inputs[j].slot);
-			reg |= A3XX_SP_VS_OUT_REG_A_REGID(vp->outputs[k].regid);
-			reg |= A3XX_SP_VS_OUT_REG_A_COMPMASK(fp->inputs[j].compmask);
-		}
+		reg |= A3XX_SP_VS_OUT_REG_A_REGID(l.var[j].regid);
+		reg |= A3XX_SP_VS_OUT_REG_A_COMPMASK(l.var[j].compmask);
+		j++;
 
-		j = ir3_next_varying(fp, j);
-		if (j < fp->inputs_count) {
-			k = ir3_find_output(vp, fp->inputs[j].slot);
-			reg |= A3XX_SP_VS_OUT_REG_B_REGID(vp->outputs[k].regid);
-			reg |= A3XX_SP_VS_OUT_REG_B_COMPMASK(fp->inputs[j].compmask);
-		}
+		reg |= A3XX_SP_VS_OUT_REG_B_REGID(l.var[j].regid);
+		reg |= A3XX_SP_VS_OUT_REG_B_COMPMASK(l.var[j].compmask);
+		j++;
 
 		OUT_RING(ring, reg);
 	}
 
-	for (i = 0, j = -1; (i < 4) && (j < (int)fp->inputs_count); i++) {
+	for (i = 0, j = 0; (i < 8) && (j < l.cnt); i++) {
 		uint32_t reg = 0;
 
 		OUT_PKT0(ring, REG_A3XX_SP_VS_VPC_DST_REG(i), 1);
 
-		j = ir3_next_varying(fp, j);
-		if (j < fp->inputs_count)
-			reg |= A3XX_SP_VS_VPC_DST_REG_OUTLOC0(fp->inputs[j].inloc);
-		j = ir3_next_varying(fp, j);
-		if (j < fp->inputs_count)
-			reg |= A3XX_SP_VS_VPC_DST_REG_OUTLOC1(fp->inputs[j].inloc);
-		j = ir3_next_varying(fp, j);
-		if (j < fp->inputs_count)
-			reg |= A3XX_SP_VS_VPC_DST_REG_OUTLOC2(fp->inputs[j].inloc);
-		j = ir3_next_varying(fp, j);
-		if (j < fp->inputs_count)
-			reg |= A3XX_SP_VS_VPC_DST_REG_OUTLOC3(fp->inputs[j].inloc);
+		reg |= A3XX_SP_VS_VPC_DST_REG_OUTLOC0(l.var[j++].loc + 8);
+		reg |= A3XX_SP_VS_VPC_DST_REG_OUTLOC1(l.var[j++].loc + 8);
+		reg |= A3XX_SP_VS_VPC_DST_REG_OUTLOC2(l.var[j++].loc + 8);
+		reg |= A3XX_SP_VS_VPC_DST_REG_OUTLOC3(l.var[j++].loc + 8);
 
 		OUT_RING(ring, reg);
 	}
@@ -387,10 +391,7 @@ fd3_program_emit(struct fd_ringbuffer *ring, struct fd3_emit *emit,
 			 */
 			unsigned compmask = fp->inputs[j].compmask;
 
-			/* TODO might be cleaner to just +8 in SP_VS_VPC_DST_REG
-			 * instead.. rather than -8 everywhere else..
-			 */
-			uint32_t inloc = fp->inputs[j].inloc - 8;
+			uint32_t inloc = fp->inputs[j].inloc;
 
 			if ((fp->inputs[j].interpolate == INTERP_MODE_FLAT) ||
 					(fp->inputs[j].rasterflat && emit->rasterflat)) {

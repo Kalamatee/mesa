@@ -473,11 +473,13 @@ static void r600_clear_render_target(struct pipe_context *ctx,
 				     struct pipe_surface *dst,
 				     const union pipe_color_union *color,
 				     unsigned dstx, unsigned dsty,
-				     unsigned width, unsigned height)
+				     unsigned width, unsigned height,
+				     bool render_condition_enabled)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
-	r600_blitter_begin(ctx, R600_CLEAR_SURFACE);
+	r600_blitter_begin(ctx, R600_CLEAR_SURFACE |
+			   (render_condition_enabled ? 0 : R600_DISABLE_RENDER_COND));
 	util_blitter_clear_render_target(rctx->blitter, dst, color,
 					 dstx, dsty, width, height);
 	r600_blitter_end(ctx);
@@ -489,11 +491,13 @@ static void r600_clear_depth_stencil(struct pipe_context *ctx,
 				     double depth,
 				     unsigned stencil,
 				     unsigned dstx, unsigned dsty,
-				     unsigned width, unsigned height)
+				     unsigned width, unsigned height,
+				     bool render_condition_enabled)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
-	r600_blitter_begin(ctx, R600_CLEAR_SURFACE);
+	r600_blitter_begin(ctx, R600_CLEAR_SURFACE |
+			   (render_condition_enabled ? 0 : R600_DISABLE_RENDER_COND));
 	util_blitter_clear_depth_stencil(rctx->blitter, dst, clear_flags, depth, stencil,
 					 dstx, dsty, width, height);
 	r600_blitter_end(ctx);
@@ -846,8 +850,27 @@ static void r600_blit(struct pipe_context *ctx,
                       const struct pipe_blit_info *info)
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
+	struct r600_texture *rdst = (struct r600_texture *)info->dst.resource;
 
 	if (do_hardware_msaa_resolve(ctx, info)) {
+		return;
+	}
+
+	/* Using SDMA for copying to a linear texture in GTT is much faster.
+	 * This improves DRI PRIME performance.
+	 *
+	 * resource_copy_region can't do this yet, because dma_copy calls it
+	 * on failure (recursion).
+	 */
+	if (rdst->surface.level[info->dst.level].mode ==
+	    RADEON_SURF_MODE_LINEAR_ALIGNED &&
+	    rctx->b.dma_copy &&
+	    util_can_blit_via_copy_region(info, false)) {
+		rctx->b.dma_copy(ctx, info->dst.resource, info->dst.level,
+				 info->dst.box.x, info->dst.box.y,
+				 info->dst.box.z,
+				 info->src.resource, info->src.level,
+				 &info->src.box);
 		return;
 	}
 

@@ -59,7 +59,10 @@ vec4_gs_visitor::make_reg_for_system_value(int location)
    switch (location) {
    case SYSTEM_VALUE_INVOCATION_ID:
       this->current_annotation = "initialize gl_InvocationID";
-      emit(GS_OPCODE_GET_INSTANCE_ID, *reg);
+      if (gs_prog_data->invocations > 1)
+         emit(GS_OPCODE_GET_INSTANCE_ID, *reg);
+      else
+         emit(MOV(*reg, brw_imm_ud(0)));
       break;
    default:
       unreachable("not reached");
@@ -81,7 +84,7 @@ vec4_gs_visitor::setup_varying_inputs(int payload_reg, int *attribute_map,
     * so the total number of input slots that will be delivered to the GS (and
     * thus the stride of the input arrays) is urb_read_length * 2.
     */
-   const unsigned num_input_vertices = nir->info.gs.vertices_in;
+   const unsigned num_input_vertices = nir->info->gs.vertices_in;
    assert(num_input_vertices <= MAX_GS_INPUT_VERTICES);
    unsigned input_array_stride = prog_data->urb_read_length * 2;
 
@@ -334,7 +337,7 @@ vec4_gs_visitor::emit_control_data_bits()
       emit(ADD(dst_reg(prev_count), this->vertex_count,
                brw_imm_ud(0xffffffffu)));
       unsigned log2_bits_per_vertex =
-         _mesa_fls(c->control_data_bits_per_vertex);
+         util_last_bit(c->control_data_bits_per_vertex);
       emit(SHR(dst_reg(dword_index), prev_count,
                brw_imm_ud(6 - log2_bits_per_vertex)));
    }
@@ -451,7 +454,7 @@ vec4_gs_visitor::gs_emit_vertex(int stream_id)
     * be recorded by transform feedback, we can simply discard all geometry
     * bound to these streams when transform feedback is disabled.
     */
-   if (stream_id > 0 && !nir->info.has_transform_feedback_varyings)
+   if (stream_id > 0 && !nir->info->has_transform_feedback_varyings)
       return;
 
    /* If we're outputting 32 control data bits or less, then we can wait
@@ -606,32 +609,33 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
     *
     * For SSO pipelines, we use a fixed VUE map layout based on variable
     * locations, so we can rely on rendezvous-by-location making this work.
-    *
-    * However, we need to ignore VARYING_SLOT_PRIMITIVE_ID, as it's not
-    * written by previous stages and shows up via payload magic.
     */
-   GLbitfield64 inputs_read =
-      shader->info.inputs_read & ~VARYING_BIT_PRIMITIVE_ID;
+   GLbitfield64 inputs_read = shader->info->inputs_read;
    brw_compute_vue_map(compiler->devinfo,
                        &c.input_vue_map, inputs_read,
-                       shader->info.separate_shader);
+                       shader->info->separate_shader);
 
-   shader = brw_nir_apply_sampler_key(shader, compiler->devinfo, &key->tex,
-                                      is_scalar);
+   shader = brw_nir_apply_sampler_key(shader, compiler, &key->tex, is_scalar);
    brw_nir_lower_vue_inputs(shader, is_scalar, &c.input_vue_map);
    brw_nir_lower_vue_outputs(shader, is_scalar);
-   shader = brw_postprocess_nir(shader, compiler->devinfo, is_scalar);
+   shader = brw_postprocess_nir(shader, compiler, is_scalar);
+
+   prog_data->base.clip_distance_mask =
+      ((1 << shader->info->clip_distance_array_size) - 1);
+   prog_data->base.cull_distance_mask =
+      ((1 << shader->info->cull_distance_array_size) - 1) <<
+      shader->info->clip_distance_array_size;
 
    prog_data->include_primitive_id =
-      (shader->info.inputs_read & VARYING_BIT_PRIMITIVE_ID) != 0;
+      (shader->info->system_values_read & (1 << SYSTEM_VALUE_PRIMITIVE_ID)) != 0;
 
-   prog_data->invocations = shader->info.gs.invocations;
+   prog_data->invocations = shader->info->gs.invocations;
 
    if (compiler->devinfo->gen >= 8)
       prog_data->static_vertex_count = nir_gs_count_vertices(shader);
 
    if (compiler->devinfo->gen >= 7) {
-      if (shader->info.gs.output_primitive == GL_POINTS) {
+      if (shader->info->gs.output_primitive == GL_POINTS) {
          /* When the output type is points, the geometry shader may output data
           * to multiple streams, and EndPrimitive() has no effect.  So we
           * configure the hardware to interpret the control data as stream ID.
@@ -656,20 +660,20 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
           * EndPrimitive().
           */
          c.control_data_bits_per_vertex =
-            shader->info.gs.uses_end_primitive ? 1 : 0;
+            shader->info->gs.uses_end_primitive ? 1 : 0;
       }
    } else {
       /* There are no control data bits in gen6. */
       c.control_data_bits_per_vertex = 0;
 
       /* If it is using transform feedback, enable it */
-      if (shader->info.has_transform_feedback_varyings)
+      if (shader->info->has_transform_feedback_varyings)
          prog_data->gen6_xfb_enabled = true;
       else
          prog_data->gen6_xfb_enabled = false;
    }
    c.control_data_header_size_bits =
-      shader->info.gs.vertices_out * c.control_data_bits_per_vertex;
+      shader->info->gs.vertices_out * c.control_data_bits_per_vertex;
 
    /* 1 HWORD = 32 bytes = 256 bits */
    prog_data->control_data_header_size_hwords =
@@ -764,7 +768,7 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
    unsigned output_size_bytes;
    if (compiler->devinfo->gen >= 7) {
       output_size_bytes =
-         prog_data->output_vertex_size_hwords * 32 * shader->info.gs.vertices_out;
+         prog_data->output_vertex_size_hwords * 32 * shader->info->gs.vertices_out;
       output_size_bytes += 32 * prog_data->control_data_header_size_hwords;
    } else {
       output_size_bytes = prog_data->output_vertex_size_hwords * 32;
@@ -776,7 +780,13 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
    if (compiler->devinfo->gen >= 8)
       output_size_bytes += 32;
 
-   assert(output_size_bytes >= 1);
+   /* Shaders can technically set max_vertices = 0, at which point we
+    * may have a URB size of 0 bytes.  Nothing good can come from that,
+    * so enforce a minimum size.
+    */
+   if (output_size_bytes == 0)
+      output_size_bytes = 1;
+
    unsigned max_output_size_bytes = GEN7_MAX_GS_URB_ENTRY_SIZE_BYTES;
    if (compiler->devinfo->gen == 6)
       max_output_size_bytes = GEN6_MAX_GS_URB_ENTRY_SIZE_BYTES;
@@ -793,9 +803,9 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
       prog_data->base.urb_entry_size = ALIGN(output_size_bytes, 128) / 128;
 
    prog_data->output_topology =
-      get_hw_prim_for_gl_prim(shader->info.gs.output_primitive);
+      get_hw_prim_for_gl_prim(shader->info->gs.output_primitive);
 
-   prog_data->vertices_in = shader->info.gs.vertices_in;
+   prog_data->vertices_in = shader->info->gs.vertices_in;
 
    /* GS inputs are read from the VUE 256 bits (2 vec4's) at a time, so we
     * need to program a URB read length of ceiling(num_slots / 2).
@@ -824,9 +834,9 @@ brw_compile_gs(const struct brw_compiler *compiler, void *log_data,
                         false, MESA_SHADER_GEOMETRY);
          if (unlikely(INTEL_DEBUG & DEBUG_GS)) {
             const char *label =
-               shader->info.label ? shader->info.label : "unnamed";
+               shader->info->label ? shader->info->label : "unnamed";
             char *name = ralloc_asprintf(mem_ctx, "%s geometry shader %s",
-                                         label, shader->info.name);
+                                         label, shader->info->name);
             g.enable_debug(name);
          }
          g.generate_code(v.cfg, 8);

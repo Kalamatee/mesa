@@ -86,11 +86,11 @@ static const char *qpu_sig[] = {
 
 static const char *qpu_pack_mul[] = {
         [QPU_PACK_MUL_NOP] = "",
-        [QPU_PACK_MUL_8888] = "8888",
-        [QPU_PACK_MUL_8A] = "8a",
-        [QPU_PACK_MUL_8B] = "8b",
-        [QPU_PACK_MUL_8C] = "8c",
-        [QPU_PACK_MUL_8D] = "8d",
+        [QPU_PACK_MUL_8888] = ".8888",
+        [QPU_PACK_MUL_8A] = ".8a",
+        [QPU_PACK_MUL_8B] = ".8b",
+        [QPU_PACK_MUL_8C] = ".8c",
+        [QPU_PACK_MUL_8D] = ".8d",
 };
 
 /* The QPU unpack for A and R4 files can be described the same, it's just that
@@ -264,7 +264,7 @@ get_special_write_desc(int reg, bool is_a)
 void
 vc4_qpu_disasm_pack_mul(FILE *out, uint32_t pack)
 {
-        fprintf(out, ".%s", DESC(qpu_pack_mul, pack));
+        fprintf(out, "%s", DESC(qpu_pack_mul, pack));
 }
 
 void
@@ -317,7 +317,7 @@ print_alu_dst(uint64_t inst, bool is_mul)
 }
 
 static void
-print_alu_src(uint64_t inst, uint32_t mux)
+print_alu_src(uint64_t inst, uint32_t mux, bool is_mul)
 {
         bool is_a = mux != QPU_MUX_B;
         const char *file = is_a ? "a" : "b";
@@ -325,12 +325,14 @@ print_alu_src(uint64_t inst, uint32_t mux)
                           QPU_GET_FIELD(inst, QPU_RADDR_A) :
                           QPU_GET_FIELD(inst, QPU_RADDR_B));
         uint32_t unpack = QPU_GET_FIELD(inst, QPU_UNPACK);
+        bool has_si = QPU_GET_FIELD(inst, QPU_SIG) == QPU_SIG_SMALL_IMM;
+        uint32_t si = QPU_GET_FIELD(inst, QPU_SMALL_IMM);
 
-        if (mux <= QPU_MUX_R5)
+        if (mux <= QPU_MUX_R5) {
                 fprintf(stderr, "r%d", mux);
-        else if (!is_a &&
-                 QPU_GET_FIELD(inst, QPU_SIG) == QPU_SIG_SMALL_IMM) {
-                uint32_t si = QPU_GET_FIELD(inst, QPU_SMALL_IMM);
+                if (has_si && is_mul && si >= QPU_SMALL_IMM_MUL_ROT + 1)
+                        fprintf(stderr, "+%d", si - QPU_SMALL_IMM_MUL_ROT);
+        } else if (!is_a && has_si) {
                 if (si <= 15)
                         fprintf(stderr, "%d", si);
                 else if (si <= 31)
@@ -380,12 +382,12 @@ print_add_op(uint64_t inst)
         print_alu_dst(inst, false);
         fprintf(stderr, ", ");
 
-        print_alu_src(inst, QPU_GET_FIELD(inst, QPU_ADD_A));
+        print_alu_src(inst, QPU_GET_FIELD(inst, QPU_ADD_A), false);
 
         if (!is_mov) {
                 fprintf(stderr, ", ");
 
-                print_alu_src(inst, QPU_GET_FIELD(inst, QPU_ADD_B));
+                print_alu_src(inst, QPU_GET_FIELD(inst, QPU_ADD_B), false);
         }
 }
 
@@ -414,11 +416,11 @@ print_mul_op(uint64_t inst)
         print_alu_dst(inst, true);
         fprintf(stderr, ", ");
 
-        print_alu_src(inst, QPU_GET_FIELD(inst, QPU_MUL_A));
+        print_alu_src(inst, QPU_GET_FIELD(inst, QPU_MUL_A), true);
 
         if (!is_mov) {
                 fprintf(stderr, ", ");
-                print_alu_src(inst, QPU_GET_FIELD(inst, QPU_MUL_B));
+                print_alu_src(inst, QPU_GET_FIELD(inst, QPU_MUL_B), true);
         }
 }
 

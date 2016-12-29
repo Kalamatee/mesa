@@ -63,29 +63,66 @@ void st_destroy_atoms( struct st_context *st )
 static void check_program_state( struct st_context *st )
 {
    struct gl_context *ctx = st->ctx;
+   struct st_vertex_program *old_vp = st->vp;
+   struct st_tessctrl_program *old_tcp = st->tcp;
+   struct st_tesseval_program *old_tep = st->tep;
+   struct st_geometry_program *old_gp = st->gp;
+   struct st_fragment_program *old_fp = st->fp;
 
-   if (ctx->VertexProgram._Current != &st->vp->Base)
-      st->dirty |= ST_NEW_VERTEX_PROGRAM;
+   struct gl_program *new_vp = ctx->VertexProgram._Current;
+   struct gl_program *new_tcp = ctx->TessCtrlProgram._Current;
+   struct gl_program *new_tep = ctx->TessEvalProgram._Current;
+   struct gl_program *new_gp = ctx->GeometryProgram._Current;
+   struct gl_program *new_fp = ctx->FragmentProgram._Current;
+   uint64_t dirty = 0;
 
-   if (ctx->FragmentProgram._Current != &st->fp->Base)
-      st->dirty |= ST_NEW_FRAGMENT_PROGRAM;
+   /* Flag states used by both new and old shaders to unbind shader resources
+    * properly when transitioning to shaders that don't use them.
+    */
+   if (unlikely(new_vp != &old_vp->Base)) {
+      if (old_vp)
+         dirty |= old_vp->affected_states;
+      if (new_vp)
+         dirty |= ST_NEW_VERTEX_PROGRAM(st, st_vertex_program(new_vp));
+   }
 
-   if (ctx->GeometryProgram._Current != &st->gp->Base)
-      st->dirty |= ST_NEW_GEOMETRY_PROGRAM;
+   if (unlikely(new_tcp != &old_tcp->Base)) {
+      if (old_tcp)
+         dirty |= old_tcp->affected_states;
+      if (new_tcp)
+         dirty |= st_tessctrl_program(new_tcp)->affected_states;
+   }
 
-   if (ctx->TessCtrlProgram._Current != &st->tcp->Base)
-      st->dirty |= ST_NEW_TESSCTRL_PROGRAM;
+   if (unlikely(new_tep != &old_tep->Base)) {
+      if (old_tep)
+         dirty |= old_tep->affected_states;
+      if (new_tep)
+         dirty |= st_tesseval_program(new_tep)->affected_states;
+   }
 
-   if (ctx->TessEvalProgram._Current != &st->tep->Base)
-      st->dirty |= ST_NEW_TESSEVAL_PROGRAM;
+   if (unlikely(new_gp != &old_gp->Base)) {
+      if (old_gp)
+         dirty |= old_gp->affected_states;
+      if (new_gp)
+         dirty |= st_geometry_program(new_gp)->affected_states;
+   }
 
+   if (unlikely(new_fp != &old_fp->Base)) {
+      if (old_fp)
+         dirty |= old_fp->affected_states;
+      if (new_fp)
+         dirty |= st_fragment_program(new_fp)->affected_states;
+   }
+
+   st->dirty |= dirty;
    st->gfx_shaders_may_be_dirty = false;
 }
 
 static void check_attrib_edgeflag(struct st_context *st)
 {
-   const struct gl_client_array **arrays = st->ctx->Array._DrawArrays;
+   const struct gl_vertex_array **arrays = st->ctx->Array._DrawArrays;
    GLboolean vertdata_edgeflags, edgeflag_culls_prims, edgeflags_enabled;
+   struct gl_program *vp = st->ctx->VertexProgram._Current;
 
    if (!arrays)
       return;
@@ -97,7 +134,8 @@ static void check_attrib_edgeflag(struct st_context *st)
                         arrays[VERT_ATTRIB_EDGEFLAG]->StrideB != 0;
    if (vertdata_edgeflags != st->vertdata_edgeflags) {
       st->vertdata_edgeflags = vertdata_edgeflags;
-      st->dirty |= ST_NEW_VERTEX_PROGRAM;
+      if (vp)
+         st->dirty |= ST_NEW_VERTEX_PROGRAM(st, st_vertex_program(vp));
    }
 
    edgeflag_culls_prims = edgeflags_enabled && !vertdata_edgeflags &&
@@ -119,9 +157,12 @@ void st_validate_state( struct st_context *st, enum st_pipeline pipeline )
    uint64_t dirty, pipeline_mask;
    uint32_t dirty_lo, dirty_hi;
 
-   /* Get Mesa driver state. */
-   st->dirty |= st->ctx->NewDriverState & ST_ALL_STATES_MASK;
-   st->ctx->NewDriverState = 0;
+   /* Get Mesa driver state.
+    *
+    * Inactive states are shader states not used by shaders at the moment.
+    */
+   st->dirty |= ctx->NewDriverState & st->active_states & ST_ALL_STATES_MASK;
+   ctx->NewDriverState = 0;
 
    /* Get pipeline state. */
    switch (pipeline) {
@@ -133,25 +174,24 @@ void st_validate_state( struct st_context *st, enum st_pipeline pipeline )
       st_manager_validate_framebuffers(st);
 
       pipeline_mask = ST_PIPELINE_RENDER_STATE_MASK;
-
-      /* Don't update states that have no effect. */
-      if (!ctx->TessCtrlProgram._Current)
-         pipeline_mask &= ~ST_NEW_TCS_RESOURCES;
-      if (!ctx->TessEvalProgram._Current)
-         pipeline_mask &= ~ST_NEW_TES_RESOURCES;
-      if (!ctx->GeometryProgram._Current)
-         pipeline_mask &= ~ST_NEW_GS_RESOURCES;
-      if (!ctx->Transform.ClipPlanesEnabled)
-         pipeline_mask &= ~ST_NEW_CLIP_STATE;
-
       break;
-   case ST_PIPELINE_COMPUTE:
-      if (ctx->ComputeProgram._Current != &st->cp->Base)
-         st->dirty |= ST_NEW_COMPUTE_PROGRAM;
+
+   case ST_PIPELINE_COMPUTE: {
+      struct st_compute_program *old_cp = st->cp;
+      struct gl_program *new_cp = ctx->ComputeProgram._Current;
+
+      if (new_cp != &old_cp->Base) {
+         if (old_cp)
+            st->dirty |= old_cp->affected_states;
+         assert(new_cp);
+         st->dirty |= st_compute_program(new_cp)->affected_states;
+      }
 
       st->compute_shader_may_be_dirty = false;
       pipeline_mask = ST_PIPELINE_COMPUTE_STATE_MASK;
       break;
+   }
+
    default:
       unreachable("Invalid pipeline specified");
    }

@@ -524,7 +524,7 @@ glXWaitGL(void)
 {
    struct glx_context *gc = __glXGetCurrentContext();
 
-   if (gc && gc->vtable->wait_gl)
+   if (gc != &dummyContext && gc->vtable->wait_gl)
       gc->vtable->wait_gl(gc);
 }
 
@@ -537,7 +537,7 @@ glXWaitX(void)
 {
    struct glx_context *gc = __glXGetCurrentContext();
 
-   if (gc && gc->vtable->wait_x)
+   if (gc != &dummyContext && gc->vtable->wait_x)
       gc->vtable->wait_x(gc);
 }
 
@@ -546,7 +546,7 @@ glXUseXFont(Font font, int first, int count, int listBase)
 {
    struct glx_context *gc = __glXGetCurrentContext();
 
-   if (gc && gc->vtable->use_x_font)
+   if (gc != &dummyContext && gc->vtable->use_x_font)
       gc->vtable->use_x_font(gc, font, first, count, listBase);
 }
 
@@ -820,7 +820,7 @@ glXSwapBuffers(Display * dpy, GLXDrawable drawable)
 {
 #ifdef GLX_USE_APPLEGL
    struct glx_context * gc = __glXGetCurrentContext();
-   if(gc && apple_glx_is_current_drawable(dpy, gc->driContext, drawable)) {
+   if(gc != &DummyContext && apple_glx_is_current_drawable(dpy, gc->driContext, drawable)) {
       apple_glx_swap_buffers(gc->driContext);
    } else {
       __glXSendError(dpy, GLXBadCurrentWindow, 0, X_GLXSwapBuffers, false);
@@ -838,7 +838,7 @@ glXSwapBuffers(Display * dpy, GLXDrawable drawable)
       __GLXDRIdrawable *pdraw = GetGLXDRIDrawable(dpy, drawable);
 
       if (pdraw != NULL) {
-         Bool flush = gc && drawable == gc->currentDrawable;
+         Bool flush = gc != &dummyContext && drawable == gc->currentDrawable;
 
          (*pdraw->psc->driScreen->swapBuffers)(pdraw, 0, 0, 0, flush);
          return;
@@ -855,7 +855,7 @@ glXSwapBuffers(Display * dpy, GLXDrawable drawable)
     ** The calling thread may or may not have a current context.  If it
     ** does, send the context tag so the server can do a flush.
     */
-   if ((gc != NULL) && (dpy == gc->currentDpy) &&
+   if ((gc != &dummyContext) && (dpy == gc->currentDpy) &&
        ((drawable == gc->currentDrawable)
         || (drawable == gc->currentReadable))) {
       tag = gc->currentContextTag;
@@ -1162,8 +1162,8 @@ fbconfig_compare(struct glx_config **a, struct glx_config **b)
 
 /**
  * Selects and sorts a subset of the supplied configs based on the attributes.
- * This function forms to basis of \c glXChooseVisual, \c glXChooseFBConfig,
- * and \c glXChooseFBConfigSGIX.
+ * This function forms to basis of \c glXChooseFBConfig and
+ * \c glXChooseFBConfigSGIX.
  *
  * \param configs   Array of pointers to possible configs.  The elements of
  *                  this array that do not meet the criteria will be set to
@@ -1171,20 +1171,16 @@ fbconfig_compare(struct glx_config **a, struct glx_config **b)
  *                  the various visual / FBConfig selection rules.
  * \param num_configs  Number of elements in the \c configs array.
  * \param attribList   Attributes used select from \c configs.  This array is
- *                     terminated by a \c None tag.  The array can either take
- *                     the form expected by \c glXChooseVisual (where boolean
- *                     tags do not have a value) or by \c glXChooseFBConfig
- *                     (where every tag has a value).
- * \param fbconfig_style_tags  Selects whether \c attribList is in
- *                             \c glXChooseVisual style or
- *                             \c glXChooseFBConfig style.
+ *                     terminated by a \c None tag.  The array is of the form
+ *                     expected by \c glXChooseFBConfig (where every tag has a
+ *                     value).
  * \returns The number of valid elements left in \c configs.
  *
- * \sa glXChooseVisual, glXChooseFBConfig, glXChooseFBConfigSGIX
+ * \sa glXChooseFBConfig, glXChooseFBConfigSGIX
  */
 static int
-choose_visual(struct glx_config ** configs, int num_configs,
-              const int *attribList, GLboolean fbconfig_style_tags)
+choose_fbconfig(struct glx_config ** configs, int num_configs,
+              const int *attribList)
 {
    struct glx_config test_config;
    int base;
@@ -1196,10 +1192,10 @@ choose_visual(struct glx_config ** configs, int num_configs,
     * list.
     */
 
-   init_fbconfig_for_chooser(&test_config, fbconfig_style_tags);
+   init_fbconfig_for_chooser(&test_config, GL_TRUE);
    __glXInitializeVisualConfigFromTags(&test_config, 512,
                                        (const INT32 *) attribList,
-                                       GL_TRUE, fbconfig_style_tags);
+                                       GL_TRUE, GL_TRUE);
 
    base = 0;
    for (i = 0; i < num_configs; i++) {
@@ -1388,7 +1384,7 @@ _GLX_PUBLIC Display *
 glXGetCurrentDisplay(void)
 {
    struct glx_context *gc = __glXGetCurrentContext();
-   if (NULL == gc)
+   if (gc == &dummyContext)
       return NULL;
    return gc->currentDpy;
 }
@@ -1613,7 +1609,7 @@ glXChooseFBConfig(Display * dpy, int screen,
       glXGetFBConfigs(dpy, screen, &list_size);
 
    if ((config_list != NULL) && (list_size > 0) && (attribList != NULL)) {
-      list_size = choose_visual(config_list, list_size, attribList, GL_TRUE);
+      list_size = choose_fbconfig(config_list, list_size, attribList);
       if (list_size == 0) {
          free(config_list);
          config_list = NULL;
@@ -1630,7 +1626,6 @@ glXCreateNewContext(Display * dpy, GLXFBConfig fbconfig,
                     int renderType, GLXContext shareList, Bool allowDirect)
 {
    struct glx_config *config = (struct glx_config *) fbconfig;
-   int screen = DefaultScreen(dpy);
    struct glx_config **config_list;
    int list_size;
    unsigned i;
@@ -1641,7 +1636,7 @@ glXCreateNewContext(Display * dpy, GLXFBConfig fbconfig,
    }
 
    config_list = (struct glx_config **)
-      glXGetFBConfigs(dpy, screen, &list_size);
+      glXGetFBConfigs(dpy, config->screen, &list_size);
 
    for (i = 0; i < list_size; i++) {
        if (config_list[i] == config)
@@ -1751,7 +1746,7 @@ __glXSwapIntervalSGI(int interval)
    CARD32 *interval_ptr;
    CARD8 opcode;
 
-   if (gc == NULL) {
+   if (gc == &dummyContext) {
       return GLX_BAD_CONTEXT;
    }
 
@@ -1805,7 +1800,7 @@ __glXSwapIntervalMESA(unsigned int interval)
 #ifdef GLX_DIRECT_RENDERING
    struct glx_context *gc = __glXGetCurrentContext();
 
-   if (gc != NULL && gc->isDirect) {
+   if (gc != &dummyContext && gc->isDirect) {
       struct glx_screen *psc;
 
       psc = GetGLXScreenConfigs( gc->currentDpy, gc->screen);
@@ -1827,7 +1822,7 @@ __glXGetSwapIntervalMESA(void)
 #ifdef GLX_DIRECT_RENDERING
    struct glx_context *gc = __glXGetCurrentContext();
 
-   if (gc != NULL && gc->isDirect) {
+   if (gc != &dummyContext && gc->isDirect) {
       struct glx_screen *psc;
 
       psc = GetGLXScreenConfigs( gc->currentDpy, gc->screen);
@@ -1857,7 +1852,7 @@ __glXGetVideoSyncSGI(unsigned int *count)
    __GLXDRIdrawable *pdraw;
 #endif
 
-   if (!gc)
+   if (gc == &dummyContext)
       return GLX_BAD_CONTEXT;
 
 #ifdef GLX_DIRECT_RENDERING
@@ -1899,7 +1894,7 @@ __glXWaitVideoSyncSGI(int divisor, int remainder, unsigned int *count)
    if (divisor <= 0 || remainder < 0)
       return GLX_BAD_VALUE;
 
-   if (!gc)
+   if (gc == &dummyContext)
       return GLX_BAD_CONTEXT;
 
 #ifdef GLX_DIRECT_RENDERING
@@ -2212,7 +2207,7 @@ __glXSwapBuffersMscOML(Display * dpy, GLXDrawable drawable,
    struct glx_screen *psc = pdraw ? pdraw->psc : NULL;
 #endif
 
-   if (!gc) /* no GLX for this */
+   if (gc == &dummyContext) /* no GLX for this */
       return -1;
 
 #ifdef GLX_DIRECT_RENDERING
@@ -2392,7 +2387,7 @@ __glXCopySubBufferMESA(Display * dpy, GLXDrawable drawable,
     ** does, send the context tag so the server can do a flush.
     */
    gc = __glXGetCurrentContext();
-   if ((gc != NULL) && (dpy == gc->currentDpy) &&
+   if ((gc != &dummyContext) && (dpy == gc->currentDpy) &&
        ((drawable == gc->currentDrawable) ||
         (drawable == gc->currentReadable))) {
       tag = gc->currentContextTag;
@@ -2431,7 +2426,7 @@ __glXBindTexImageEXT(Display * dpy,
 {
    struct glx_context *gc = __glXGetCurrentContext();
 
-   if (gc == NULL || gc->vtable->bind_tex_image == NULL)
+   if (gc == &dummyContext || gc->vtable->bind_tex_image == NULL)
       return;
 
    gc->vtable->bind_tex_image(dpy, drawable, buffer, attrib_list);
@@ -2442,7 +2437,7 @@ __glXReleaseTexImageEXT(Display * dpy, GLXDrawable drawable, int buffer)
 {
    struct glx_context *gc = __glXGetCurrentContext();
 
-   if (gc == NULL || gc->vtable->release_tex_image == NULL)
+   if (gc == &dummyContext || gc->vtable->release_tex_image == NULL)
       return;
 
    gc->vtable->release_tex_image(dpy, drawable, buffer);
@@ -2718,7 +2713,7 @@ __glXGetUST(int64_t * ust)
 
 #if defined(GLX_DIRECT_RENDERING) && !defined(GLX_USE_APPLEGL)
 
-int
+PUBLIC int
 MesaGLInteropGLXQueryDeviceInfo(Display *dpy, GLXContext context,
                                 struct mesa_glinterop_device_info *out)
 {
@@ -2742,7 +2737,7 @@ MesaGLInteropGLXQueryDeviceInfo(Display *dpy, GLXContext context,
    return ret;
 }
 
-int
+PUBLIC int
 MesaGLInteropGLXExportObject(Display *dpy, GLXContext context,
                              struct mesa_glinterop_export_in *in,
                              struct mesa_glinterop_export_out *out)

@@ -35,7 +35,7 @@
 
 #define SI_MAX_ATTRIBS			16
 #define SI_NUM_VERTEX_BUFFERS		SI_MAX_ATTRIBS
-#define SI_NUM_SAMPLERS			32 /* OpenGL textures units per shader */
+#define SI_NUM_SAMPLERS			24 /* OpenGL textures units per shader */
 #define SI_NUM_CONST_BUFFERS		16
 #define SI_NUM_IMAGES			16
 #define SI_NUM_SHADER_BUFFERS		16
@@ -76,6 +76,7 @@ struct si_state_rasterizer {
 	bool			clamp_fragment_color;
 	bool			rasterizer_discard;
 	bool			scissor_enable;
+	bool			clip_halfz;
 };
 
 struct si_dsa_stencil_ref_part {
@@ -98,6 +99,13 @@ struct si_stencil_ref {
 struct si_vertex_element
 {
 	unsigned			count;
+	uint32_t			fix_fetch;
+
+	/* Two bits per attribute indicating the size of each vector component
+	 * in bytes if the size 3-workaround must be applied.
+	 */
+	uint32_t			fix_size3;
+
 	uint32_t			rsrc_word3[SI_MAX_ATTRIBS];
 	uint32_t			format_size[SI_MAX_ATTRIBS];
 	struct pipe_vertex_element	elements[SI_MAX_ATTRIBS];
@@ -123,7 +131,6 @@ union si_state {
 union si_state_atoms {
 	struct {
 		/* The order matters. */
-		struct r600_atom *cache_flush;
 		struct r600_atom *render_cond;
 		struct r600_atom *streamout_begin;
 		struct r600_atom *streamout_enable; /* must be after streamout_begin */
@@ -160,11 +167,7 @@ enum {
 	SI_ES_RING_ESGS,
 	SI_GS_RING_ESGS,
 
-	SI_GS_RING_GSVS0,
-	SI_GS_RING_GSVS1,
-	SI_GS_RING_GSVS2,
-	SI_GS_RING_GSVS3,
-	SI_VS_RING_GSVS,
+	SI_RING_GSVS,
 
 	SI_VS_STREAMOUT_BUF0,
 	SI_VS_STREAMOUT_BUF1,
@@ -210,6 +213,8 @@ enum {
 struct si_descriptors {
 	/* The list of descriptors in malloc'd memory. */
 	uint32_t *list;
+	/* The list in mapped GPU memory. */
+	uint32_t *gpu_list;
 	/* The size of one descriptor. */
 	unsigned element_dw_size;
 	/* The maximum number of descriptors. */
@@ -238,7 +243,7 @@ struct si_descriptors {
 
 struct si_sampler_views {
 	struct pipe_sampler_view	*views[SI_NUM_SAMPLERS];
-	void				*sampler_states[SI_NUM_SAMPLERS];
+	struct si_sampler_state		*sampler_states[SI_NUM_SAMPLERS];
 
 	/* The i-th bit is set if that element is enabled (non-NULL resource). */
 	unsigned			enabled_mask;
@@ -281,6 +286,11 @@ void si_set_mutable_tex_desc_fields(struct r600_texture *tex,
 				    unsigned base_level, unsigned first_level,
 				    unsigned block_width, bool is_stencil,
 				    uint32_t *state);
+void si_get_pipe_constant_buffer(struct si_context *sctx, uint shader,
+				 uint slot, struct pipe_constant_buffer *cbuf);
+void si_get_shader_buffers(struct si_context *sctx, uint shader,
+			   uint start_slot, uint count,
+			   struct pipe_shader_buffer *sbuf);
 void si_set_ring_buffer(struct pipe_context *ctx, uint slot,
 			struct pipe_resource *buffer,
 			unsigned stride, unsigned num_records,
@@ -313,7 +323,7 @@ void si_init_screen_state_functions(struct si_screen *sscreen);
 void
 si_make_buffer_descriptor(struct si_screen *screen, struct r600_resource *buf,
 			  enum pipe_format format,
-			  unsigned first_element, unsigned last_element,
+			  unsigned offset, unsigned size,
 			  uint32_t *state);
 void
 si_make_texture_descriptor(struct si_screen *screen,
@@ -342,7 +352,7 @@ void si_destroy_shader_cache(struct si_screen *sscreen);
 void si_init_shader_selector_async(void *job, int thread_index);
 
 /* si_state_draw.c */
-void si_emit_cache_flush(struct si_context *sctx, struct r600_atom *atom);
+void si_emit_cache_flush(struct si_context *sctx);
 void si_ce_pre_draw_synchronization(struct si_context *sctx);
 void si_ce_post_draw_synchronization(struct si_context *sctx);
 void si_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info *dinfo);

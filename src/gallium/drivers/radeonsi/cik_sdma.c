@@ -27,9 +27,6 @@
 
 #include "sid.h"
 #include "si_pipe.h"
-#include "radeon/r600_cs.h"
-
-#include "util/u_format.h"
 
 static void cik_sdma_do_copy_buffer(struct si_context *ctx,
 				    struct pipe_resource *dst,
@@ -137,8 +134,8 @@ static bool cik_sdma_copy_texture(struct si_context *sctx,
 	unsigned src_tile_mode = info->si_tile_mode_array[src_tile_index];
 	unsigned dst_micro_mode = G_009910_MICRO_TILE_MODE_NEW(dst_tile_mode);
 	unsigned src_micro_mode = G_009910_MICRO_TILE_MODE_NEW(src_tile_mode);
-	unsigned dst_pitch = rdst->surface.level[dst_level].pitch_bytes / bpp;
-	unsigned src_pitch = rsrc->surface.level[src_level].pitch_bytes / bpp;
+	unsigned dst_pitch = rdst->surface.level[dst_level].nblk_x;
+	unsigned src_pitch = rsrc->surface.level[src_level].nblk_x;
 	uint64_t dst_slice_pitch = rdst->surface.level[dst_level].slice_size / bpp;
 	uint64_t src_slice_pitch = rsrc->surface.level[src_level].slice_size / bpp;
 	unsigned dst_width = minify_as_blocks(rdst->resource.b.b.width0,
@@ -164,10 +161,6 @@ static bool cik_sdma_copy_texture(struct si_context *sctx,
 	assert(rsrc->surface.level[src_level].offset +
 	       src_slice_pitch * bpp * (srcz + src_box->depth) <=
 	       rsrc->resource.buf->size);
-
-	/* Test CIK with radeon and amdgpu before enabling this. */
-	if (sctx->b.chip_class == CIK)
-		return false;
 
 	if (!r600_prepare_for_dma_blit(&sctx->b, rdst, dst_level, dstx, dsty,
 					dstz, rsrc, src_level, src_box))
@@ -349,7 +342,7 @@ static bool cik_sdma_copy_texture(struct si_context *sctx,
 					      (tiled_x + copy_width) % granularity;
 
 		if (start_linear_address < 0 ||
-		    end_linear_address > linear->surface.bo_size)
+		    end_linear_address > linear->surface.surf_size)
 			return false;
 
 		/* Check requirements. */

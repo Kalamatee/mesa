@@ -26,7 +26,6 @@
 
 #include "sid.h"
 #include "si_pipe.h"
-#include "radeon/r600_cs.h"
 
 #include "util/u_format.h"
 
@@ -99,7 +98,6 @@ static void si_dma_copy_tile(struct si_context *ctx,
 	struct r600_texture *rsrc = (struct r600_texture*)src;
 	struct r600_texture *rdst = (struct r600_texture*)dst;
 	unsigned dst_mode = rdst->surface.level[dst_level].mode;
-	unsigned src_mode = rsrc->surface.level[src_level].mode;
 	bool detile = dst_mode == RADEON_SURF_MODE_LINEAR_ALIGNED;
 	struct r600_texture *rlinear = detile ? rdst : rsrc;
 	struct r600_texture *rtiled = detile ? rsrc : rdst;
@@ -115,7 +113,7 @@ static void si_dma_copy_tile(struct si_context *ctx,
 	uint64_t base, addr;
 	unsigned pipe_config;
 
-	assert(dst_mode != src_mode);
+	assert(dst_mode != rsrc->surface.level[src_level].mode);
 
 	sub_cmd = SI_DMA_COPY_TILED;
 	lbpp = util_logbase2(bpp);
@@ -233,18 +231,18 @@ static void si_dma_copy(struct pipe_context *ctx,
 	dst_y = util_format_get_nblocksy(src->format, dst_y);
 
 	bpp = rdst->surface.bpe;
-	dst_pitch = rdst->surface.level[dst_level].pitch_bytes;
-	src_pitch = rsrc->surface.level[src_level].pitch_bytes;
-	src_w = rsrc->surface.level[src_level].npix_x;
-	dst_w = rdst->surface.level[dst_level].npix_x;
+	dst_pitch = rdst->surface.level[dst_level].nblk_x * rdst->surface.bpe;
+	src_pitch = rsrc->surface.level[src_level].nblk_x * rsrc->surface.bpe;
+	src_w = u_minify(rsrc->resource.b.b.width0, src_level);
+	dst_w = u_minify(rdst->resource.b.b.width0, dst_level);
 
 	dst_mode = rdst->surface.level[dst_level].mode;
 	src_mode = rsrc->surface.level[src_level].mode;
 
 	if (src_pitch != dst_pitch || src_box->x || dst_x || src_w != dst_w ||
 	    src_box->width != src_w ||
-	    src_box->height != rsrc->surface.level[src_level].npix_y ||
-	    src_box->height != rdst->surface.level[dst_level].npix_y ||
+	    src_box->height != u_minify(rsrc->resource.b.b.height0, src_level) ||
+	    src_box->height != u_minify(rdst->resource.b.b.height0, dst_level) ||
 	    rsrc->surface.level[src_level].nblk_y !=
 	    rdst->surface.level[dst_level].nblk_y) {
 		/* FIXME si can do partial blit */

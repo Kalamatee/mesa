@@ -36,7 +36,7 @@
 #include "linker.h"
 #include "link_varyings.h"
 #include "main/macros.h"
-#include "program/hash_table.h"
+#include "util/hash_table.h"
 #include "program.h"
 
 
@@ -271,7 +271,7 @@ cross_validate_types_and_qualifiers(struct gl_shader_program *prog,
     * OpenGLES 3.0 drivers, so we relax the checking in all cases.
     */
    if (false /* always skip the centroid check */ &&
-       prog->Version < (prog->IsES ? 310 : 430) &&
+       prog->data->Version < (prog->IsES ? 310 : 430) &&
        input->data.centroid != output->data.centroid) {
       linker_error(prog,
                    "%s shader output `%s' %s centroid qualifier, "
@@ -308,7 +308,25 @@ cross_validate_types_and_qualifiers(struct gl_shader_program *prog,
       return;
    }
 
-   if (!prog->IsES && input->data.invariant != output->data.invariant) {
+   /* The GLSL 4.30 and GLSL ES 3.00 specifications say:
+    *
+    *    "As only outputs need be declared with invariant, an output from
+    *     one shader stage will still match an input of a subsequent stage
+    *     without the input being declared as invariant."
+    *
+    * while GLSL 4.20 says:
+    *
+    *    "For variables leaving one shader and coming into another shader,
+    *     the invariant keyword has to be used in both shaders, or a link
+    *     error will result."
+    *
+    * and GLSL ES 1.00 section 4.6.4 "Invariance and Linking" says:
+    *
+    *    "The invariance of varyings that are declared in both the vertex
+    *     and fragment shaders must match."
+    */
+   if (input->data.invariant != output->data.invariant &&
+       prog->data->Version < (prog->IsES ? 300 : 430)) {
       linker_error(prog,
                    "%s shader output `%s' %s invariant qualifier, "
                    "but %s shader input %s invariant qualifier\n",
@@ -330,7 +348,7 @@ cross_validate_types_and_qualifiers(struct gl_shader_program *prog,
     *
     */
    if (input->data.interpolation != output->data.interpolation &&
-       prog->Version < 440) {
+       prog->data->Version < 440) {
       linker_error(prog,
                    "%s shader output `%s' specifies %s "
                    "interpolation qualifier, "
@@ -575,6 +593,11 @@ remove_unused_shader_inputs_and_outputs(bool is_separate_shader_object,
        */
       if (var->data.is_unmatched_generic_inout && !var->data.is_xfb_only) {
          assert(var->data.mode != ir_var_temporary);
+
+         /* Assign zeros to demoted inputs to allow more optimizations. */
+         if (var->data.mode == ir_var_shader_in && !var->constant_value)
+            var->constant_value = ir_constant::zero(var, var->type);
+
          var->data.mode = ir_var_auto;
       }
    }
@@ -963,8 +986,11 @@ tfeedback_decl::find_candidate(gl_shader_program *prog,
       name = "gl_TessLevelInnerMESA";
       break;
    }
-   this->matched_candidate = (const tfeedback_candidate *)
-      hash_table_find(tfeedback_candidates, name);
+   hash_entry *entry = _mesa_hash_table_search(tfeedback_candidates, name);
+
+   this->matched_candidate = entry ?
+         (const tfeedback_candidate *) entry->data : NULL;
+
    if (!this->matched_candidate) {
       /* From GL_EXT_transform_feedback:
        *   A program will fail to link if:
@@ -976,6 +1002,7 @@ tfeedback_decl::find_candidate(gl_shader_program *prog,
       linker_error(prog, "Transform feedback varying %s undeclared.",
                    this->orig_name);
    }
+
    return this->matched_candidate;
 }
 
@@ -1190,6 +1217,7 @@ public:
    ~varying_matches();
    void record(ir_variable *producer_var, ir_variable *consumer_var);
    unsigned assign_locations(struct gl_shader_program *prog,
+                             uint8_t *components,
                              uint64_t reserved_slots);
    void store_locations() const;
 
@@ -1372,8 +1400,9 @@ varying_matches::record(ir_variable *producer_var, ir_variable *consumer_var)
       (producer_var->type->contains_integer() ||
        producer_var->type->contains_double());
 
-   if (needs_flat_qualifier ||
-       (consumer_stage != -1 && consumer_stage != MESA_SHADER_FRAGMENT)) {
+   if (!disable_varying_packing &&
+       (needs_flat_qualifier ||
+        (consumer_stage != -1 && consumer_stage != MESA_SHADER_FRAGMENT))) {
       /* Since this varying is not being consumed by the fragment shader, its
        * interpolation type varying cannot possibly affect rendering.
        * Also, this variable is non-flat and is (or contains) an integer
@@ -1454,6 +1483,7 @@ varying_matches::record(ir_variable *producer_var, ir_variable *consumer_var)
  */
 unsigned
 varying_matches::assign_locations(struct gl_shader_program *prog,
+                                  uint8_t *components,
                                   uint64_t reserved_slots)
 {
    /* If packing has been disabled then we cannot safely sort the varyings by
@@ -1518,14 +1548,16 @@ varying_matches::assign_locations(struct gl_shader_program *prog,
 
       previous_var_xfb_only = var->data.is_xfb_only;
 
-      unsigned num_elements =  type->count_attribute_slots(is_vertex_input);
-      unsigned slot_end;
-      if (this->disable_varying_packing &&
-          !is_varying_packing_safe(type, var))
-         slot_end = 4;
-      else
-         slot_end = type->without_array()->vector_elements;
-      slot_end += *location - 1;
+      /* The number of components taken up by this variable. For vertex shader
+       * inputs, we use the number of slots * 4, as they have different
+       * counting rules.
+       */
+      unsigned num_components = is_vertex_input ?
+         type->count_attribute_slots(is_vertex_input) * 4 :
+         this->matches[i].num_components;
+
+      /* The last slot for this variable, inclusive. */
+      unsigned slot_end = *location + num_components - 1;
 
       /* FIXME: We could be smarter in the below code and loop back over
        * trying to fill any locations that we skipped because we couldn't pack
@@ -1533,29 +1565,21 @@ varying_matches::assign_locations(struct gl_shader_program *prog,
        * hit the linking error if we run out of room and suggest they use
        * explicit locations.
        */
-      for (unsigned j = 0; j < num_elements; j++) {
-         while ((slot_end < MAX_VARYING * 4u) &&
-                ((reserved_slots & (UINT64_C(1) << *location / 4u) ||
-                 (reserved_slots & (UINT64_C(1) << slot_end / 4u))))) {
+      while (slot_end < MAX_VARYING * 4u) {
+         const unsigned slots = (slot_end / 4u) - (*location / 4u) + 1;
+         const uint64_t slot_mask = ((1ull << slots) - 1) << (*location / 4u);
 
+         assert(slots > 0);
+         if (reserved_slots & slot_mask) {
             *location = ALIGN(*location + 1, 4);
-            slot_end = *location;
-
-            /* reset the counter and try again */
-            j = 0;
+            slot_end = *location + num_components - 1;
+            continue;
          }
 
-         /* Increase the slot to make sure there is enough room for next
-          * array element.
-          */
-         if (this->disable_varying_packing &&
-             !is_varying_packing_safe(type, var))
-            slot_end += 4;
-         else
-            slot_end += type->without_array()->vector_elements;
+         break;
       }
 
-      if (!var->data.patch && *location >= MAX_VARYING * 4u) {
+      if (!var->data.patch && slot_end >= MAX_VARYING * 4u) {
          linker_error(prog, "insufficient contiguous locations available for "
                       "%s it is possible an array or struct could not be "
                       "packed between varyings with explicit locations. Try "
@@ -1563,9 +1587,15 @@ varying_matches::assign_locations(struct gl_shader_program *prog,
                       var->name);
       }
 
+      if (slot_end < MAX_VARYINGS_INCL_PATCH * 4u) {
+         for (unsigned j = *location / 4u; j < slot_end / 4u; j++)
+            components[j] = 4;
+         components[slot_end / 4u] = (slot_end & 3) + 1;
+      }
+
       this->matches[i].generic_location = *location;
 
-      *location += this->matches[i].num_components;
+      *location = slot_end + 1;
    }
 
    return (generic_location + 3) / 4;
@@ -1758,20 +1788,22 @@ public:
 
 private:
    virtual void visit_field(const glsl_type *type, const char *name,
-                            bool row_major)
+                            bool /* row_major */,
+                            const glsl_type * /* record_type */,
+                            const enum glsl_interface_packing,
+                            bool /* last_field */)
    {
       assert(!type->without_array()->is_record());
       assert(!type->without_array()->is_interface());
-
-      (void) row_major;
 
       tfeedback_candidate *candidate
          = rzalloc(this->mem_ctx, tfeedback_candidate);
       candidate->toplevel_var = this->toplevel_var;
       candidate->type = type;
       candidate->offset = this->varying_floats;
-      hash_table_insert(this->tfeedback_candidates, candidate,
-                        ralloc_strdup(this->mem_ctx, name));
+      _mesa_hash_table_insert(this->tfeedback_candidates,
+                              ralloc_strdup(this->mem_ctx, name),
+                              candidate);
       this->varying_floats += type->component_slots();
    }
 
@@ -1842,11 +1874,12 @@ populate_consumer_input_sets(void *mem_ctx, exec_list *ir,
                ralloc_asprintf(mem_ctx, "%s.%s",
                   input_var->get_interface_type()->without_array()->name,
                   input_var->name);
-            hash_table_insert(consumer_interface_inputs, input_var,
-                              iface_field_name);
+            _mesa_hash_table_insert(consumer_interface_inputs,
+                                    iface_field_name, input_var);
          } else {
-            hash_table_insert(consumer_inputs, input_var,
-                              ralloc_strdup(mem_ctx, input_var->name));
+            _mesa_hash_table_insert(consumer_inputs,
+                                    ralloc_strdup(mem_ctx, input_var->name),
+                                    input_var);
          }
       }
    }
@@ -1874,12 +1907,11 @@ get_matching_input(void *mem_ctx,
          ralloc_asprintf(mem_ctx, "%s.%s",
             output_var->get_interface_type()->without_array()->name,
             output_var->name);
-      input_var =
-         (ir_variable *) hash_table_find(consumer_interface_inputs,
-                                         iface_field_name);
+      hash_entry *entry = _mesa_hash_table_search(consumer_interface_inputs, iface_field_name);
+      input_var = entry ? (ir_variable *) entry->data : NULL;
    } else {
-      input_var =
-         (ir_variable *) hash_table_find(consumer_inputs, output_var->name);
+      hash_entry *entry = _mesa_hash_table_search(consumer_inputs, output_var->name);
+      input_var = entry ? (ir_variable *) entry->data : NULL;
    }
 
    return (input_var == NULL || input_var->data.mode != ir_var_shader_in)
@@ -2056,12 +2088,15 @@ assign_varying_locations(struct gl_context *ctx,
    varying_matches matches(disable_varying_packing, xfb_enabled,
                            producer ? producer->Stage : (gl_shader_stage)-1,
                            consumer ? consumer->Stage : (gl_shader_stage)-1);
-   hash_table *tfeedback_candidates
-      = hash_table_ctor(0, hash_table_string_hash, hash_table_string_compare);
-   hash_table *consumer_inputs
-      = hash_table_ctor(0, hash_table_string_hash, hash_table_string_compare);
-   hash_table *consumer_interface_inputs
-      = hash_table_ctor(0, hash_table_string_hash, hash_table_string_compare);
+   hash_table *tfeedback_candidates =
+         _mesa_hash_table_create(NULL, _mesa_key_hash_string,
+                                 _mesa_key_string_equal);
+   hash_table *consumer_inputs =
+         _mesa_hash_table_create(NULL, _mesa_key_hash_string,
+                                 _mesa_key_string_equal);
+   hash_table *consumer_interface_inputs =
+         _mesa_hash_table_create(NULL, _mesa_key_hash_string,
+                                 _mesa_key_string_equal);
    ir_variable *consumer_inputs_with_locations[VARYING_SLOT_TESS_MAX] = {
       NULL,
    };
@@ -2156,8 +2191,8 @@ assign_varying_locations(struct gl_context *ctx,
       }
    }
 
-   hash_table_dtor(consumer_inputs);
-   hash_table_dtor(consumer_interface_inputs);
+   _mesa_hash_table_destroy(consumer_inputs, NULL);
+   _mesa_hash_table_destroy(consumer_interface_inputs, NULL);
 
    for (unsigned i = 0; i < num_tfeedback_decls; ++i) {
       if (!tfeedback_decls[i].is_varying())
@@ -2167,7 +2202,7 @@ assign_varying_locations(struct gl_context *ctx,
          = tfeedback_decls[i].find_candidate(prog, tfeedback_candidates);
 
       if (matched_candidate == NULL) {
-         hash_table_dtor(tfeedback_candidates);
+         _mesa_hash_table_destroy(tfeedback_candidates, NULL);
          return false;
       }
 
@@ -2177,7 +2212,9 @@ assign_varying_locations(struct gl_context *ctx,
       }
    }
 
-   const unsigned slots_used = matches.assign_locations(prog, reserved_slots);
+   uint8_t components[MAX_VARYINGS_INCL_PATCH] = {0};
+   const unsigned slots_used = matches.assign_locations(
+         prog, components, reserved_slots);
    matches.store_locations();
 
    for (unsigned i = 0; i < num_tfeedback_decls; ++i) {
@@ -2185,11 +2222,11 @@ assign_varying_locations(struct gl_context *ctx,
          continue;
 
       if (!tfeedback_decls[i].assign_location(ctx, prog)) {
-         hash_table_dtor(tfeedback_candidates);
+         _mesa_hash_table_destroy(tfeedback_candidates, NULL);
          return false;
       }
    }
-   hash_table_dtor(tfeedback_candidates);
+   _mesa_hash_table_destroy(tfeedback_candidates, NULL);
 
    if (consumer && producer) {
       foreach_in_list(ir_instruction, node, consumer->ir) {
@@ -2197,7 +2234,7 @@ assign_varying_locations(struct gl_context *ctx,
 
          if (var && var->data.mode == ir_var_shader_in &&
              var->data.is_unmatched_generic_inout) {
-            if (!prog->IsES && prog->Version <= 120) {
+            if (!prog->IsES && prog->data->Version <= 120) {
                /* On page 25 (page 31 of the PDF) of the GLSL 1.20 spec:
                 *
                 *     Only those varying variables used (i.e. read) in
@@ -2237,13 +2274,13 @@ assign_varying_locations(struct gl_context *ctx,
    }
 
    if (producer) {
-      lower_packed_varyings(mem_ctx, slots_used, ir_var_shader_out,
+      lower_packed_varyings(mem_ctx, slots_used, components, ir_var_shader_out,
                             0, producer, disable_varying_packing,
                             xfb_enabled);
    }
 
    if (consumer) {
-      lower_packed_varyings(mem_ctx, slots_used, ir_var_shader_in,
+      lower_packed_varyings(mem_ctx, slots_used, components, ir_var_shader_in,
                             consumer_vertices, consumer,
                             disable_varying_packing, xfb_enabled);
    }

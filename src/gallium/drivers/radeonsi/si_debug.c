@@ -25,7 +25,6 @@
  */
 
 #include "si_pipe.h"
-#include "si_shader.h"
 #include "sid.h"
 #include "sid_tables.h"
 #include "radeon/radeon_elf_util.h"
@@ -234,7 +233,8 @@ static void si_dump_reg(FILE *file, unsigned offset, uint32_t value,
 		}
 	}
 
-	fprintf(file, COLOR_YELLOW "0x%05x" COLOR_RESET " = 0x%08x", offset, value);
+	print_spaces(file, INDENT_PKT);
+	fprintf(file, COLOR_YELLOW "0x%05x" COLOR_RESET " <- 0x%08x\n", offset, value);
 }
 
 static void si_parse_set_reg_packet(FILE *f, uint32_t *ib, unsigned count,
@@ -248,7 +248,7 @@ static void si_parse_set_reg_packet(FILE *f, uint32_t *ib, unsigned count,
 }
 
 static uint32_t *si_parse_packet3(FILE *f, uint32_t *ib, int *num_dw,
-				  int trace_id)
+				  int trace_id, enum chip_class chip_class)
 {
 	unsigned count = PKT_COUNT_G(ib[0]);
 	unsigned op = PKT3_IT_OPCODE_G(ib[0]);
@@ -299,9 +299,15 @@ static uint32_t *si_parse_packet3(FILE *f, uint32_t *ib, int *num_dw,
 		print_named_value(f, "POLL_INTERVAL", ib[6], 16);
 		break;
 	case PKT3_SURFACE_SYNC:
-		si_dump_reg(f, R_0085F0_CP_COHER_CNTL, ib[1], ~0);
-		si_dump_reg(f, R_0085F4_CP_COHER_SIZE, ib[2], ~0);
-		si_dump_reg(f, R_0085F8_CP_COHER_BASE, ib[3], ~0);
+		if (chip_class >= CIK) {
+			si_dump_reg(f, R_0301F0_CP_COHER_CNTL, ib[1], ~0);
+			si_dump_reg(f, R_0301F4_CP_COHER_SIZE, ib[2], ~0);
+			si_dump_reg(f, R_0301F8_CP_COHER_BASE, ib[3], ~0);
+		} else {
+			si_dump_reg(f, R_0085F0_CP_COHER_CNTL, ib[1], ~0);
+			si_dump_reg(f, R_0085F4_CP_COHER_SIZE, ib[2], ~0);
+			si_dump_reg(f, R_0085F8_CP_COHER_BASE, ib[3], ~0);
+		}
 		print_named_value(f, "POLL_INTERVAL", ib[4], 16);
 		break;
 	case PKT3_EVENT_WRITE:
@@ -362,6 +368,10 @@ static uint32_t *si_parse_packet3(FILE *f, uint32_t *ib, int *num_dw,
 		si_dump_reg(f, R_3F1_IB_BASE_HI, ib[2], ~0);
 		si_dump_reg(f, R_3F2_CONTROL, ib[3], ~0);
 		break;
+	case PKT3_CLEAR_STATE:
+	case PKT3_INCREMENT_DE_COUNTER:
+	case PKT3_PFP_SYNC_ME:
+		break;
 	case PKT3_NOP:
 		if (ib[0] == 0xffff1000) {
 			count = -1; /* One dword NOP. */
@@ -421,7 +431,7 @@ static uint32_t *si_parse_packet3(FILE *f, uint32_t *ib, int *num_dw,
  *			and executed by the CP, typically read from a buffer
  */
 static void si_parse_ib(FILE *f, uint32_t *ib, int num_dw, int trace_id,
-			const char *name)
+			const char *name, enum chip_class chip_class)
 {
 	fprintf(f, "------------------ %s begin ------------------\n", name);
 
@@ -430,7 +440,8 @@ static void si_parse_ib(FILE *f, uint32_t *ib, int num_dw, int trace_id,
 
 		switch (type) {
 		case 3:
-			ib = si_parse_packet3(f, ib, &num_dw, trace_id);
+			ib = si_parse_packet3(f, ib, &num_dw, trace_id,
+					      chip_class);
 			break;
 		case 2:
 			/* type-2 nop */
@@ -525,15 +536,15 @@ static void si_dump_last_ib(struct si_context *sctx, FILE *f)
 
 	if (sctx->init_config)
 		si_parse_ib(f, sctx->init_config->pm4, sctx->init_config->ndw,
-			    -1, "IB2: Init config");
+			    -1, "IB2: Init config", sctx->b.chip_class);
 
 	if (sctx->init_config_gs_rings)
 		si_parse_ib(f, sctx->init_config_gs_rings->pm4,
 			    sctx->init_config_gs_rings->ndw,
-			    -1, "IB2: Init GS rings");
+			    -1, "IB2: Init GS rings", sctx->b.chip_class);
 
 	si_parse_ib(f, sctx->last_gfx.ib, sctx->last_gfx.num_dw,
-		    last_trace_id, "IB");
+		    last_trace_id, "IB", sctx->b.chip_class);
 }
 
 static const char *priority_to_string(enum radeon_bo_priority priority)
@@ -548,21 +559,17 @@ static const char *priority_to_string(enum radeon_bo_priority priority)
 	        ITEM(IB2),
 	        ITEM(DRAW_INDIRECT),
 	        ITEM(INDEX_BUFFER),
-	        ITEM(CP_DMA),
 	        ITEM(VCE),
 	        ITEM(UVD),
 	        ITEM(SDMA_BUFFER),
 	        ITEM(SDMA_TEXTURE),
-	        ITEM(USER_SHADER),
-	        ITEM(INTERNAL_SHADER),
+		ITEM(CP_DMA),
 	        ITEM(CONST_BUFFER),
 	        ITEM(DESCRIPTORS),
 	        ITEM(BORDER_COLORS),
 	        ITEM(SAMPLER_BUFFER),
 	        ITEM(VERTEX_BUFFER),
 	        ITEM(SHADER_RW_BUFFER),
-	        ITEM(RINGS_STREAMOUT),
-	        ITEM(SCRATCH_BUFFER),
 	        ITEM(COMPUTE_GLOBAL),
 	        ITEM(SAMPLER_TEXTURE),
 	        ITEM(SHADER_RW_IMAGE),
@@ -574,6 +581,9 @@ static const char *priority_to_string(enum radeon_bo_priority priority)
 	        ITEM(CMASK),
 	        ITEM(DCC),
 	        ITEM(HTILE),
+		ITEM(SHADER_BINARY),
+		ITEM(SHADER_RINGS),
+		ITEM(SCRATCH_BUFFER),
 	};
 #undef ITEM
 
@@ -664,6 +674,112 @@ static void si_dump_framebuffer(struct si_context *sctx, FILE *f)
 	}
 }
 
+static void si_dump_descriptor_list(struct si_descriptors *desc,
+				    const char *shader_name,
+				    const char *elem_name,
+				    unsigned num_elements,
+				    FILE *f)
+{
+	unsigned i, j;
+	uint32_t *cpu_list = desc->list;
+	uint32_t *gpu_list = desc->gpu_list;
+	const char *list_note = "GPU list";
+
+	if (!gpu_list) {
+		gpu_list = cpu_list;
+		list_note = "CPU list";
+	}
+
+	for (i = 0; i < num_elements; i++) {
+		fprintf(f, COLOR_GREEN "%s%s slot %u (%s):" COLOR_RESET "\n",
+			shader_name, elem_name, i, list_note);
+
+		switch (desc->element_dw_size) {
+		case 4:
+			for (j = 0; j < 4; j++)
+				si_dump_reg(f, R_008F00_SQ_BUF_RSRC_WORD0 + j*4,
+					    gpu_list[j], 0xffffffff);
+			break;
+		case 8:
+			for (j = 0; j < 8; j++)
+				si_dump_reg(f, R_008F10_SQ_IMG_RSRC_WORD0 + j*4,
+					    gpu_list[j], 0xffffffff);
+
+			fprintf(f, COLOR_CYAN "    Buffer:" COLOR_RESET "\n");
+			for (j = 0; j < 4; j++)
+				si_dump_reg(f, R_008F00_SQ_BUF_RSRC_WORD0 + j*4,
+					    gpu_list[4+j], 0xffffffff);
+			break;
+		case 16:
+			for (j = 0; j < 8; j++)
+				si_dump_reg(f, R_008F10_SQ_IMG_RSRC_WORD0 + j*4,
+					    gpu_list[j], 0xffffffff);
+
+			fprintf(f, COLOR_CYAN "    Buffer:" COLOR_RESET "\n");
+			for (j = 0; j < 4; j++)
+				si_dump_reg(f, R_008F00_SQ_BUF_RSRC_WORD0 + j*4,
+					    gpu_list[4+j], 0xffffffff);
+
+			fprintf(f, COLOR_CYAN "    FMASK:" COLOR_RESET "\n");
+			for (j = 0; j < 8; j++)
+				si_dump_reg(f, R_008F10_SQ_IMG_RSRC_WORD0 + j*4,
+					    gpu_list[8+j], 0xffffffff);
+
+			fprintf(f, COLOR_CYAN "    Sampler state:" COLOR_RESET "\n");
+			for (j = 0; j < 4; j++)
+				si_dump_reg(f, R_008F30_SQ_IMG_SAMP_WORD0 + j*4,
+					    gpu_list[12+j], 0xffffffff);
+			break;
+		}
+
+		if (memcmp(gpu_list, cpu_list, desc->element_dw_size * 4) != 0) {
+			fprintf(f, COLOR_RED "!!!!! This slot was corrupted in GPU memory !!!!!"
+				COLOR_RESET "\n");
+		}
+
+		fprintf(f, "\n");
+		gpu_list += desc->element_dw_size;
+		cpu_list += desc->element_dw_size;
+	}
+}
+
+static void si_dump_descriptors(struct si_context *sctx,
+				struct si_shader_ctx_state *state,
+				FILE *f)
+{
+	if (!state->cso || !state->current)
+		return;
+
+	unsigned type = state->cso->type;
+	const struct tgsi_shader_info *info = &state->cso->info;
+	struct si_descriptors *descs =
+		&sctx->descriptors[SI_DESCS_FIRST_SHADER +
+				   type * SI_NUM_SHADER_DESCS];
+	static const char *shader_name[] = {"VS", "PS", "GS", "TCS", "TES", "CS"};
+
+	static const char *elem_name[] = {
+		" - Constant buffer",
+		" - Shader buffer",
+		" - Sampler",
+		" - Image",
+	};
+	unsigned num_elements[] = {
+		util_last_bit(info->const_buffers_declared),
+		util_last_bit(info->shader_buffers_declared),
+		util_last_bit(info->samplers_declared),
+		util_last_bit(info->images_declared),
+	};
+
+	if (type == PIPE_SHADER_VERTEX) {
+		si_dump_descriptor_list(&sctx->vertex_buffers, shader_name[type],
+					" - Vertex buffer", info->num_inputs, f);
+	}
+
+	for (unsigned i = 0; i < SI_NUM_SHADER_DESCS; ++i, ++descs)
+		si_dump_descriptor_list(descs, shader_name[type], elem_name[i],
+					num_elements[i], f);
+}
+
 static void si_dump_debug_state(struct pipe_context *ctx, FILE *f,
 				unsigned flags)
 {
@@ -681,6 +797,14 @@ static void si_dump_debug_state(struct pipe_context *ctx, FILE *f,
 		si_dump_shader(sctx->screen, &sctx->tes_shader, f);
 		si_dump_shader(sctx->screen, &sctx->gs_shader, f);
 		si_dump_shader(sctx->screen, &sctx->ps_shader, f);
+
+		si_dump_descriptor_list(&sctx->descriptors[SI_DESCS_RW_BUFFERS],
+					"", "RW buffers", SI_NUM_RW_BUFFERS, f);
+		si_dump_descriptors(sctx, &sctx->vs_shader, f);
+		si_dump_descriptors(sctx, &sctx->tcs_shader, f);
+		si_dump_descriptors(sctx, &sctx->tes_shader, f);
+		si_dump_descriptors(sctx, &sctx->gs_shader, f);
+		si_dump_descriptors(sctx, &sctx->ps_shader, f);
 	}
 
 	if (flags & PIPE_DUMP_LAST_COMMAND_BUFFER) {
@@ -828,7 +952,10 @@ void si_check_vm_faults(struct r600_common_context *ctx,
 
 	switch (ring) {
 	case RING_GFX:
-		si_dump_debug_state(&sctx->b.b, f, 0);
+		si_dump_debug_state(&sctx->b.b, f,
+				    PIPE_DUMP_CURRENT_STATES |
+				    PIPE_DUMP_CURRENT_SHADERS |
+				    PIPE_DUMP_LAST_COMMAND_BUFFER);
 		break;
 
 	case RING_DMA:

@@ -256,7 +256,7 @@ dst_reg_for_nir_reg(vec4_visitor *v, nir_register *nir_reg,
    dst_reg reg;
 
    reg = v->nir_locals[nir_reg->index];
-   reg = offset(reg, base_offset);
+   reg = offset(reg, 8, base_offset);
    if (indirect) {
       reg.reladdr =
          new(v->mem_ctx) src_reg(v->get_nir_src(*indirect,
@@ -416,14 +416,9 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
       src = get_nir_src(instr->src[0], BRW_REGISTER_TYPE_F,
                         instr->num_components);
 
-      if (varying >= VARYING_SLOT_VAR0) {
-         unsigned c = nir_intrinsic_component(instr);
-         unsigned v = varying - VARYING_SLOT_VAR0;
-         output_generic_reg[v][c] = dst_reg(src);
-         output_generic_num_components[v][c] = instr->num_components;
-      } else {
-         output_reg[varying] = dst_reg(src);
-      }
+      unsigned c = nir_intrinsic_component(instr);
+      output_reg[varying][c] = dst_reg(src);
+      output_num_components[varying][c] = instr->num_components;
       break;
    }
 
@@ -473,7 +468,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
 
          brw_mark_surface_used(&prog_data->base,
                                prog_data->base.binding_table.ssbo_start +
-                               nir->info.num_ssbos - 1);
+                               nir->info->num_ssbos - 1);
       }
 
       /* Offset */
@@ -615,7 +610,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
           */
          brw_mark_surface_used(&prog_data->base,
                                prog_data->base.binding_table.ssbo_start +
-                               nir->info.num_ssbos - 1);
+                               nir->info->num_ssbos - 1);
       }
 
       src_reg offset_reg;
@@ -715,7 +710,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
          assert(const_offset->u32[0] % 4 == 0);
 
          unsigned offset = const_offset->u32[0] + shift * 4;
-         src.reg_offset = offset / 16;
+         src.offset = ROUND_DOWN_TO(offset, 16);
          shift = (offset % 16) / 4;
          src.swizzle += BRW_SWIZZLE4(shift, shift, shift, shift);
 
@@ -739,33 +734,32 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
    case nir_intrinsic_atomic_counter_dec: {
       unsigned surf_index = prog_data->base.binding_table.abo_start +
          (unsigned) instr->const_index[0];
+      const vec4_builder bld =
+         vec4_builder(this).at_end().annotate(current_annotation, base_ir);
+
+      /* Get some metadata from the image intrinsic. */
+      const nir_intrinsic_info *info = &nir_intrinsic_infos[instr->intrinsic];
+
+      /* Get the arguments of the atomic intrinsic. */
       src_reg offset = get_nir_src(instr->src[0], nir_type_int,
                                    instr->num_components);
       const src_reg surface = brw_imm_ud(surf_index);
-      const vec4_builder bld =
-         vec4_builder(this).at_end().annotate(current_annotation, base_ir);
+      const src_reg src0 = (info->num_srcs >= 2
+                           ? get_nir_src(instr->src[1]) : src_reg());
+      const src_reg src1 = (info->num_srcs >= 3
+                           ? get_nir_src(instr->src[2]) : src_reg());
+
       src_reg tmp;
 
       dest = get_nir_dest(instr->dest);
 
-      switch (instr->intrinsic) {
-      case nir_intrinsic_atomic_counter_inc:
-         tmp = emit_untyped_atomic(bld, surface, offset,
-                                   src_reg(), src_reg(),
-                                   1, 1,
-                                   BRW_AOP_INC);
-         break;
-      case nir_intrinsic_atomic_counter_dec:
-         tmp = emit_untyped_atomic(bld, surface, offset,
-                                   src_reg(), src_reg(),
-                                   1, 1,
-                                   BRW_AOP_PREDEC);
-         break;
-      case nir_intrinsic_atomic_counter_read:
+      if (instr->intrinsic == nir_intrinsic_atomic_counter_read) {
          tmp = emit_untyped_read(bld, surface, offset, 1, 1);
-         break;
-      default:
-         unreachable("Unreachable");
+      } else {
+         tmp = emit_untyped_atomic(bld, surface, offset,
+                                   src0, src1,
+                                   1, 1,
+                                   get_atomic_counter_op(instr->intrinsic));
       }
 
       bld.MOV(retype(dest, tmp.type), tmp);
@@ -803,7 +797,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
           */
          brw_mark_surface_used(&prog_data->base,
                                prog_data->base.binding_table.ubo_start +
-                               nir->info.num_ubos - 1);
+                               nir->info->num_ubos - 1);
       }
 
       src_reg offset;
@@ -839,7 +833,7 @@ vec4_visitor::nir_emit_intrinsic(nir_intrinsic_instr *instr)
          vec4_builder(this).at_end().annotate(current_annotation, base_ir);
       const dst_reg tmp = bld.vgrf(BRW_REGISTER_TYPE_UD, 2);
       bld.emit(SHADER_OPCODE_MEMORY_FENCE, tmp)
-         ->regs_written = 2;
+         ->size_written = 2 * REG_SIZE;
       break;
    }
 
@@ -882,7 +876,7 @@ vec4_visitor::nir_emit_ssbo_atomic(int op, nir_intrinsic_instr *instr)
        */
       brw_mark_surface_used(&prog_data->base,
                             prog_data->base.binding_table.ssbo_start +
-                            nir->info.num_ssbos - 1);
+                            nir->info->num_ssbos - 1);
    }
 
    src_reg offset = get_nir_src(instr->src[1], 1);
@@ -1810,7 +1804,7 @@ vec4_visitor::nir_emit_texture(nir_tex_instr *instr)
    src_reg sampler_reg = brw_imm_ud(sampler);
    src_reg coordinate;
    const glsl_type *coord_type = NULL;
-   src_reg shadow_comparitor;
+   src_reg shadow_comparator;
    src_reg offset_value;
    src_reg lod, lod2;
    src_reg sample_index;
@@ -1829,8 +1823,8 @@ vec4_visitor::nir_emit_texture(nir_tex_instr *instr)
    uint32_t constant_offset = 0;
    for (unsigned i = 0; i < instr->num_srcs; i++) {
       switch (instr->src[i].src_type) {
-      case nir_tex_src_comparitor:
-         shadow_comparitor = get_nir_src(instr->src[i].src,
+      case nir_tex_src_comparator:
+         shadow_comparator = get_nir_src(instr->src[i].src,
                                          BRW_REGISTER_TYPE_F, 1);
          break;
 
@@ -1886,9 +1880,10 @@ vec4_visitor::nir_emit_texture(nir_tex_instr *instr)
       case nir_tex_src_offset: {
          nir_const_value *const_offset =
             nir_src_as_const_value(instr->src[i].src);
-         if (const_offset) {
-            constant_offset = brw_texture_offset(const_offset->i32, 3);
-         } else {
+         if (!const_offset ||
+             !brw_texture_offset(const_offset->i32,
+                                 nir_tex_instr_src_size(instr, i),
+                                 &constant_offset)) {
             offset_value =
                get_nir_src(instr->src[i].src, BRW_REGISTER_TYPE_D, 2);
          }
@@ -1965,10 +1960,10 @@ vec4_visitor::nir_emit_texture(nir_tex_instr *instr)
    ir_texture_opcode op = ir_texture_opcode_for_nir_texop(instr->op);
 
    emit_texture(op, dest, dest_type, coordinate, instr->coord_components,
-                shadow_comparitor,
+                shadow_comparator,
                 lod, lod2, sample_index,
                 constant_offset, offset_value, mcs,
-                texture, texture_reg, sampler, sampler_reg);
+                texture, texture_reg, sampler_reg);
 }
 
 void

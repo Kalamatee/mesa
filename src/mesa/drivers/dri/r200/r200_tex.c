@@ -36,7 +36,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/image.h"
-#include "util/simple_list.h"
 #include "main/teximage.h"
 #include "main/texobj.h"
 #include "main/samplerobj.h"
@@ -374,9 +373,9 @@ void r200TexUpdateParameters(struct gl_context *ctx, GLuint unit)
  * Changes variables and flags for a state update, which will happen at the
  * next UpdateTextureState
  */
-static void r200TexParameter( struct gl_context *ctx,
-				struct gl_texture_object *texObj,
-				GLenum pname, const GLfloat *params )
+static void r200TexParameter(struct gl_context *ctx,
+                             struct gl_texture_object *texObj,
+                             GLenum pname)
 {
    radeonTexObj* t = radeon_tex_obj(texObj);
 

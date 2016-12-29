@@ -31,6 +31,7 @@
 #include "util/u_memory.h"
 #include "util/u_helpers.h"
 #include "util/u_format.h"
+#include "util/u_viewport.h"
 
 #include "freedreno_resource.h"
 #include "freedreno_query_hw.h"
@@ -53,7 +54,7 @@ static const enum adreno_state_block sb[] = {
  * prsc or dwords: buffer containing constant values
  * sizedwords:     size of const value buffer
  */
-void
+static void
 fd3_emit_const(struct fd_ringbuffer *ring, enum shader_t type,
 		uint32_t regid, uint32_t offset, uint32_t sizedwords,
 		const uint32_t *dwords, struct pipe_resource *prsc)
@@ -95,16 +96,16 @@ static void
 fd3_emit_const_bo(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
 		uint32_t regid, uint32_t num, struct pipe_resource **prscs, uint32_t *offsets)
 {
+	uint32_t anum = align(num, 4);
 	uint32_t i;
 
 	debug_assert((regid % 4) == 0);
-	debug_assert((num % 4) == 0);
 
-	OUT_PKT3(ring, CP_LOAD_STATE, 2 + num);
+	OUT_PKT3(ring, CP_LOAD_STATE, 2 + anum);
 	OUT_RING(ring, CP_LOAD_STATE_0_DST_OFF(regid/2) |
 			CP_LOAD_STATE_0_STATE_SRC(SS_DIRECT) |
 			CP_LOAD_STATE_0_STATE_BLOCK(sb[type]) |
-			CP_LOAD_STATE_0_NUM_UNIT(num/2));
+			CP_LOAD_STATE_0_NUM_UNIT(anum/2));
 	OUT_RING(ring, CP_LOAD_STATE_1_EXT_SRC_ADDR(0) |
 			CP_LOAD_STATE_1_STATE_TYPE(ST_CONSTANTS));
 
@@ -119,6 +120,9 @@ fd3_emit_const_bo(struct fd_ringbuffer *ring, enum shader_t type, boolean write,
 			OUT_RING(ring, 0xbad00000 | (i << 16));
 		}
 	}
+
+	for (; i < anum; i++)
+		OUT_RING(ring, 0xffffffff);
 }
 
 #define VERT_TEX_OFF    0
@@ -206,8 +210,7 @@ emit_textures(struct fd_context *ctx, struct fd_ringbuffer *ring,
 					&dummy_view;
 			struct fd_resource *rsc = fd_resource(view->base.texture);
 			if (rsc && rsc->base.b.target == PIPE_BUFFER) {
-				OUT_RELOC(ring, rsc->bo, view->base.u.buf.first_element *
-						  util_format_get_blocksize(view->base.format), 0, 0);
+				OUT_RELOC(ring, rsc->bo, view->base.u.buf.offset, 0, 0);
 				j = 1;
 			} else {
 				unsigned start = fd_sampler_first_level(&view->base);
@@ -299,13 +302,13 @@ fd3_emit_gmem_restore_tex(struct fd_ringbuffer *ring,
 		}
 
 		struct fd_resource *rsc = fd_resource(psurf[i]->texture);
-		enum pipe_format format = fd3_gmem_restore_format(psurf[i]->format);
+		enum pipe_format format = fd_gmem_restore_format(psurf[i]->format);
 		/* The restore blit_zs shader expects stencil in sampler 0, and depth
 		 * in sampler 1
 		 */
 		if (rsc->stencil && i == 0) {
 			rsc = rsc->stencil;
-			format = fd3_gmem_restore_format(rsc->base.b.format);
+			format = fd_gmem_restore_format(rsc->base.b.format);
 		}
 
 		/* note: PIPE_BUFFER disallowed for surfaces */
@@ -536,7 +539,7 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 				A3XX_RB_STENCILREFMASK_BF_STENCILREF(sr->ref_value[1]));
 	}
 
-	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_PROG)) {
+	if (dirty & (FD_DIRTY_ZSA | FD_DIRTY_RASTERIZER | FD_DIRTY_PROG)) {
 		uint32_t val = fd3_zsa_stateobj(ctx->zsa)->rb_depth_control;
 		if (fp->writes_pos) {
 			val |= A3XX_RB_DEPTH_CONTROL_FRAG_WRITES_Z;
@@ -544,6 +547,9 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		}
 		if (fp->has_kill) {
 			val |= A3XX_RB_DEPTH_CONTROL_EARLY_Z_DISABLE;
+		}
+		if (!ctx->rasterizer->depth_clip) {
+			val |= A3XX_RB_DEPTH_CONTROL_Z_CLAMP_ENABLE;
 		}
 		OUT_PKT0(ring, REG_A3XX_RB_DEPTH_CONTROL, 1);
 		OUT_RING(ring, val);
@@ -568,19 +574,23 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 	if (dirty & (FD_DIRTY_RASTERIZER | FD_DIRTY_PROG)) {
 		uint32_t val = fd3_rasterizer_stateobj(ctx->rasterizer)
 				->gras_cl_clip_cntl;
+		uint8_t planes = ctx->rasterizer->clip_plane_enable;
 		val |= COND(fp->writes_pos, A3XX_GRAS_CL_CLIP_CNTL_ZCLIP_DISABLE);
 		val |= COND(fp->frag_coord, A3XX_GRAS_CL_CLIP_CNTL_ZCOORD |
 				A3XX_GRAS_CL_CLIP_CNTL_WCOORD);
-		/* TODO only use if prog doesn't use clipvertex/clipdist */
-		val |= A3XX_GRAS_CL_CLIP_CNTL_NUM_USER_CLIP_PLANES(
-				MIN2(util_bitcount(ctx->rasterizer->clip_plane_enable), 6));
+		if (!emit->key.ucp_enables)
+			val |= A3XX_GRAS_CL_CLIP_CNTL_NUM_USER_CLIP_PLANES(
+					MIN2(util_bitcount(planes), 6));
 		OUT_PKT0(ring, REG_A3XX_GRAS_CL_CLIP_CNTL, 1);
 		OUT_RING(ring, val);
 	}
 
-	if (dirty & (FD_DIRTY_RASTERIZER | FD_DIRTY_UCP)) {
+	if (dirty & (FD_DIRTY_RASTERIZER | FD_DIRTY_PROG | FD_DIRTY_UCP)) {
 		uint32_t planes = ctx->rasterizer->clip_plane_enable;
 		int count = 0;
+
+		if (emit->key.ucp_enables)
+			planes = 0;
 
 		while (planes && count < 6) {
 			int i = ffs(planes) - 1;
@@ -622,19 +632,35 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_RING(ring, val);
 	}
 
-	if (dirty & FD_DIRTY_SCISSOR) {
+	if (dirty & (FD_DIRTY_SCISSOR | FD_DIRTY_RASTERIZER | FD_DIRTY_VIEWPORT)) {
 		struct pipe_scissor_state *scissor = fd_context_get_scissor(ctx);
+		int minx = scissor->minx;
+		int miny = scissor->miny;
+		int maxx = scissor->maxx;
+		int maxy = scissor->maxy;
+
+		/* Unfortunately there is no separate depth clip disable, only an all
+		 * or nothing deal. So when we disable clipping, we must handle the
+		 * viewport clip via scissors.
+		 */
+		if (!ctx->rasterizer->depth_clip) {
+			struct pipe_viewport_state *vp = &ctx->viewport;
+			minx = MAX2(minx, (int)floorf(vp->translate[0] - fabsf(vp->scale[0])));
+			miny = MAX2(miny, (int)floorf(vp->translate[1] - fabsf(vp->scale[1])));
+			maxx = MIN2(maxx, (int)ceilf(vp->translate[0] + fabsf(vp->scale[0])));
+			maxy = MIN2(maxy, (int)ceilf(vp->translate[1] + fabsf(vp->scale[1])));
+		}
 
 		OUT_PKT0(ring, REG_A3XX_GRAS_SC_WINDOW_SCISSOR_TL, 2);
-		OUT_RING(ring, A3XX_GRAS_SC_WINDOW_SCISSOR_TL_X(scissor->minx) |
-				A3XX_GRAS_SC_WINDOW_SCISSOR_TL_Y(scissor->miny));
-		OUT_RING(ring, A3XX_GRAS_SC_WINDOW_SCISSOR_BR_X(scissor->maxx - 1) |
-				A3XX_GRAS_SC_WINDOW_SCISSOR_BR_Y(scissor->maxy - 1));
+		OUT_RING(ring, A3XX_GRAS_SC_WINDOW_SCISSOR_TL_X(minx) |
+				A3XX_GRAS_SC_WINDOW_SCISSOR_TL_Y(miny));
+		OUT_RING(ring, A3XX_GRAS_SC_WINDOW_SCISSOR_BR_X(maxx - 1) |
+				A3XX_GRAS_SC_WINDOW_SCISSOR_BR_Y(maxy - 1));
 
-		ctx->batch->max_scissor.minx = MIN2(ctx->batch->max_scissor.minx, scissor->minx);
-		ctx->batch->max_scissor.miny = MIN2(ctx->batch->max_scissor.miny, scissor->miny);
-		ctx->batch->max_scissor.maxx = MAX2(ctx->batch->max_scissor.maxx, scissor->maxx);
-		ctx->batch->max_scissor.maxy = MAX2(ctx->batch->max_scissor.maxy, scissor->maxy);
+		ctx->batch->max_scissor.minx = MIN2(ctx->batch->max_scissor.minx, minx);
+		ctx->batch->max_scissor.miny = MIN2(ctx->batch->max_scissor.miny, miny);
+		ctx->batch->max_scissor.maxx = MAX2(ctx->batch->max_scissor.maxx, maxx);
+		ctx->batch->max_scissor.maxy = MAX2(ctx->batch->max_scissor.maxy, maxy);
 	}
 
 	if (dirty & FD_DIRTY_VIEWPORT) {
@@ -646,6 +672,30 @@ fd3_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_RING(ring, A3XX_GRAS_CL_VPORT_YSCALE(ctx->viewport.scale[1]));
 		OUT_RING(ring, A3XX_GRAS_CL_VPORT_ZOFFSET(ctx->viewport.translate[2]));
 		OUT_RING(ring, A3XX_GRAS_CL_VPORT_ZSCALE(ctx->viewport.scale[2]));
+	}
+
+	if (dirty & (FD_DIRTY_VIEWPORT | FD_DIRTY_RASTERIZER | FD_DIRTY_FRAMEBUFFER)) {
+		float zmin, zmax;
+		int depth = 24;
+		if (ctx->batch->framebuffer.zsbuf) {
+			depth = util_format_get_component_bits(
+					pipe_surface_format(ctx->batch->framebuffer.zsbuf),
+					UTIL_FORMAT_COLORSPACE_ZS, 0);
+		}
+		util_viewport_zmin_zmax(&ctx->viewport, ctx->rasterizer->clip_halfz,
+								&zmin, &zmax);
+
+		OUT_PKT0(ring, REG_A3XX_RB_Z_CLAMP_MIN, 2);
+		if (depth == 32) {
+			OUT_RING(ring, (uint32_t)(zmin * 0xffffffff));
+			OUT_RING(ring, (uint32_t)(zmax * 0xffffffff));
+		} else if (depth == 16) {
+			OUT_RING(ring, (uint32_t)(zmin * 0xffff));
+			OUT_RING(ring, (uint32_t)(zmax * 0xffff));
+		} else {
+			OUT_RING(ring, (uint32_t)(zmin * 0xffffff));
+			OUT_RING(ring, (uint32_t)(zmax * 0xffffff));
+		}
 	}
 
 	if (dirty & (FD_DIRTY_PROG | FD_DIRTY_FRAMEBUFFER | FD_DIRTY_BLEND_DUAL)) {

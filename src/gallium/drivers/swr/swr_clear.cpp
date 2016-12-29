@@ -35,49 +35,55 @@ swr_clear(struct pipe_context *pipe,
    struct pipe_framebuffer_state *fb = &ctx->framebuffer;
 
    UINT clearMask = 0;
+   unsigned layers = 0;
 
    if (!swr_check_render_cond(pipe))
       return;
 
-   if (ctx->dirty)
-      swr_update_derived(pipe);
+   swr_update_derived(pipe);
 
-/* Update clearMask/targetMask */
-#if 0 /* XXX SWR currently only clears SWR_ATTACHMENT_COLOR0, don't bother   \
-         checking others yet. */
    if (buffers & PIPE_CLEAR_COLOR && fb->nr_cbufs) {
-      UINT i;
-      for (i = 0; i < fb->nr_cbufs; ++i)
-         if (fb->cbufs[i])
-            clearMask |= (SWR_CLEAR_COLOR0 << i);
+      for (unsigned i = 0; i < fb->nr_cbufs; ++i)
+         if (fb->cbufs[i] && (buffers & (PIPE_CLEAR_COLOR0 << i))) {
+            clearMask |= (SWR_ATTACHMENT_COLOR0_BIT << i);
+            layers = std::max(layers, fb->cbufs[i]->u.tex.last_layer -
+                                      fb->cbufs[i]->u.tex.first_layer + 1u);
+         }
    }
-#else
-   if (buffers & PIPE_CLEAR_COLOR && fb->cbufs[0])
-      clearMask |= SWR_CLEAR_COLOR;
-#endif
 
-   if (buffers & PIPE_CLEAR_DEPTH && fb->zsbuf)
-      clearMask |= SWR_CLEAR_DEPTH;
+   if (buffers & PIPE_CLEAR_DEPTH && fb->zsbuf) {
+      clearMask |= SWR_ATTACHMENT_DEPTH_BIT;
+      layers = std::max(layers, fb->zsbuf->u.tex.last_layer -
+                                fb->zsbuf->u.tex.first_layer + 1u);
+   }
 
-   if (buffers & PIPE_CLEAR_STENCIL && fb->zsbuf)
-      clearMask |= SWR_CLEAR_STENCIL;
+   if (buffers & PIPE_CLEAR_STENCIL && fb->zsbuf) {
+      clearMask |= SWR_ATTACHMENT_STENCIL_BIT;
+      layers = std::max(layers, fb->zsbuf->u.tex.last_layer -
+                                fb->zsbuf->u.tex.first_layer + 1u);
+   }
 
 #if 0 // XXX HACK, override clear color alpha. On ubuntu, clears are
       // transparent.
    ((union pipe_color_union *)color)->f[3] = 1.0; /* cast off your const'd-ness */
 #endif
 
-   /* Reset viewport to full framebuffer width/height before clear, then
-    * restore it  */
-   /* Scissor affects clear, viewport should not */
-   ctx->dirty |= SWR_NEW_VIEWPORT;
-   SWR_VIEWPORT vp = {0};
-   vp.width = ctx->framebuffer.width;
-   vp.height = ctx->framebuffer.height;
-   SwrSetViewports(ctx->swrContext, 1, &vp, NULL);
+   for (unsigned i = 0; i < layers; ++i) {
+      swr_update_draw_context(ctx);
+      SwrClearRenderTarget(ctx->swrContext, clearMask, i,
+                           color->f, depth, stencil,
+                           ctx->swr_scissor);
 
-   swr_update_draw_context(ctx);
-   SwrClearRenderTarget(ctx->swrContext, clearMask, color->f, depth, stencil);
+      // Mask out the attachments that are out of layers.
+      if (fb->zsbuf &&
+          (fb->zsbuf->u.tex.last_layer <= fb->zsbuf->u.tex.first_layer + i))
+         clearMask &= ~(SWR_ATTACHMENT_DEPTH_BIT | SWR_ATTACHMENT_STENCIL_BIT);
+      for (unsigned c = 0; c < fb->nr_cbufs; ++c) {
+         const struct pipe_surface *sf = fb->cbufs[c];
+         if (sf && (sf->u.tex.last_layer <= sf->u.tex.first_layer + i))
+            clearMask &= ~(SWR_ATTACHMENT_COLOR0_BIT << c);
+      }
+   }
 }
 
 
@@ -86,7 +92,8 @@ swr_clear(struct pipe_context *pipe,
 static void
 swr_clear_render_target(struct pipe_context *pipe, struct pipe_surface *ps,
                         const union pipe_color_union *color,
-                        unsigned x, unsigned y, unsigned w, unsigned h)
+                        unsigned x, unsigned y, unsigned w, unsigned h,
+                        bool render_condition_enabled)
 {
    struct swr_context *ctx = swr_context(pipe);
    fprintf(stderr, "SWR swr_clear_render_target!\n");
@@ -97,7 +104,8 @@ swr_clear_render_target(struct pipe_context *pipe, struct pipe_surface *ps,
 static void
 swr_clear_depth_stencil(struct pipe_context *pipe, struct pipe_surface *ps,
                         unsigned buffers, double depth, unsigned stencil,
-                        unsigned x, unsigned y, unsigned w, unsigned h)
+                        unsigned x, unsigned y, unsigned w, unsigned h,
+                        bool render_condition_enabled)
 {
    struct swr_context *ctx = swr_context(pipe);
    fprintf(stderr, "SWR swr_clear_depth_stencil!\n");

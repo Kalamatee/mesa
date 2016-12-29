@@ -45,6 +45,7 @@
 #include "st_draw.h"
 #include "st_program.h"
 #include "st_cb_bitmap.h"
+#include "st_sampler_view.h"
 #include "st_texture.h"
 
 #include "pipe/p_context.h"
@@ -211,8 +212,7 @@ setup_render_state(struct gl_context *ctx,
       GLfloat colorSave[4];
       COPY_4V(colorSave, ctx->Current.Attrib[VERT_ATTRIB_COLOR0]);
       COPY_4V(ctx->Current.Attrib[VERT_ATTRIB_COLOR0], color);
-      st_upload_constants(st, st->fp->Base.Base.Parameters,
-                          PIPE_SHADER_FRAGMENT);
+      st_upload_constants(st, st->fp->Base.Parameters, MESA_SHADER_FRAGMENT);
       COPY_4V(ctx->Current.Attrib[VERT_ATTRIB_COLOR0], colorSave);
    }
 

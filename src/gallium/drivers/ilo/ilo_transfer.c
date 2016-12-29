@@ -180,7 +180,6 @@ xfer_alloc_staging_res(struct ilo_transfer *xfer)
    templ.array_size = box->depth;
    templ.nr_samples = 1;
    templ.usage = PIPE_USAGE_STAGING;
-   templ.bind = PIPE_BIND_TRANSFER_WRITE;
 
    if (xfer->base.usage & PIPE_TRANSFER_FLUSH_EXPLICIT) {
       templ.flags = PIPE_RESOURCE_FLAG_MAP_PERSISTENT |
@@ -1111,7 +1110,7 @@ buf_pwrite(struct ilo_context *ilo, struct pipe_resource *res,
          templ = *res;
          templ.width0 = size;
          templ.usage = PIPE_USAGE_STAGING;
-         templ.bind = PIPE_BIND_TRANSFER_WRITE;
+         templ.bind = 0;
          staging = ilo->base.screen->resource_create(ilo->base.screen, &templ);
          if (staging) {
             const struct ilo_vma *staging_vma = ilo_resource_get_vma(staging);
@@ -1184,7 +1183,7 @@ ilo_transfer_unmap(struct pipe_context *pipe,
 
    pipe_resource_reference(&xfer->base.resource, NULL);
 
-   util_slab_free(&ilo->transfer_mempool, xfer);
+   slab_free_st(&ilo->transfer_mempool, xfer);
 }
 
 static void *
@@ -1200,7 +1199,7 @@ ilo_transfer_map(struct pipe_context *pipe,
    void *ptr;
 
    /* note that xfer is not zero'd */
-   xfer = util_slab_alloc(&ilo->transfer_mempool);
+   xfer = slab_alloc_st(&ilo->transfer_mempool);
    if (!xfer) {
       *transfer = NULL;
       return NULL;
@@ -1226,7 +1225,7 @@ ilo_transfer_map(struct pipe_context *pipe,
 
    if (!ptr) {
       pipe_resource_reference(&xfer->base.resource, NULL);
-      util_slab_free(&ilo->transfer_mempool, xfer);
+      slab_free_st(&ilo->transfer_mempool, xfer);
       *transfer = NULL;
       return NULL;
    }

@@ -87,9 +87,8 @@ opt_constant_if(nir_if *if_stmt, bool condition)
     * point to the correct source.
     */
    nir_block *after = nir_cf_node_as_block(nir_cf_node_next(&if_stmt->cf_node));
-   nir_block *last_block =
-      nir_cf_node_as_block(condition ? nir_if_last_then_node(if_stmt)
-                                     : nir_if_last_else_node(if_stmt));
+   nir_block *last_block = condition ? nir_if_last_then_block(if_stmt)
+                                     : nir_if_last_else_block(if_stmt);
 
    nir_foreach_instr_safe(instr, after) {
       if (instr->type != nir_instr_type_phi)
@@ -205,7 +204,8 @@ loop_is_dead(nir_loop *loop)
    nir_metadata_require(impl, nir_metadata_live_ssa_defs |
                               nir_metadata_dominance);
 
-   for (nir_block *cur = after->imm_dom; cur != before; cur = cur->imm_dom) {
+   for (nir_block *cur = after->imm_dom; cur && cur != before;
+        cur = cur->imm_dom) {
       nir_foreach_instr(instr, cur) {
          if (!nir_foreach_ssa_def(instr, def_not_live_out, after))
             return false;

@@ -20,7 +20,7 @@ libgallium_la_SOURCES = \
 	$(NIR_SOURCES) \
 	$(GENERATED_SOURCES)
 
-if HAVE_MESA_LLVM
+if HAVE_GALLIUM_LLVM
 
 AM_CFLAGS += \
 	$(LLVM_CFLAGS)
@@ -33,6 +33,8 @@ libgallium_la_SOURCES += \
 	$(GALLIVM_SOURCES)
 
 endif
+
+libgallium_la_LDFLAGS = $(LIBSENSORS_LDFLAGS)
 
 MKDIR_GEN = $(AM_V_at)$(MKDIR_P) $(@D)
 PYTHON_GEN =  $(AM_V_GEN)$(PYTHON2) $(PYTHON_FLAGS)

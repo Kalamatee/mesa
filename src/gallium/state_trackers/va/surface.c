@@ -91,9 +91,53 @@ vlVaDestroySurfaces(VADriverContextP ctx, VASurfaceID *surface_list, int num_sur
 VAStatus
 vlVaSyncSurface(VADriverContextP ctx, VASurfaceID render_target)
 {
+   vlVaDriver *drv;
+   vlVaContext *context;
+   vlVaSurface *surf;
+
    if (!ctx)
       return VA_STATUS_ERROR_INVALID_CONTEXT;
 
+   drv = VL_VA_DRIVER(ctx);
+   if (!drv)
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+
+   pipe_mutex_lock(drv->mutex);
+   surf = handle_table_get(drv->htab, render_target);
+
+   if (!surf || !surf->buffer) {
+      pipe_mutex_unlock(drv->mutex);
+      return VA_STATUS_ERROR_INVALID_SURFACE;
+   }
+
+   if (!surf->feedback) {
+      // No outstanding operation: nothing to do.
+      pipe_mutex_unlock(drv->mutex);
+      return VA_STATUS_SUCCESS;
+   }
+
+   context = handle_table_get(drv->htab, surf->ctx);
+   if (!context) {
+      pipe_mutex_unlock(drv->mutex);
+      return VA_STATUS_ERROR_INVALID_CONTEXT;
+   }
+
+   if (context->decoder->entrypoint == PIPE_VIDEO_ENTRYPOINT_ENCODE) {
+      int frame_diff;
+      if (context->desc.h264enc.frame_num_cnt >= surf->frame_num_cnt)
+         frame_diff = context->desc.h264enc.frame_num_cnt - surf->frame_num_cnt;
+      else
+         frame_diff = 0xFFFFFFFF - surf->frame_num_cnt + 1 + context->desc.h264enc.frame_num_cnt;
+      if ((frame_diff == 0) &&
+          (surf->force_flushed == false) &&
+          (context->desc.h264enc.frame_num_cnt % 2 != 0)) {
+         context->decoder->flush(context->decoder);
+         context->first_single_submitted = true;
+      }
+      context->decoder->get_feedback(context->decoder, surf->feedback, &(surf->coded_buf->coded_size));
+      surf->feedback = NULL;
+   }
+   pipe_mutex_unlock(drv->mutex);
    return VA_STATUS_SUCCESS;
 }
 
@@ -287,10 +331,14 @@ vlVaPutSurface(VADriverContextP ctx, VASurfaceID surface_id, void* draw, short s
       return status;
    }
 
+   /* flush before calling flush_frontbuffer so that rendering is flushed
+    * to back buffer so the texture can be copied in flush_frontbuffer
+    */
+   drv->pipe->flush(drv->pipe, NULL, 0);
+
    screen->flush_frontbuffer(screen, tex, 0, 0,
                              vscreen->get_private(vscreen), NULL);
 
-   drv->pipe->flush(drv->pipe, NULL, 0);
 
    pipe_resource_reference(&tex, NULL);
    pipe_surface_reference(&surf_draw, NULL);
@@ -374,11 +422,20 @@ vlVaQuerySurfaceAttributes(VADriverContextP ctx, VAConfigID config_id,
    /* vlVaCreateConfig returns PIPE_VIDEO_PROFILE_UNKNOWN
     * only for VAEntrypointVideoProc. */
    if (config->profile == PIPE_VIDEO_PROFILE_UNKNOWN) {
-      for (j = 0; j < ARRAY_SIZE(vpp_surface_formats); ++j) {
+      if (config->rt_format & VA_RT_FORMAT_RGB32) {
+         for (j = 0; j < ARRAY_SIZE(vpp_surface_formats); ++j) {
+            attribs[i].type = VASurfaceAttribPixelFormat;
+            attribs[i].value.type = VAGenericValueTypeInteger;
+            attribs[i].flags = VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE;
+            attribs[i].value.value.i = PipeFormatToVaFourcc(vpp_surface_formats[j]);
+            i++;
+         }
+      }
+      if (config->rt_format & VA_RT_FORMAT_YUV420) {
          attribs[i].type = VASurfaceAttribPixelFormat;
          attribs[i].value.type = VAGenericValueTypeInteger;
          attribs[i].flags = VA_SURFACE_ATTRIB_GETTABLE | VA_SURFACE_ATTRIB_SETTABLE;
-         attribs[i].value.value.i = PipeFormatToVaFourcc(vpp_surface_formats[j]);
+         attribs[i].value.value.i = VA_FOURCC_NV12;
          i++;
       }
    } else {
@@ -598,24 +655,26 @@ vlVaCreateSurfaces2(VADriverContextP ctx, unsigned int format,
 
    memset(&templat, 0, sizeof(templat));
 
+   templat.buffer_format = pscreen->get_video_param(
+      pscreen,
+      PIPE_VIDEO_PROFILE_UNKNOWN,
+      PIPE_VIDEO_ENTRYPOINT_BITSTREAM,
+      PIPE_VIDEO_CAP_PREFERED_FORMAT
+   );
+   templat.interlaced = pscreen->get_video_param(
+      pscreen,
+      PIPE_VIDEO_PROFILE_UNKNOWN,
+      PIPE_VIDEO_ENTRYPOINT_BITSTREAM,
+      PIPE_VIDEO_CAP_PREFERS_INTERLACED
+   );
+
    if (expected_fourcc) {
-      templat.buffer_format = VaFourccToPipeFormat(expected_fourcc);
-      templat.interlaced = 0;
-   } else {
-      templat.buffer_format = pscreen->get_video_param
-            (
-               pscreen,
-               PIPE_VIDEO_PROFILE_UNKNOWN,
-               PIPE_VIDEO_ENTRYPOINT_BITSTREAM,
-               PIPE_VIDEO_CAP_PREFERED_FORMAT
-               );
-      templat.interlaced = pscreen->get_video_param
-            (
-               pscreen,
-               PIPE_VIDEO_PROFILE_UNKNOWN,
-               PIPE_VIDEO_ENTRYPOINT_BITSTREAM,
-               PIPE_VIDEO_CAP_PREFERS_INTERLACED
-               );
+      enum pipe_format expected_format = VaFourccToPipeFormat(expected_fourcc);
+
+      if (expected_format != templat.buffer_format || memory_attibute)
+        templat.interlaced = 0;
+
+      templat.buffer_format = expected_format;
    }
 
    templat.chroma_format = ChromaToPipe(format);

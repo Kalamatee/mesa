@@ -44,21 +44,20 @@ VkResult anv_CreateDmaBufImageINTEL(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_DMA_BUF_IMAGE_CREATE_INFO_INTEL);
 
-   mem = anv_alloc2(&device->alloc, pAllocator, sizeof(*mem), 8,
+   mem = vk_alloc2(&device->alloc, pAllocator, sizeof(*mem), 8,
                     VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (mem == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
 
-   mem->bo.gem_handle = anv_gem_fd_to_handle(device, pCreateInfo->fd);
-   if (!mem->bo.gem_handle) {
+   uint32_t gem_handle = anv_gem_fd_to_handle(device, pCreateInfo->fd);
+   if (!gem_handle) {
       result = vk_error(VK_ERROR_OUT_OF_DEVICE_MEMORY);
       goto fail;
    }
 
-   mem->bo.map = NULL;
-   mem->bo.index = 0;
-   mem->bo.offset = 0;
-   mem->bo.size = pCreateInfo->strideInBytes * pCreateInfo->extent.height;
+   uint64_t size = (uint64_t)pCreateInfo->strideInBytes * pCreateInfo->extent.height;
+
+   anv_bo_init(&mem->bo, gem_handle, size);
 
    anv_image_create(_device,
       &(struct anv_image_create_info) {
@@ -94,7 +93,7 @@ VkResult anv_CreateDmaBufImageINTEL(
    return VK_SUCCESS;
 
  fail:
-   anv_free2(&device->alloc, pAllocator, mem);
+   vk_free2(&device->alloc, pAllocator, mem);
 
    return result;
 }

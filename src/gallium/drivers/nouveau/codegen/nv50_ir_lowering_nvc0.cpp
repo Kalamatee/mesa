@@ -115,6 +115,38 @@ NVC0LegalizeSSA::handleFTZ(Instruction *i)
    i->ftz = true;
 }
 
+void
+NVC0LegalizeSSA::handleTEXLOD(TexInstruction *i)
+{
+   if (i->tex.target.isMS())
+      return;
+
+   ImmediateValue lod;
+
+   // The LOD argument comes right after the coordinates (before depth bias,
+   // offsets, etc).
+   int arg = i->tex.target.getArgCount();
+
+   // SM30+ stores the indirect handle as a separate arg, which comes before
+   // the LOD.
+   if (prog->getTarget()->getChipset() >= NVISA_GK104_CHIPSET &&
+       i->tex.rIndirectSrc >= 0)
+      arg++;
+   // SM20 stores indirect handle combined with array coordinate
+   if (prog->getTarget()->getChipset() < NVISA_GK104_CHIPSET &&
+       !i->tex.target.isArray() &&
+       i->tex.rIndirectSrc >= 0)
+      arg++;
+
+   if (!i->src(arg).getImmediate(lod) || !lod.isInteger(0))
+      return;
+
+   if (i->op == OP_TXL)
+      i->op = OP_TEX;
+   i->tex.levelZero = true;
+   i->moveSources(arg + 1, -1);
+}
+
 bool
 NVC0LegalizeSSA::visit(Function *fn)
 {
@@ -128,20 +160,24 @@ NVC0LegalizeSSA::visit(BasicBlock *bb)
    Instruction *next;
    for (Instruction *i = bb->getEntry(); i; i = next) {
       next = i->next;
-      if (i->sType == TYPE_F32) {
-         if (prog->getType() != Program::TYPE_COMPUTE)
-            handleFTZ(i);
-         continue;
-      }
+
+      if (i->sType == TYPE_F32 && prog->getType() != Program::TYPE_COMPUTE)
+         handleFTZ(i);
+
       switch (i->op) {
       case OP_DIV:
       case OP_MOD:
-         handleDIV(i);
+         if (i->sType != TYPE_F32)
+            handleDIV(i);
          break;
       case OP_RCP:
       case OP_RSQ:
          if (i->dType == TYPE_F64)
             handleRCPRSQ(i);
+         break;
+      case OP_TXL:
+      case OP_TXF:
+         handleTEXLOD(i->asTex());
          break;
       default:
          break;
@@ -598,7 +634,6 @@ NVC0LegalizePostRA::visit(BasicBlock *bb)
 NVC0LoweringPass::NVC0LoweringPass(Program *prog) : targ(prog->getTarget())
 {
    bld.setProgram(prog);
-   gMemBase = NULL;
 }
 
 bool
@@ -751,6 +786,16 @@ NVC0LoweringPass::handleTEX(TexInstruction *i)
          i->tex.rIndirectSrc = 0;
          i->tex.sIndirectSrc = -1;
       }
+      // Move the indirect reference to right after the coords
+      else if (i->tex.rIndirectSrc >= 0 && chipset >= NVISA_GM107_CHIPSET) {
+         Value *hnd = i->getIndirectR();
+
+         i->setIndirectR(NULL);
+         i->moveSources(arg, 1);
+         i->setSrc(arg, hnd);
+         i->tex.rIndirectSrc = 0;
+         i->tex.sIndirectSrc = -1;
+      }
    } else
    // (nvc0) generate and move the tsc/tic/array source to the front
    if (i->tex.target.isArray() || i->tex.rIndirectSrc >= 0 || i->tex.sIndirectSrc >= 0) {
@@ -824,7 +869,7 @@ NVC0LoweringPass::handleTEX(TexInstruction *i)
          for (n = 0; n < i->tex.useOffsets; n++) {
             for (c = 0; c < 2; ++c) {
                if ((n % 2) == 0 && c == 0)
-                  offs[n / 2] = i->offset[n][c].get();
+                  bld.mkMov(offs[n / 2] = bld.getScratch(), i->offset[n][c].get());
                else
                   bld.mkOp3(OP_INSBF, TYPE_U32,
                             offs[n / 2],
@@ -1955,23 +2000,14 @@ NVC0LoweringPass::handleSurfaceOpNVE4(TexInstruction *su)
       convertSurfaceFormat(su);
 
    if (su->op == OP_SUREDB || su->op == OP_SUREDP) {
-      Value *pred = su->getSrc(2);
-      CondCode cc = CC_NOT_P;
-      if (su->getPredicate()) {
-         pred = bld.getScratch(1, FILE_PREDICATE);
-         cc = su->cc;
-         if (cc == CC_NOT_P) {
-            bld.mkOp2(OP_OR, TYPE_U8, pred, su->getPredicate(), su->getSrc(2));
-         } else {
-            bld.mkOp2(OP_AND, TYPE_U8, pred, su->getPredicate(), su->getSrc(2));
-            pred->getInsn()->src(1).mod = Modifier(NV50_IR_MOD_NOT);
-         }
-      }
+      assert(su->getPredicate());
+      Value *pred =
+         bld.mkOp2v(OP_OR, TYPE_U8, bld.getScratch(1, FILE_PREDICATE),
+                    su->getPredicate(), su->getSrc(2));
+
       Instruction *red = bld.mkOp(OP_ATOM, su->dType, bld.getSSA());
       red->subOp = su->subOp;
-      if (!gMemBase)
-         gMemBase = bld.mkSymbol(FILE_MEMORY_GLOBAL, 0, TYPE_U32, 0);
-      red->setSrc(0, gMemBase);
+      red->setSrc(0, bld.mkSymbol(FILE_MEMORY_GLOBAL, 0, TYPE_U32, 0));
       red->setSrc(1, su->getSrc(3));
       if (su->subOp == NV50_IR_SUBOP_ATOM_CAS)
          red->setSrc(2, su->getSrc(4));
@@ -1981,8 +2017,8 @@ NVC0LoweringPass::handleSurfaceOpNVE4(TexInstruction *su)
       // performed
       Instruction *mov = bld.mkMov(bld.getSSA(), bld.loadImm(NULL, 0));
 
-      assert(cc == CC_NOT_P);
-      red->setPredicate(cc, pred);
+      assert(su->cc == CC_NOT_P);
+      red->setPredicate(su->cc, pred);
       mov->setPredicate(CC_P, pred);
 
       bld.mkOp2(OP_UNION, TYPE_U32, su->getDef(0),
@@ -2695,13 +2731,30 @@ NVC0LoweringPass::visit(Instruction *i)
 
    /* Kepler+ has a special opcode to compute a new base address to be used
     * for indirect loads.
+    *
+    * Maxwell+ has an additional similar requirement for indirect
+    * interpolation ops in frag shaders.
     */
-   if (targ->getChipset() >= NVISA_GK104_CHIPSET && !i->perPatch &&
-       (i->op == OP_VFETCH || i->op == OP_EXPORT) && i->src(0).isIndirect(0)) {
+   bool doAfetch = false;
+   if (targ->getChipset() >= NVISA_GK104_CHIPSET &&
+       !i->perPatch &&
+       (i->op == OP_VFETCH || i->op == OP_EXPORT) &&
+       i->src(0).isIndirect(0)) {
+      doAfetch = true;
+   }
+   if (targ->getChipset() >= NVISA_GM107_CHIPSET &&
+       (i->op == OP_LINTERP || i->op == OP_PINTERP) &&
+       i->src(0).isIndirect(0)) {
+      doAfetch = true;
+   }
+
+   if (doAfetch) {
+      Value *addr = cloneShallow(func, i->getSrc(0));
       Instruction *afetch = bld.mkOp1(OP_AFETCH, TYPE_U32, bld.getSSA(),
-                                      cloneShallow(func, i->getSrc(0)));
+                                      i->getSrc(0));
       afetch->setIndirect(0, 0, i->getIndirect(0, 0));
-      i->src(0).get()->reg.data.offset = 0;
+      addr->reg.data.offset = 0;
+      i->setSrc(0, addr);
       i->setIndirect(0, 0, afetch->getDef(0));
    }
 

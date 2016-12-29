@@ -66,7 +66,7 @@ llvmpipe_create_sampler_state(struct pipe_context *pipe,
 
 static void
 llvmpipe_bind_sampler_states(struct pipe_context *pipe,
-                             unsigned shader,
+                             enum pipe_shader_type shader,
                              unsigned start,
                              unsigned num,
                              void **samplers)
@@ -106,7 +106,7 @@ llvmpipe_bind_sampler_states(struct pipe_context *pipe,
 
 static void
 llvmpipe_set_sampler_views(struct pipe_context *pipe,
-                           unsigned shader,
+                           enum pipe_shader_type shader,
                            unsigned start,
                            unsigned num,
                            struct pipe_sampler_view **views)
@@ -308,11 +308,9 @@ prepare_shader_sampling(
                img_stride[0] = 0;
 
                /* everything specified in number of elements here. */
-               width0 = view->u.buf.last_element - view->u.buf.first_element + 1;
-               addr = (uint8_t *)addr + view->u.buf.first_element *
-                               view_blocksize;
-               assert(view->u.buf.first_element <= view->u.buf.last_element);
-               assert(view->u.buf.last_element * view_blocksize < res->width0);
+               width0 = view->u.buf.size / view_blocksize;
+               addr = (uint8_t *)addr + view->u.buf.offset;
+               assert(view->u.buf.offset + view->u.buf.size <= res->width0);
             }
          }
          else {

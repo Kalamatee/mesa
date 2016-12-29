@@ -32,20 +32,21 @@
 #include "brw_state.h"
 #include "program/prog_statevars.h"
 #include "compiler/glsl/ir_uniform.h"
+#include "main/shaderapi.h"
 
 static void
 brw_upload_cs_state(struct brw_context *brw)
 {
-   if (!brw->cs.prog_data)
+   if (!brw->cs.base.prog_data)
       return;
 
    uint32_t offset;
    uint32_t *desc = (uint32_t*) brw_state_batch(brw, AUB_TRACE_SURFACE_STATE,
                                                 8 * 4, 64, &offset);
    struct brw_stage_state *stage_state = &brw->cs.base;
-   struct brw_cs_prog_data *cs_prog_data = brw->cs.prog_data;
-   struct brw_stage_prog_data *prog_data = &cs_prog_data->base;
-   const struct brw_device_info *devinfo = brw->intelScreen->devinfo;
+   struct brw_stage_prog_data *prog_data = stage_state->prog_data;
+   struct brw_cs_prog_data *cs_prog_data = brw_cs_prog_data(prog_data);
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
 
    if (INTEL_DEBUG & DEBUG_SHADER_TIME) {
       brw_emit_buffer_surface_state(
@@ -95,8 +96,8 @@ brw_upload_cs_state(struct brw_context *brw)
    const uint32_t vfe_num_urb_entries = brw->gen >= 8 ? 2 : 0;
    const uint32_t vfe_gpgpu_mode =
       brw->gen == 7 ? SET_FIELD(1, GEN7_MEDIA_VFE_STATE_GPGPU_MODE) : 0;
-   const uint32_t subslices = MAX2(brw->intelScreen->subslice_total, 1);
-   OUT_BATCH(SET_FIELD(brw->max_cs_threads * subslices - 1,
+   const uint32_t subslices = MAX2(brw->screen->subslice_total, 1);
+   OUT_BATCH(SET_FIELD(devinfo->max_cs_threads * subslices - 1,
                        MEDIA_VFE_STATE_MAX_THREADS) |
              SET_FIELD(vfe_num_urb_entries, MEDIA_VFE_STATE_URB_ENTRIES) |
              SET_FIELD(1, MEDIA_VFE_STATE_RESET_GTW_TIMER) |
@@ -162,7 +163,7 @@ brw_upload_cs_state(struct brw_context *brw)
       brw->gen >= 8 ?
       SET_FIELD(cs_prog_data->threads, GEN8_MEDIA_GPGPU_THREAD_COUNT) :
       SET_FIELD(cs_prog_data->threads, MEDIA_GPGPU_THREAD_COUNT);
-   assert(cs_prog_data->threads <= brw->max_cs_threads);
+   assert(cs_prog_data->threads <= devinfo->max_cs_threads);
 
    const uint32_t slm_size =
       encode_slm_size(devinfo->gen, prog_data->total_shared);
@@ -279,14 +280,15 @@ gen7_upload_cs_push_constants(struct brw_context *brw)
    struct brw_stage_state *stage_state = &brw->cs.base;
 
    /* BRW_NEW_COMPUTE_PROGRAM */
-   const struct brw_compute_program *cp =
-      (struct brw_compute_program *) brw->compute_program;
+   const struct brw_program *cp = (struct brw_program *) brw->compute_program;
 
    if (cp) {
-      /* CACHE_NEW_CS_PROG */
-      struct brw_cs_prog_data *cs_prog_data = brw->cs.prog_data;
+      /* BRW_NEW_CS_PROG_DATA */
+      struct brw_cs_prog_data *cs_prog_data =
+         brw_cs_prog_data(brw->cs.base.prog_data);
 
-      brw_upload_cs_push_constants(brw, &cp->program.Base, cs_prog_data,
+      _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_COMPUTE);
+      brw_upload_cs_push_constants(brw, &cp->program, cs_prog_data,
                                    stage_state, AUB_TRACE_WM_CONSTANTS);
    }
 }
@@ -297,6 +299,7 @@ const struct brw_tracked_state gen7_cs_push_constants = {
       .brw = BRW_NEW_BATCH |
              BRW_NEW_BLORP |
              BRW_NEW_COMPUTE_PROGRAM |
+             BRW_NEW_CS_PROG_DATA |
              BRW_NEW_PUSH_CONSTANT_ALLOCATION,
    },
    .emit = gen7_upload_cs_push_constants,
@@ -312,14 +315,14 @@ brw_upload_cs_pull_constants(struct brw_context *brw)
    struct brw_stage_state *stage_state = &brw->cs.base;
 
    /* BRW_NEW_COMPUTE_PROGRAM */
-   struct brw_compute_program *cp =
-      (struct brw_compute_program *) brw->compute_program;
+   struct brw_program *cp = (struct brw_program *) brw->compute_program;
 
    /* BRW_NEW_CS_PROG_DATA */
-   const struct brw_stage_prog_data *prog_data = &brw->cs.prog_data->base;
+   const struct brw_stage_prog_data *prog_data = brw->cs.base.prog_data;
 
+   _mesa_shader_write_subroutine_indices(&brw->ctx, MESA_SHADER_COMPUTE);
    /* _NEW_PROGRAM_CONSTANTS */
-   brw_upload_pull_constants(brw, BRW_NEW_SURFACES, &cp->program.Base,
+   brw_upload_pull_constants(brw, BRW_NEW_SURFACES, &cp->program,
                              stage_state, prog_data);
 }
 

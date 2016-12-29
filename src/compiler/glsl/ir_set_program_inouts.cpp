@@ -24,16 +24,13 @@
 /**
  * \file ir_set_program_inouts.cpp
  *
- * Sets the InputsRead and OutputsWritten of Mesa programs.
- *
- * Additionally, for fragment shaders, sets the InterpQualifier array, the
- * IsCentroid and IsSample bitfields, and the UsesDFdy flag.
+ * Sets the inputs_read and outputs_written of Mesa programs.
  *
  * Mesa programs (gl_program, not gl_shader_program) have a set of
  * flags indicating which varyings are read and written.  Computing
  * which are actually read from some sort of backend code can be
  * tricky when variable array indexing involved.  So this pass
- * provides support for setting InputsRead and OutputsWritten right
+ * provides support for setting inputs_read and outputs_written right
  * from the GLSL IR.
  */
 
@@ -58,7 +55,6 @@ public:
 
    virtual ir_visitor_status visit_enter(ir_dereference_array *);
    virtual ir_visitor_status visit_enter(ir_function_signature *);
-   virtual ir_visitor_status visit_enter(ir_expression *);
    virtual ir_visitor_status visit_enter(ir_discard *);
    virtual ir_visitor_status visit_enter(ir_texture *);
    virtual ir_visitor_status visit(ir_dereference_variable *);
@@ -87,19 +83,21 @@ mark(struct gl_program *prog, ir_variable *var, int offset, int len,
 {
    /* As of GLSL 1.20, varyings can only be floats, floating-point
     * vectors or matrices, or arrays of them.  For Mesa programs using
-    * InputsRead/OutputsWritten, everything but matrices uses one
+    * inputs_read/outputs_written, everything but matrices uses one
     * slot, while matrices use a slot per column.  Presumably
     * something doing a more clever packing would use something other
-    * than InputsRead/OutputsWritten.
+    * than inputs_read/outputs_written.
     */
 
    for (int i = 0; i < len; i++) {
       assert(var->data.location != -1);
 
-      int idx = var->data.location + var->data.index + offset + i;
+      int idx = var->data.location + offset + i;
       bool is_patch_generic = var->data.patch &&
                               idx != VARYING_SLOT_TESS_LEVEL_INNER &&
-                              idx != VARYING_SLOT_TESS_LEVEL_OUTER;
+                              idx != VARYING_SLOT_TESS_LEVEL_OUTER &&
+                              idx != VARYING_SLOT_BOUNDING_BOX0 &&
+                              idx != VARYING_SLOT_BOUNDING_BOX1;
       GLbitfield64 bitfield;
 
       if (is_patch_generic) {
@@ -113,32 +111,32 @@ mark(struct gl_program *prog, ir_variable *var, int offset, int len,
 
       if (var->data.mode == ir_var_shader_in) {
          if (is_patch_generic)
-            prog->PatchInputsRead |= bitfield;
+            prog->info.patch_inputs_read |= bitfield;
          else
-            prog->InputsRead |= bitfield;
+            prog->info.inputs_read |= bitfield;
 
          /* double inputs read is only for vertex inputs */
          if (stage == MESA_SHADER_VERTEX &&
              var->type->without_array()->is_dual_slot())
-            prog->DoubleInputsRead |= bitfield;
+            prog->info.double_inputs_read |= bitfield;
 
          if (stage == MESA_SHADER_FRAGMENT) {
-            gl_fragment_program *fprog = (gl_fragment_program *) prog;
-            fprog->InterpQualifier[idx] =
-               (glsl_interp_mode) var->data.interpolation;
-            if (var->data.centroid)
-               fprog->IsCentroid |= bitfield;
-            if (var->data.sample)
-               fprog->IsSample |= bitfield;
+            prog->info.fs.uses_sample_qualifier |= var->data.sample;
          }
       } else if (var->data.mode == ir_var_system_value) {
-         prog->SystemValuesRead |= bitfield;
+         prog->info.system_values_read |= bitfield;
       } else {
          assert(var->data.mode == ir_var_shader_out);
-         if (is_patch_generic)
-            prog->PatchOutputsWritten |= bitfield;
-         else
-            prog->OutputsWritten |= bitfield;
+         if (is_patch_generic) {
+            prog->info.patch_outputs_written |= bitfield;
+         } else if (!var->data.read_only) {
+            prog->info.outputs_written |= bitfield;
+            if (var->data.index > 0)
+               prog->SecondaryOutputsWritten |= bitfield;
+         }
+
+         if (var->data.fb_fetch_output)
+            prog->info.outputs_read |= bitfield;
       }
    }
 }
@@ -404,26 +402,12 @@ ir_set_program_inouts_visitor::visit_enter(ir_function_signature *ir)
 }
 
 ir_visitor_status
-ir_set_program_inouts_visitor::visit_enter(ir_expression *ir)
-{
-   if (this->shader_stage == MESA_SHADER_FRAGMENT &&
-       (ir->operation == ir_unop_dFdy ||
-        ir->operation == ir_unop_dFdy_coarse ||
-        ir->operation == ir_unop_dFdy_fine)) {
-      gl_fragment_program *fprog = (gl_fragment_program *) prog;
-      fprog->UsesDFdy = true;
-   }
-   return visit_continue;
-}
-
-ir_visitor_status
 ir_set_program_inouts_visitor::visit_enter(ir_discard *)
 {
    /* discards are only allowed in fragment shaders. */
    assert(this->shader_stage == MESA_SHADER_FRAGMENT);
 
-   gl_fragment_program *fprog = (gl_fragment_program *) prog;
-   fprog->UsesKill = true;
+   prog->info.fs.uses_discard = true;
 
    return visit_continue;
 }
@@ -432,7 +416,7 @@ ir_visitor_status
 ir_set_program_inouts_visitor::visit_enter(ir_texture *ir)
 {
    if (ir->op == ir_tg4)
-      prog->UsesGather = true;
+      prog->info.uses_texture_gather = true;
    return visit_continue;
 }
 
@@ -442,18 +426,16 @@ do_set_program_inouts(exec_list *instructions, struct gl_program *prog,
 {
    ir_set_program_inouts_visitor v(prog, shader_stage);
 
-   prog->InputsRead = 0;
-   prog->OutputsWritten = 0;
-   prog->PatchInputsRead = 0;
-   prog->PatchOutputsWritten = 0;
-   prog->SystemValuesRead = 0;
+   prog->info.inputs_read = 0;
+   prog->info.outputs_written = 0;
+   prog->SecondaryOutputsWritten = 0;
+   prog->info.outputs_read = 0;
+   prog->info.patch_inputs_read = 0;
+   prog->info.patch_outputs_written = 0;
+   prog->info.system_values_read = 0;
    if (shader_stage == MESA_SHADER_FRAGMENT) {
-      gl_fragment_program *fprog = (gl_fragment_program *) prog;
-      memset(fprog->InterpQualifier, 0, sizeof(fprog->InterpQualifier));
-      fprog->IsCentroid = 0;
-      fprog->IsSample = 0;
-      fprog->UsesDFdy = false;
-      fprog->UsesKill = false;
+      prog->info.fs.uses_sample_qualifier = false;
+      prog->info.fs.uses_discard = false;
    }
    visit_list_elements(&v, instructions);
 }

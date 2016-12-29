@@ -57,6 +57,7 @@ enum operation
    OP_MAD,
    OP_FMA,
    OP_SAD, // abs(src0 - src1) + src2
+   OP_SHLADD,
    OP_ABS,
    OP_NEG,
    OP_NOT,
@@ -833,6 +834,10 @@ public:
    bool isCommutationLegal(const Instruction *) const; // must be adjacent !
    bool isActionEqual(const Instruction *) const;
    bool isResultEqual(const Instruction *) const;
+
+   // check whether the defs interfere with srcs and defs of another instruction
+   bool canCommuteDefDef(const Instruction *) const;
+   bool canCommuteDefSrc(const Instruction *) const;
 
    void print() const;
 

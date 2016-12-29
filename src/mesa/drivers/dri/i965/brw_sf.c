@@ -29,7 +29,7 @@
   *   Keith Whitwell <keithw@vmware.com>
   */
 
-
+#include "compiler/nir/nir.h"
 #include "main/macros.h"
 #include "main/mtypes.h"
 #include "main/enums.h"
@@ -59,7 +59,7 @@ static void compile_sf_prog( struct brw_context *brw,
    mem_ctx = ralloc_context(NULL);
    /* Begin the compilation:
     */
-   brw_init_codegen(brw->intelScreen->devinfo, &c.func, mem_ctx);
+   brw_init_codegen(&brw->screen->devinfo, &c.func, mem_ctx);
 
    c.key = *key;
    c.vue_map = brw->vue_map_geom_out;
@@ -79,7 +79,6 @@ static void compile_sf_prog( struct brw_context *brw,
 
    c.prog_data.urb_read_length = c.nr_attr_regs;
    c.prog_data.urb_entry_size = c.nr_setup_regs * 2;
-   c.has_flat_shading = brw_any_flat_varyings(&key->interpolation_mode);
 
    /* Which primitive?  Or all three?
     */
@@ -118,7 +117,7 @@ static void compile_sf_prog( struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_SF)) {
       fprintf(stderr, "sf:\n");
-      brw_disassemble(brw->intelScreen->devinfo,
+      brw_disassemble(&brw->screen->devinfo,
                       c.func.store, 0, program_size, stderr);
       fprintf(stderr, "\n");
    }
@@ -148,7 +147,7 @@ brw_upload_sf_prog(struct brw_context *brw)
                         _NEW_PROGRAM |
                         _NEW_TRANSFORM,
                         BRW_NEW_BLORP |
-                        BRW_NEW_INTERPOLATION_MAP |
+                        BRW_NEW_FRAGMENT_PROGRAM |
                         BRW_NEW_REDUCED_PRIMITIVE |
                         BRW_NEW_VUE_MAP_GEOM_OUT))
       return;
@@ -192,8 +191,11 @@ brw_upload_sf_prog(struct brw_context *brw)
    if (key.do_point_sprite) {
       key.point_sprite_coord_replace = ctx->Point.CoordReplace & 0xff;
    }
-   if (brw->fragment_program->Base.InputsRead & BITFIELD64_BIT(VARYING_SLOT_PNTC))
+   if (brw->fragment_program->info.inputs_read &
+       BITFIELD64_BIT(VARYING_SLOT_PNTC)) {
       key.do_point_coord = 1;
+   }
+
    /*
     * Window coordinates in a FBO are inverted, which means point
     * sprite origin must be inverted, too.
@@ -201,8 +203,15 @@ brw_upload_sf_prog(struct brw_context *brw)
    if ((ctx->Point.SpriteOrigin == GL_LOWER_LEFT) != render_to_fbo)
       key.sprite_origin_lower_left = true;
 
-   /* BRW_NEW_INTERPOLATION_MAP */
-   key.interpolation_mode = brw->interpolation_mode;
+   const struct gl_program *fprog = brw->fragment_program;
+   if (fprog) {
+      assert(brw->gen < 6);
+      struct gen4_fragment_program *p = (struct gen4_fragment_program *) fprog;
+
+      /* BRW_NEW_FRAGMENT_PROGRAM */
+      key.contains_flat_varying = p->contains_flat_varying;
+      key.interp_mode = p->interp_mode;
+   }
 
    /* _NEW_LIGHT | _NEW_PROGRAM */
    key.do_twoside_color = ((ctx->Light.Enabled && ctx->Light.Model.TwoSide) ||

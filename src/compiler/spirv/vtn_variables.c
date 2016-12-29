@@ -35,7 +35,8 @@ vtn_access_chain_extend(struct vtn_builder *b, struct vtn_access_chain *old,
    struct vtn_access_chain *chain;
 
    unsigned new_len = old->length + new_ids;
-   chain = ralloc_size(b, sizeof(*chain) + new_len * sizeof(chain->link[0]));
+   /* TODO: don't use rzalloc */
+   chain = rzalloc_size(b, sizeof(*chain) + new_len * sizeof(chain->link[0]));
 
    chain->var = old->var;
    chain->length = new_len;
@@ -783,7 +784,7 @@ vtn_get_builtin_location(struct vtn_builder *b,
       *location = VARYING_SLOT_CLIP_DIST0; /* XXX CLIP_DIST1? */
       break;
    case SpvBuiltInCullDistance:
-      /* XXX figure this out */
+      *location = VARYING_SLOT_CULL_DIST0;
       break;
    case SpvBuiltInVertexIndex:
       *location = SYSTEM_VALUE_VERTEX_ID;
@@ -805,8 +806,12 @@ vtn_get_builtin_location(struct vtn_builder *b,
       set_mode_system_value(mode);
       break;
    case SpvBuiltInPrimitiveId:
-      *location = VARYING_SLOT_PRIMITIVE_ID;
-      *mode = nir_var_shader_out;
+      if (*mode == nir_var_shader_out) {
+         *location = VARYING_SLOT_PRIMITIVE_ID;
+      } else {
+         *location = SYSTEM_VALUE_PRIMITIVE_ID;
+         set_mode_system_value(mode);
+      }
       break;
    case SpvBuiltInInvocationId:
       *location = SYSTEM_VALUE_INVOCATION_ID;
@@ -814,7 +819,12 @@ vtn_get_builtin_location(struct vtn_builder *b,
       break;
    case SpvBuiltInLayer:
       *location = VARYING_SLOT_LAYER;
-      *mode = nir_var_shader_out;
+      if (b->shader->stage == MESA_SHADER_FRAGMENT)
+         *mode = nir_var_shader_in;
+      else if (b->shader->stage == MESA_SHADER_GEOMETRY)
+         *mode = nir_var_shader_out;
+      else
+         unreachable("invalid stage for SpvBuiltInLayer");
       break;
    case SpvBuiltInViewportIndex:
       *location = VARYING_SLOT_VIEWPORT;
@@ -889,81 +899,9 @@ vtn_get_builtin_location(struct vtn_builder *b,
 }
 
 static void
-var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
-                  const struct vtn_decoration *dec, void *void_var)
+apply_var_decoration(struct vtn_builder *b, nir_variable *nir_var,
+                     const struct vtn_decoration *dec)
 {
-   struct vtn_variable *vtn_var = void_var;
-
-   /* Handle decorations that apply to a vtn_variable as a whole */
-   switch (dec->decoration) {
-   case SpvDecorationBinding:
-      vtn_var->binding = dec->literals[0];
-      return;
-   case SpvDecorationDescriptorSet:
-      vtn_var->descriptor_set = dec->literals[0];
-      return;
-   default:
-      break;
-   }
-
-   /* Now we handle decorations that apply to a particular nir_variable */
-   nir_variable *nir_var = vtn_var->var;
-   if (val->value_type == vtn_value_type_access_chain) {
-      assert(val->access_chain->length == 0);
-      assert(val->access_chain->var == void_var);
-      assert(member == -1);
-   } else {
-      assert(val->value_type == vtn_value_type_type);
-      if (member != -1)
-         nir_var = vtn_var->members[member];
-   }
-
-   /* Location is odd in that it can apply in three different cases: To a
-    * non-split variable, to a whole split variable, or to one structure
-    * member of a split variable.
-    */
-   if (dec->decoration == SpvDecorationLocation) {
-      unsigned location = dec->literals[0];
-      bool is_vertex_input;
-      if (b->shader->stage == MESA_SHADER_FRAGMENT &&
-          vtn_var->mode == vtn_variable_mode_output) {
-         is_vertex_input = false;
-         location += FRAG_RESULT_DATA0;
-      } else if (b->shader->stage == MESA_SHADER_VERTEX &&
-                 vtn_var->mode == vtn_variable_mode_input) {
-         is_vertex_input = true;
-         location += VERT_ATTRIB_GENERIC0;
-      } else if (vtn_var->mode == vtn_variable_mode_input ||
-                 vtn_var->mode == vtn_variable_mode_output) {
-         is_vertex_input = false;
-         location += VARYING_SLOT_VAR0;
-      } else {
-         assert(!"Location must be on input or output variable");
-      }
-
-      if (nir_var) {
-         /* This handles the member and lone variable cases */
-         nir_var->data.location = location;
-         nir_var->data.explicit_location = true;
-      } else {
-         /* This handles the structure member case */
-         assert(vtn_var->members);
-         unsigned length =
-            glsl_get_length(glsl_without_array(vtn_var->type->type));
-         for (unsigned i = 0; i < length; i++) {
-            vtn_var->members[i]->data.location = location;
-            vtn_var->members[i]->data.explicit_location = true;
-            location +=
-               glsl_count_attribute_slots(vtn_var->members[i]->interface_type,
-                                          is_vertex_input);
-         }
-      }
-      return;
-   }
-
-   if (nir_var == NULL)
-      return;
-
    switch (dec->decoration) {
    case SpvDecorationRelaxedPrecision:
       break; /* FIXME: Do nothing with this for now. */
@@ -993,7 +931,6 @@ var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
       nir_var->data.location_frac = dec->literals[0];
       break;
    case SpvDecorationIndex:
-      nir_var->data.explicit_index = true;
       nir_var->data.index = dec->literals[0];
       break;
    case SpvDecorationBuiltIn: {
@@ -1005,16 +942,15 @@ var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
          nir_var->data.read_only = true;
 
          nir_constant *c = rzalloc(nir_var, nir_constant);
-         c->value.u[0] = b->shader->info.cs.local_size[0];
-         c->value.u[1] = b->shader->info.cs.local_size[1];
-         c->value.u[2] = b->shader->info.cs.local_size[2];
+         c->values[0].u32[0] = b->shader->info->cs.local_size[0];
+         c->values[0].u32[1] = b->shader->info->cs.local_size[1];
+         c->values[0].u32[2] = b->shader->info->cs.local_size[2];
          nir_var->constant_initializer = c;
          break;
       }
 
       nir_variable_mode mode = nir_var->data.mode;
       vtn_get_builtin_location(b, builtin, &nir_var->data.location, &mode);
-      nir_var->data.explicit_location = true;
       nir_var->data.mode = mode;
 
       if (builtin == SpvBuiltInFragCoord || builtin == SpvBuiltInSamplePosition)
@@ -1077,6 +1013,100 @@ var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
       vtn_warn("Decoraiton only allowed for CL-style kernels: %s",
                spirv_decoration_to_string(dec->decoration));
       break;
+   }
+}
+
+static void
+var_decoration_cb(struct vtn_builder *b, struct vtn_value *val, int member,
+                  const struct vtn_decoration *dec, void *void_var)
+{
+   struct vtn_variable *vtn_var = void_var;
+
+   /* Handle decorations that apply to a vtn_variable as a whole */
+   switch (dec->decoration) {
+   case SpvDecorationBinding:
+      vtn_var->binding = dec->literals[0];
+      return;
+   case SpvDecorationDescriptorSet:
+      vtn_var->descriptor_set = dec->literals[0];
+      return;
+   case SpvDecorationInputAttachmentIndex:
+      vtn_var->input_attachment_index = dec->literals[0];
+      return;
+   default:
+      break;
+   }
+
+   if (val->value_type == vtn_value_type_access_chain) {
+      assert(val->access_chain->length == 0);
+      assert(val->access_chain->var == void_var);
+      assert(member == -1);
+   } else {
+      assert(val->value_type == vtn_value_type_type);
+   }
+
+   /* Location is odd.  If applied to a split structure, we have to walk the
+    * whole thing and accumulate the location.  It's easier to handle as a
+    * special case.
+    */
+   if (dec->decoration == SpvDecorationLocation) {
+      unsigned location = dec->literals[0];
+      bool is_vertex_input;
+      if (b->shader->stage == MESA_SHADER_FRAGMENT &&
+          vtn_var->mode == vtn_variable_mode_output) {
+         is_vertex_input = false;
+         location += FRAG_RESULT_DATA0;
+      } else if (b->shader->stage == MESA_SHADER_VERTEX &&
+                 vtn_var->mode == vtn_variable_mode_input) {
+         is_vertex_input = true;
+         location += VERT_ATTRIB_GENERIC0;
+      } else if (vtn_var->mode == vtn_variable_mode_input ||
+                 vtn_var->mode == vtn_variable_mode_output) {
+         is_vertex_input = false;
+         location += VARYING_SLOT_VAR0;
+      } else {
+         unreachable("Location must be on input or output variable");
+      }
+
+      if (vtn_var->var) {
+         /* This handles the member and lone variable cases */
+         vtn_var->var->data.location = location;
+      } else {
+         /* This handles the structure member case */
+         assert(vtn_var->members);
+         unsigned length =
+            glsl_get_length(glsl_without_array(vtn_var->type->type));
+         for (unsigned i = 0; i < length; i++) {
+            vtn_var->members[i]->data.location = location;
+            location +=
+               glsl_count_attribute_slots(vtn_var->members[i]->interface_type,
+                                          is_vertex_input);
+         }
+      }
+      return;
+   } else {
+      if (vtn_var->var) {
+         assert(member <= 0);
+         apply_var_decoration(b, vtn_var->var, dec);
+      } else if (vtn_var->members) {
+         if (member >= 0) {
+            assert(vtn_var->members);
+            apply_var_decoration(b, vtn_var->members[member], dec);
+         } else {
+            unsigned length =
+               glsl_get_length(glsl_without_array(vtn_var->type->type));
+            for (unsigned i = 0; i < length; i++)
+               apply_var_decoration(b, vtn_var->members[i], dec);
+         }
+      } else {
+         /* A few variables, those with external storage, have no actual
+          * nir_variables associated with them.  Fortunately, all decorations
+          * we care about for those variables are on the type only.
+          */
+         assert(vtn_var->mode == vtn_variable_mode_ubo ||
+                vtn_var->mode == vtn_variable_mode_ssbo ||
+                vtn_var->mode == vtn_variable_mode_push_constant);
+      }
    }
 }
 
@@ -1154,18 +1184,18 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
       case SpvStorageClassUniformConstant:
          if (without_array->block) {
             var->mode = vtn_variable_mode_ubo;
-            b->shader->info.num_ubos++;
+            b->shader->info->num_ubos++;
          } else if (without_array->buffer_block) {
             var->mode = vtn_variable_mode_ssbo;
-            b->shader->info.num_ssbos++;
+            b->shader->info->num_ssbos++;
          } else if (glsl_type_is_image(without_array->type)) {
             var->mode = vtn_variable_mode_image;
             nir_mode = nir_var_uniform;
-            b->shader->info.num_images++;
+            b->shader->info->num_images++;
          } else if (glsl_type_is_sampler(without_array->type)) {
             var->mode = vtn_variable_mode_sampler;
             nir_mode = nir_var_uniform;
-            b->shader->info.num_textures++;
+            b->shader->info->num_textures++;
          } else {
             assert(!"Invalid uniform variable type");
          }
@@ -1309,6 +1339,7 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
           */
          var->var->data.binding = var->binding;
          var->var->data.descriptor_set = var->descriptor_set;
+         var->var->data.index = var->input_attachment_index;
 
          if (var->mode == vtn_variable_mode_image)
             var->var->data.image.format = without_array->image_format;
@@ -1358,7 +1389,7 @@ vtn_handle_variables(struct vtn_builder *b, SpvOp opcode,
          struct vtn_value *link_val = vtn_untyped_value(b, w[i]);
          if (link_val->value_type == vtn_value_type_constant) {
             chain->link[idx].mode = vtn_access_mode_literal;
-            chain->link[idx].id = link_val->constant->value.u[0];
+            chain->link[idx].id = link_val->constant->values[0].u32[0];
          } else {
             chain->link[idx].mode = vtn_access_mode_id;
             chain->link[idx].id = w[i];

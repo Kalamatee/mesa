@@ -39,21 +39,14 @@ struct lower_io_state {
    void *mem_ctx;
    int (*type_size)(const struct glsl_type *type);
    nir_variable_mode modes;
+   nir_lower_io_options options;
 };
 
 void
 nir_assign_var_locations(struct exec_list *var_list, unsigned *size,
-                         unsigned base_offset,
                          int (*type_size)(const struct glsl_type *))
 {
    unsigned location = 0;
-
-   /* There are 32 regular and 32 patch varyings allowed */
-   int locations[64][2];
-   for (unsigned i = 0; i < 64; i++) {
-      for (unsigned j = 0; j < 2; j++)
-         locations[i][j] = -1;
-   }
 
    nir_foreach_variable(var, var_list) {
       /*
@@ -64,76 +57,39 @@ nir_assign_var_locations(struct exec_list *var_list, unsigned *size,
           var->interface_type != NULL)
          continue;
 
-      /* Make sure we give the same location to varyings packed with
-       * ARB_enhanced_layouts.
-       */
-      int idx = var->data.location - base_offset;
-      if (base_offset && idx >= 0) {
-         assert(idx < ARRAY_SIZE(locations));
-
-         if (locations[idx][var->data.index] == -1) {
-            var->data.driver_location = location;
-            locations[idx][var->data.index] = location;
-
-            /* A dvec3 can be packed with a double we need special handling
-             * for this as we are packing across two locations.
-             */
-            if (glsl_get_base_type(var->type) == GLSL_TYPE_DOUBLE &&
-                glsl_get_vector_elements(var->type) == 3) {
-               /* Hack around type_size functions that expect vectors to be
-                * padded out to vec4. If a float type is the same size as a
-                * double then the type size is padded to vec4, otherwise
-                * set the offset to two doubles which offsets the location
-                * past the first two components in dvec3 which were stored at
-                * the previous location.
-                */
-               unsigned dsize = type_size(glsl_double_type());
-               unsigned offset =
-                  dsize == type_size(glsl_float_type()) ? dsize : dsize * 2;
-
-               locations[idx + 1][var->data.index] = location + offset;
-            }
-
-            location += type_size(var->type);
-         } else {
-            var->data.driver_location = locations[idx][var->data.index];
-         }
-      } else {
-         var->data.driver_location = location;
-         location += type_size(var->type);
-      }
+      var->data.driver_location = location;
+      location += type_size(var->type);
    }
 
    *size = location;
 }
 
 /**
- * Returns true if we're processing a stage whose inputs are arrays indexed
- * by a vertex number (such as geometry shader inputs).
+ * Return true if the given variable is a per-vertex input/output array.
+ * (such as geometry shader inputs).
  */
-static bool
-is_per_vertex_input(struct lower_io_state *state, nir_variable *var)
+bool
+nir_is_per_vertex_io(nir_variable *var, gl_shader_stage stage)
 {
-   gl_shader_stage stage = state->builder.shader->stage;
+   if (var->data.patch || !glsl_type_is_array(var->type))
+      return false;
 
-   return var->data.mode == nir_var_shader_in && !var->data.patch &&
-          (stage == MESA_SHADER_TESS_CTRL ||
-           stage == MESA_SHADER_TESS_EVAL ||
-           stage == MESA_SHADER_GEOMETRY);
-}
+   if (var->data.mode == nir_var_shader_in)
+      return stage == MESA_SHADER_GEOMETRY ||
+             stage == MESA_SHADER_TESS_CTRL ||
+             stage == MESA_SHADER_TESS_EVAL;
 
-static bool
-is_per_vertex_output(struct lower_io_state *state, nir_variable *var)
-{
-   gl_shader_stage stage = state->builder.shader->stage;
-   return var->data.mode == nir_var_shader_out && !var->data.patch &&
-          stage == MESA_SHADER_TESS_CTRL;
+   if (var->data.mode == nir_var_shader_out)
+      return stage == MESA_SHADER_TESS_CTRL;
+
+   return false;
 }
 
 static nir_ssa_def *
 get_io_offset(nir_builder *b, nir_deref_var *deref,
               nir_ssa_def **vertex_index,
-              int (*type_size)(const struct glsl_type *))
+              int (*type_size)(const struct glsl_type *),
+              unsigned *component)
 {
    nir_deref *tail = &deref->deref;
 
@@ -142,7 +98,6 @@ get_io_offset(nir_builder *b, nir_deref_var *deref,
     */
    if (vertex_index != NULL) {
       tail = tail->child;
-      assert(tail->deref_type == nir_deref_type_array);
       nir_deref_array *deref_array = nir_deref_as_array(tail);
 
       nir_ssa_def *vtx = nir_imm_int(b, deref_array->base_offset);
@@ -150,6 +105,19 @@ get_io_offset(nir_builder *b, nir_deref_var *deref,
          vtx = nir_iadd(b, vtx, nir_ssa_for_src(b, deref_array->indirect, 1));
       }
       *vertex_index = vtx;
+   }
+
+   if (deref->var->data.compact) {
+      assert(tail->child->deref_type == nir_deref_type_array);
+      assert(glsl_type_is_scalar(glsl_without_array(deref->var->type)));
+      nir_deref_array *deref_array = nir_deref_as_array(tail->child);
+      /* We always lower indirect dereferences for "compact" array vars. */
+      assert(deref_array->deref_array_type == nir_deref_array_type_direct);
+
+      const unsigned total_offset = *component + deref_array->base_offset;
+      const unsigned slot_offset = total_offset / 4;
+      *component = total_offset % 4;
+      return nir_imm_int(b, type_size(glsl_vec4_type()) * slot_offset);
    }
 
    /* Just emit code and let constant-folding go to town */
@@ -189,7 +157,8 @@ get_io_offset(nir_builder *b, nir_deref_var *deref,
 
 static nir_intrinsic_instr *
 lower_load(nir_intrinsic_instr *intrin, struct lower_io_state *state,
-           nir_ssa_def *vertex_index, nir_ssa_def *offset)
+           nir_ssa_def *vertex_index, nir_ssa_def *offset,
+           unsigned component)
 {
    const nir_shader *nir = state->builder.shader;
    nir_variable *var = intrin->variables[0]->var;
@@ -205,7 +174,8 @@ lower_load(nir_intrinsic_instr *intrin, struct lower_io_state *state,
          assert(vertex_index == NULL);
 
          nir_intrinsic_op bary_op;
-         if (var->data.sample)
+         if (var->data.sample ||
+             (state->options & nir_lower_io_force_sample_interpolation))
             bary_op = nir_intrinsic_load_barycentric_sample;
          else if (var->data.centroid)
             bary_op = nir_intrinsic_load_barycentric_centroid;
@@ -239,7 +209,7 @@ lower_load(nir_intrinsic_instr *intrin, struct lower_io_state *state,
 
    nir_intrinsic_set_base(load, var->data.driver_location);
    if (mode == nir_var_shader_in || mode == nir_var_shader_out)
-      nir_intrinsic_set_component(load, var->data.location_frac);
+      nir_intrinsic_set_component(load, component);
 
    if (load->intrinsic == nir_intrinsic_load_uniform)
       nir_intrinsic_set_range(load, state->type_size(var->type));
@@ -259,7 +229,8 @@ lower_load(nir_intrinsic_instr *intrin, struct lower_io_state *state,
 
 static nir_intrinsic_instr *
 lower_store(nir_intrinsic_instr *intrin, struct lower_io_state *state,
-            nir_ssa_def *vertex_index, nir_ssa_def *offset)
+            nir_ssa_def *vertex_index, nir_ssa_def *offset,
+            unsigned component)
 {
    nir_variable *var = intrin->variables[0]->var;
    nir_variable_mode mode = var->data.mode;
@@ -281,7 +252,7 @@ lower_store(nir_intrinsic_instr *intrin, struct lower_io_state *state,
    nir_intrinsic_set_base(store, var->data.driver_location);
 
    if (mode == nir_var_shader_out)
-      nir_intrinsic_set_component(store, var->data.location_frac);
+      nir_intrinsic_set_component(store, component);
 
    nir_intrinsic_set_write_mask(store, nir_intrinsic_write_mask(intrin));
 
@@ -325,7 +296,7 @@ lower_atomic(nir_intrinsic_instr *intrin, struct lower_io_state *state,
    nir_intrinsic_set_base(atomic, var->data.driver_location);
 
    atomic->src[0] = nir_src_for_ssa(offset);
-   for (unsigned i = 0; i < nir_op_infos[intrin->intrinsic].num_inputs; i++) {
+   for (unsigned i = 0; i < nir_intrinsic_infos[intrin->intrinsic].num_srcs; i++) {
       nir_src_copy(&atomic->src[i+1], &intrin->src[i], atomic);
    }
 
@@ -334,7 +305,7 @@ lower_atomic(nir_intrinsic_instr *intrin, struct lower_io_state *state,
 
 static nir_intrinsic_instr *
 lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
-                     nir_ssa_def *offset)
+                     nir_ssa_def *offset, unsigned component)
 {
    nir_variable *var = intrin->variables[0]->var;
 
@@ -342,12 +313,14 @@ lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
 
    /* Ignore interpolateAt() for flat variables - flat is flat. */
    if (var->data.interpolation == INTERP_MODE_FLAT)
-      return lower_load(intrin, state, NULL, offset);
+      return lower_load(intrin, state, NULL, offset, component);
 
    nir_intrinsic_op bary_op;
    switch (intrin->intrinsic) {
    case nir_intrinsic_interp_var_at_centroid:
-      bary_op = nir_intrinsic_load_barycentric_centroid;
+      bary_op = (state->options & nir_lower_io_force_sample_interpolation) ?
+                nir_intrinsic_load_barycentric_sample :
+                nir_intrinsic_load_barycentric_centroid;
       break;
    case nir_intrinsic_interp_var_at_sample:
       bary_op = nir_intrinsic_load_barycentric_at_sample;
@@ -376,7 +349,7 @@ lower_interpolate_at(nir_intrinsic_instr *intrin, struct lower_io_state *state,
    load->num_components = intrin->num_components;
 
    nir_intrinsic_set_base(load, var->data.driver_location);
-   nir_intrinsic_set_component(load, var->data.location_frac);
+   nir_intrinsic_set_component(load, component);
 
    load->src[0] = nir_src_for_ssa(&bary_setup->dest.ssa);
    load->src[1] = nir_src_for_ssa(offset);
@@ -437,25 +410,27 @@ nir_lower_io_block(nir_block *block,
 
       b->cursor = nir_before_instr(instr);
 
-      const bool per_vertex =
-         is_per_vertex_input(state, var) || is_per_vertex_output(state, var);
+      const bool per_vertex = nir_is_per_vertex_io(var, b->shader->stage);
 
       nir_ssa_def *offset;
       nir_ssa_def *vertex_index = NULL;
+      unsigned component_offset = var->data.location_frac;
 
       offset = get_io_offset(b, intrin->variables[0],
                              per_vertex ? &vertex_index : NULL,
-                             state->type_size);
+                             state->type_size, &component_offset);
 
       nir_intrinsic_instr *replacement;
 
       switch (intrin->intrinsic) {
       case nir_intrinsic_load_var:
-         replacement = lower_load(intrin, state, vertex_index, offset);
+         replacement = lower_load(intrin, state, vertex_index, offset,
+                                  component_offset);
          break;
 
       case nir_intrinsic_store_var:
-         replacement = lower_store(intrin, state, vertex_index, offset);
+         replacement = lower_store(intrin, state, vertex_index, offset,
+                                   component_offset);
          break;
 
       case nir_intrinsic_var_atomic_add:
@@ -476,7 +451,8 @@ nir_lower_io_block(nir_block *block,
       case nir_intrinsic_interp_var_at_sample:
       case nir_intrinsic_interp_var_at_offset:
          assert(vertex_index == NULL);
-         replacement = lower_interpolate_at(intrin, state, offset);
+         replacement = lower_interpolate_at(intrin, state, offset,
+                                            component_offset);
          break;
 
       default:
@@ -505,7 +481,8 @@ nir_lower_io_block(nir_block *block,
 static void
 nir_lower_io_impl(nir_function_impl *impl,
                   nir_variable_mode modes,
-                  int (*type_size)(const struct glsl_type *))
+                  int (*type_size)(const struct glsl_type *),
+                  nir_lower_io_options options)
 {
    struct lower_io_state state;
 
@@ -513,6 +490,7 @@ nir_lower_io_impl(nir_function_impl *impl,
    state.mem_ctx = ralloc_parent(impl);
    state.modes = modes;
    state.type_size = type_size;
+   state.options = options;
 
    nir_foreach_block(block, impl) {
       nir_lower_io_block(block, &state);
@@ -524,11 +502,13 @@ nir_lower_io_impl(nir_function_impl *impl,
 
 void
 nir_lower_io(nir_shader *shader, nir_variable_mode modes,
-             int (*type_size)(const struct glsl_type *))
+             int (*type_size)(const struct glsl_type *),
+             nir_lower_io_options options)
 {
    nir_foreach_function(function, shader) {
-      if (function->impl)
-         nir_lower_io_impl(function->impl, modes, type_size);
+      if (function->impl) {
+         nir_lower_io_impl(function->impl, modes, type_size, options);
+      }
    }
 }
 

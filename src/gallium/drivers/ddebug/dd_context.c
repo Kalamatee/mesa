@@ -230,7 +230,8 @@ DD_CSO_CREATE(sampler, sampler)
 DD_CSO_DELETE(sampler)
 
 static void
-dd_context_bind_sampler_states(struct pipe_context *_pipe, unsigned shader,
+dd_context_bind_sampler_states(struct pipe_context *_pipe,
+                               enum pipe_shader_type shader,
                                unsigned start, unsigned count, void **states)
 {
    struct dd_context *dctx = dd_context(_pipe);
@@ -506,7 +507,8 @@ dd_context_stream_output_target_destroy(struct pipe_context *_pipe,
  */
 
 static void
-dd_context_set_sampler_views(struct pipe_context *_pipe, unsigned shader,
+dd_context_set_sampler_views(struct pipe_context *_pipe,
+                             enum pipe_shader_type shader,
                              unsigned start, unsigned num,
                              struct pipe_sampler_view **views)
 {
@@ -519,7 +521,8 @@ dd_context_set_sampler_views(struct pipe_context *_pipe, unsigned shader,
 }
 
 static void
-dd_context_set_shader_images(struct pipe_context *_pipe, unsigned shader,
+dd_context_set_shader_images(struct pipe_context *_pipe,
+                             enum pipe_shader_type shader,
                              unsigned start, unsigned num,
                              const struct pipe_image_view *views)
 {
@@ -717,6 +720,15 @@ dd_context_get_device_reset_status(struct pipe_context *_pipe)
 }
 
 static void
+dd_context_set_device_reset_callback(struct pipe_context *_pipe,
+                                     const struct pipe_device_reset_callback *cb)
+{
+   struct pipe_context *pipe = dd_context(_pipe)->pipe;
+
+   return pipe->set_device_reset_callback(pipe, cb);
+}
+
+static void
 dd_context_emit_string_marker(struct pipe_context *_pipe,
                               const char *string, int len)
 {
@@ -832,6 +844,7 @@ dd_context_create(struct dd_screen *dscreen, struct pipe_context *pipe)
    CTX_INIT(get_sample_position);
    CTX_INIT(invalidate_resource);
    CTX_INIT(get_device_reset_status);
+   CTX_INIT(set_device_reset_callback);
    CTX_INIT(dump_debug_state);
    CTX_INIT(emit_string_marker);
 

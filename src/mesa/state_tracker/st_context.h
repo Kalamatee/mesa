@@ -140,6 +140,9 @@ struct st_context
 
    uint64_t dirty; /**< dirty states */
 
+   /** This masks out unused shader resources. Only valid in draw calls. */
+   uint64_t active_states;
+
    /* If true, further analysis of states is required to know if something
     * has changed. Used mainly for shaders.
     */
@@ -221,8 +224,8 @@ struct st_context
       struct pipe_blend_state upload_blend;
       void *vs;
       void *gs;
-      void *upload_fs;
-      void *download_fs[PIPE_MAX_TEXTURE_TYPES];
+      void *upload_fs[3];
+      void *download_fs[3][PIPE_MAX_TEXTURE_TYPES];
       bool upload_enabled;
       bool download_enabled;
       bool rgba_only;
@@ -250,6 +253,8 @@ struct st_context
    struct st_config_options options;
 
    struct st_perf_monitor_group *perfmon;
+
+   enum pipe_reset_status reset_status;
 };
 
 
@@ -314,7 +319,7 @@ st_fb_orientation(const struct gl_framebuffer *fb)
 }
 
 
-static inline unsigned
+static inline enum pipe_shader_type
 st_shader_stage_to_ptarget(gl_shader_stage stage)
 {
    switch (stage) {
@@ -336,6 +341,13 @@ st_shader_stage_to_ptarget(gl_shader_stage stage)
    return PIPE_SHADER_VERTEX;
 }
 
+static inline bool
+st_user_clip_planes_enabled(struct gl_context *ctx)
+{
+   return (ctx->API == API_OPENGL_COMPAT ||
+           ctx->API == API_OPENGLES) && /* only ES 1.x */
+          ctx->Transform.ClipPlanesEnabled;
+}
 
 /** clear-alloc a struct-sized object, with casting */
 #define ST_CALLOC_STRUCT(T)   (struct T *) calloc(1, sizeof(struct T))
@@ -349,6 +361,9 @@ st_create_context(gl_api api, struct pipe_context *pipe,
 
 extern void
 st_destroy_context(struct st_context *st);
+
+uint64_t
+st_get_active_states(struct gl_context *ctx);
 
 
 #ifdef __cplusplus

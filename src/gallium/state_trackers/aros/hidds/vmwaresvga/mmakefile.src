@@ -37,6 +37,10 @@ USER_LDFLAGS := \
 NOWARN_FLAGS := -Wno-unused-value -Wno-unused-variable -Wno-strict-aliasing
 USER_CFLAGS += $(NOWARN_FLAGS)
 
+# disable necessary warnings
+NOWARN_FLAGS := -Wno-unused-value -Wno-unused-variable -Wno-strict-aliasing
+USER_CFLAGS += $(NOWARN_FLAGS)
+
 %build_module mmake=hidd-vmwaresvga modname=vmwaresvga modtype=hidd \
     files="$(VMWARESVGA_HIDD_SOURCES)" uselibs=""
 

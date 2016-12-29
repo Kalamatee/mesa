@@ -63,7 +63,7 @@ void Clip(const float *pTriangle, const float *pAttribs, int numAttribs, float *
           int *numVerts, float *pOutAttribs);
 
 INLINE
-void ComputeClipCodes(DRIVER_TYPE type, const API_STATE& state, const simdvector& vertex, simdscalar& clipCodes)
+void ComputeClipCodes(const API_STATE& state, const simdvector& vertex, simdscalar& clipCodes, simdscalari viewportIndexes)
 {
     clipCodes = _simd_setzero_ps();
 
@@ -90,7 +90,7 @@ void ComputeClipCodes(DRIVER_TYPE type, const API_STATE& state, const simdvector
     {
         // FRUSTUM_NEAR
         // DX clips depth [0..w], GL clips [-w..w]
-        if (type == DX)
+        if (state.rastState.clipHalfZ)
         {
             vRes = _simd_cmplt_ps(vertex.z, _simd_setzero_ps());
         }
@@ -110,22 +110,22 @@ void ComputeClipCodes(DRIVER_TYPE type, const API_STATE& state, const simdvector
     clipCodes = _simd_or_ps(clipCodes, _simd_and_ps(vRes, _simd_castsi_ps(_simd_set1_epi32(NEGW))));
 
     // GUARDBAND_LEFT
-    simdscalar gbMult = _simd_mul_ps(vNegW, _simd_set1_ps(state.gbState.left));
+    simdscalar gbMult = _simd_mul_ps(vNegW, _simd_i32gather_ps(&state.gbState.left[0], viewportIndexes, 4));
     vRes = _simd_cmplt_ps(vertex.x, gbMult);
     clipCodes = _simd_or_ps(clipCodes, _simd_and_ps(vRes, _simd_castsi_ps(_simd_set1_epi32(GUARDBAND_LEFT))));
 
     // GUARDBAND_TOP
-    gbMult = _simd_mul_ps(vNegW, _simd_set1_ps(state.gbState.top));
+    gbMult = _simd_mul_ps(vNegW, _simd_i32gather_ps(&state.gbState.top[0], viewportIndexes, 4));
     vRes = _simd_cmplt_ps(vertex.y, gbMult);
     clipCodes = _simd_or_ps(clipCodes, _simd_and_ps(vRes, _simd_castsi_ps(_simd_set1_epi32(GUARDBAND_TOP))));
 
     // GUARDBAND_RIGHT
-    gbMult = _simd_mul_ps(vertex.w, _simd_set1_ps(state.gbState.right));
+    gbMult = _simd_mul_ps(vertex.w, _simd_i32gather_ps(&state.gbState.right[0], viewportIndexes, 4));
     vRes = _simd_cmpgt_ps(vertex.x, gbMult);
     clipCodes = _simd_or_ps(clipCodes, _simd_and_ps(vRes, _simd_castsi_ps(_simd_set1_epi32(GUARDBAND_RIGHT))));
 
     // GUARDBAND_BOTTOM
-    gbMult = _simd_mul_ps(vertex.w, _simd_set1_ps(state.gbState.bottom));
+    gbMult = _simd_mul_ps(vertex.w, _simd_i32gather_ps(&state.gbState.bottom[0], viewportIndexes, 4));
     vRes = _simd_cmpgt_ps(vertex.y, gbMult);
     clipCodes = _simd_or_ps(clipCodes, _simd_and_ps(vRes, _simd_castsi_ps(_simd_set1_epi32(GUARDBAND_BOTTOM))));
 }
@@ -135,16 +135,16 @@ class Clipper
 {
 public:
     Clipper(uint32_t in_workerId, DRAW_CONTEXT* in_pDC) :
-        workerId(in_workerId), driverType(in_pDC->pContext->driverType), pDC(in_pDC), state(GetApiState(in_pDC))
+        workerId(in_workerId), pDC(in_pDC), state(GetApiState(in_pDC))
     {
         static_assert(NumVertsPerPrim >= 1 && NumVertsPerPrim <= 3, "Invalid NumVertsPerPrim");
     }
 
-    void ComputeClipCodes(simdvector vertex[])
+    void ComputeClipCodes(simdvector vertex[], simdscalari viewportIndexes)
     {
         for (uint32_t i = 0; i < NumVertsPerPrim; ++i)
         {
-            ::ComputeClipCodes(this->driverType, this->state, vertex[i], this->clipCodes[i]);
+            ::ComputeClipCodes(this->state, vertex[i], this->clipCodes[i], viewportIndexes);
         }
     }
 
@@ -302,7 +302,7 @@ public:
     }
 
     // clip SIMD primitives
-    void ClipSimd(const simdscalar& vPrimMask, const simdscalar& vClipMask, PA_STATE& pa, const simdscalari& vPrimId)
+    void ClipSimd(const simdscalar& vPrimMask, const simdscalar& vClipMask, PA_STATE& pa, const simdscalari& vPrimId, const simdscalari& vViewportIdx)
     {
         // input/output vertex store for clipper
         simdvertex vertices[7]; // maximum 7 verts generated per triangle
@@ -402,6 +402,7 @@ public:
 
         uint32_t* pVertexCount = (uint32_t*)&vNumClippedVerts;
         uint32_t* pPrimitiveId = (uint32_t*)&vPrimId;
+        uint32_t* pViewportIdx = (uint32_t*)&vViewportIdx;
 
         const simdscalari vOffsets = _mm256_set_epi32(
             0 * sizeof(simdvertex),  // unused lane
@@ -487,20 +488,22 @@ public:
                     if (assemble)
                     {
                         static const uint32_t primMaskMap[] = { 0x0, 0x1, 0x3, 0x7, 0xf, 0x1f, 0x3f, 0x7f, 0xff };
-                        pfnBinFunc(this->pDC, clipPa, this->workerId, attrib, primMaskMap[numEmittedPrims], _simd_set1_epi32(pPrimitiveId[inputPrim]));
+                        pfnBinFunc(this->pDC, clipPa, this->workerId, attrib, primMaskMap[numEmittedPrims], _simd_set1_epi32(pPrimitiveId[inputPrim]), _simd_set1_epi32(pViewportIdx[inputPrim]));
                     }
                 } while (clipPa.NextPrim());
             }
         }
 
         // update global pipeline stat
-        SWR_CONTEXT* pContext = this->pDC->pContext;
-        UPDATE_STAT(CPrimitives, numClippedPrims);
+        UPDATE_STAT_FE(CPrimitives, numClippedPrims);
     }
     
     // execute the clipper stage
-    void ExecuteStage(PA_STATE& pa, simdvector prim[], uint32_t primMask, simdscalari primId)
+    void ExecuteStage(PA_STATE& pa, simdvector prim[], uint32_t primMask, simdscalari primId, simdscalari viewportIdx)
     {
+        SWR_ASSERT(pa.pDC != nullptr);
+        SWR_CONTEXT* pContext = pa.pDC->pContext;
+
         // set up binner based on PA state
         PFN_PROCESS_PRIMS pfnBinner;
         switch (pa.binTopology)
@@ -520,12 +523,12 @@ public:
             break;
         };
 
-        // update clipper invocations pipeline stat
-        SWR_CONTEXT* pContext = this->pDC->pContext;
-        uint32_t numInvoc = _mm_popcnt_u32(primMask);
-        UPDATE_STAT(CInvocations, numInvoc);
 
-        ComputeClipCodes(prim);
+        // update clipper invocations pipeline stat
+        uint32_t numInvoc = _mm_popcnt_u32(primMask);
+        UPDATE_STAT_FE(CInvocations, numInvoc);
+
+        ComputeClipCodes(prim, viewportIdx);
 
         // cull prims with NAN coords
         primMask &= ~ComputeNaNMask(prim);
@@ -549,20 +552,19 @@ public:
 
         if (clipMask)
         {
-            RDTSC_START(FEGuardbandClip);
+            AR_BEGIN(FEGuardbandClip, pa.pDC->drawId);
             // we have to clip tris, execute the clipper, which will also
             // call the binner
-            ClipSimd(vMask(primMask), vMask(clipMask), pa, primId);
-            RDTSC_STOP(FEGuardbandClip, 1, 0);
+            ClipSimd(vMask(primMask), vMask(clipMask), pa, primId, viewportIdx);
+            AR_END(FEGuardbandClip, 1);
         }
         else if (validMask)
         {
             // update CPrimitives pipeline state
-            SWR_CONTEXT* pContext = this->pDC->pContext;
-            UPDATE_STAT(CPrimitives, _mm_popcnt_u32(validMask));
+            UPDATE_STAT_FE(CPrimitives, _mm_popcnt_u32(validMask));
 
             // forward valid prims directly to binner
-            pfnBinner(this->pDC, pa, this->workerId, prim, validMask, primId);
+            pfnBinner(this->pDC, pa, this->workerId, prim, validMask, primId, viewportIdx);
         }
     }
 
@@ -638,7 +640,7 @@ private:
         case FRUSTUM_BOTTOM:    t = ComputeInterpFactor(_simd_sub_ps(v1[3], v1[1]), _simd_sub_ps(v2[3], v2[1])); break;
         case FRUSTUM_NEAR:      
             // DX Znear plane is 0, GL is -w
-            if (this->driverType == DX)
+            if (this->state.rastState.clipHalfZ)
             {
                 t = ComputeInterpFactor(v1[2], v2[2]);
             }
@@ -706,7 +708,7 @@ private:
         case FRUSTUM_RIGHT:     return _simd_cmple_ps(v[0], v[3]);
         case FRUSTUM_TOP:       return _simd_cmpge_ps(v[1], _simd_mul_ps(v[3], _simd_set1_ps(-1.0f)));
         case FRUSTUM_BOTTOM:    return _simd_cmple_ps(v[1], v[3]);
-        case FRUSTUM_NEAR:      return _simd_cmpge_ps(v[2], this->driverType == DX ? _simd_setzero_ps() : _simd_mul_ps(v[3], _simd_set1_ps(-1.0f)));
+        case FRUSTUM_NEAR:      return _simd_cmpge_ps(v[2], this->state.rastState.clipHalfZ ? _simd_setzero_ps() : _simd_mul_ps(v[3], _simd_set1_ps(-1.0f)));
         case FRUSTUM_FAR:       return _simd_cmple_ps(v[2], v[3]);
         default:
             SWR_ASSERT(false, "invalid clipping plane: %d", ClippingPlane);
@@ -940,7 +942,6 @@ private:
     }
 
     const uint32_t workerId{ 0 };
-    const DRIVER_TYPE driverType{ DX };
     DRAW_CONTEXT* pDC{ nullptr };
     const API_STATE& state;
     simdscalar clipCodes[NumVertsPerPrim];
@@ -948,6 +949,6 @@ private:
 
 
 // pipeline stage functions
-void ClipTriangles(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari primId);
-void ClipLines(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari primId);
-void ClipPoints(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari primId);
+void ClipTriangles(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari primId, simdscalari viewportIdx);
+void ClipLines(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari primId, simdscalari viewportIdx);
+void ClipPoints(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari primId, simdscalari viewportIdx);

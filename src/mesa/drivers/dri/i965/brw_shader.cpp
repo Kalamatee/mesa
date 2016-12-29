@@ -127,10 +127,15 @@ brw_math_function(enum opcode op)
    }
 }
 
-uint32_t
-brw_texture_offset(int *offsets, unsigned num_components)
+bool
+brw_texture_offset(int *offsets, unsigned num_components, uint32_t *offset_bits)
 {
-   if (!offsets) return 0;  /* nonconstant offset; caller will handle it. */
+   if (!offsets) return false;  /* nonconstant offset; caller will handle it. */
+
+   /* offset out of bounds; caller will handle it. */
+   for (unsigned i = 0; i < num_components; i++)
+      if (offsets[i] > 7 || offsets[i] < -8)
+         return false;
 
    /* Combine all three offsets into a single unsigned dword:
     *
@@ -138,16 +143,16 @@ brw_texture_offset(int *offsets, unsigned num_components)
     *    bits  7:4 - V Offset (Y component)
     *    bits  3:0 - R Offset (Z component)
     */
-   unsigned offset_bits = 0;
+   *offset_bits = 0;
    for (unsigned i = 0; i < num_components; i++) {
       const unsigned shift = 4 * (2 - i);
-      offset_bits |= (offsets[i] << shift) & (0xF << shift);
+      *offset_bits |= (offsets[i] << shift) & (0xF << shift);
    }
-   return offset_bits;
+   return true;
 }
 
 const char *
-brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
+brw_instruction_name(const struct gen_device_info *devinfo, enum opcode op)
 {
    switch (op) {
    case BRW_OPCODE_ILLEGAL ... BRW_OPCODE_NOP:
@@ -165,6 +170,10 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
       return "fb_write_logical";
    case FS_OPCODE_REP_FB_WRITE:
       return "rep_fb_write";
+   case FS_OPCODE_FB_READ:
+      return "fb_read";
+   case FS_OPCODE_FB_READ_LOGICAL:
+      return "fb_read_logical";
 
    case SHADER_OPCODE_RCP:
       return "rcp";
@@ -354,8 +363,6 @@ brw_instruction_name(const struct brw_device_info *devinfo, enum opcode op)
 
    case FS_OPCODE_SET_SAMPLE_ID:
       return "set_sample_id";
-   case FS_OPCODE_SET_SIMD4X2_OFFSET:
-      return "set_simd4x2_offset";
 
    case FS_OPCODE_PACK_HALF_2x16_SPLIT:
       return "pack_half_2x16_split";
@@ -597,6 +604,38 @@ brw_abs_immediate(enum brw_reg_type type, struct brw_reg *reg)
    return false;
 }
 
+/**
+ * Get the appropriate atomic op for an image atomic intrinsic.
+ */
+unsigned
+get_atomic_counter_op(nir_intrinsic_op op)
+{
+   switch (op) {
+   case nir_intrinsic_atomic_counter_inc:
+      return BRW_AOP_INC;
+   case nir_intrinsic_atomic_counter_dec:
+      return BRW_AOP_PREDEC;
+   case nir_intrinsic_atomic_counter_add:
+      return BRW_AOP_ADD;
+   case nir_intrinsic_atomic_counter_min:
+      return BRW_AOP_UMIN;
+   case nir_intrinsic_atomic_counter_max:
+      return BRW_AOP_UMAX;
+   case nir_intrinsic_atomic_counter_and:
+      return BRW_AOP_AND;
+   case nir_intrinsic_atomic_counter_or:
+      return BRW_AOP_OR;
+   case nir_intrinsic_atomic_counter_xor:
+      return BRW_AOP_XOR;
+   case nir_intrinsic_atomic_counter_exchange:
+      return BRW_AOP_MOV;
+   case nir_intrinsic_atomic_counter_comp_swap:
+      return BRW_AOP_CMPWR;
+   default:
+      unreachable("Not reachable.");
+   }
+}
+
 unsigned
 tesslevel_outer_components(GLenum tes_primitive_mode)
 {
@@ -662,13 +701,13 @@ backend_shader::backend_shader(const struct brw_compiler *compiler,
    stage_name = _mesa_shader_stage_to_string(stage);
    stage_abbrev = _mesa_shader_stage_to_abbrev(stage);
    is_passthrough_shader =
-      nir->info.name && strcmp(nir->info.name, "passthrough") == 0;
+      nir->info->name && strcmp(nir->info->name, "passthrough") == 0;
 }
 
 bool
 backend_reg::equals(const backend_reg &r) const
 {
-   return brw_regs_equal(this, &r) && reg_offset == r.reg_offset;
+   return brw_regs_equal(this, &r) && offset == r.offset;
 }
 
 bool
@@ -741,15 +780,6 @@ backend_reg::is_accumulator() const
 }
 
 bool
-backend_reg::in_range(const backend_reg &r, unsigned n) const
-{
-   return (file == r.file &&
-           nr == r.nr &&
-           reg_offset >= r.reg_offset &&
-           reg_offset < r.reg_offset + n);
-}
-
-bool
 backend_instruction::is_commutative() const
 {
    switch (opcode) {
@@ -773,7 +803,7 @@ backend_instruction::is_commutative() const
 }
 
 bool
-backend_instruction::is_3src(const struct brw_device_info *devinfo) const
+backend_instruction::is_3src(const struct gen_device_info *devinfo) const
 {
    return ::is_3src(devinfo, opcode);
 }
@@ -955,7 +985,7 @@ backend_instruction::reads_accumulator_implicitly() const
 }
 
 bool
-backend_instruction::writes_accumulator_implicitly(const struct brw_device_info *devinfo) const
+backend_instruction::writes_accumulator_implicitly(const struct gen_device_info *devinfo) const
 {
    return writes_accumulator ||
           (devinfo->gen < 6 &&
@@ -1148,16 +1178,16 @@ backend_shader::calculate_cfg()
  * unused but also make sure that addition of small offsets to them will
  * trigger some of our asserts that surface indices are < BRW_MAX_SURFACES.
  */
-void
+uint32_t
 brw_assign_common_binding_table_offsets(gl_shader_stage stage,
-                                        const struct brw_device_info *devinfo,
+                                        const struct gen_device_info *devinfo,
                                         const struct gl_shader_program *shader_prog,
                                         const struct gl_program *prog,
                                         struct brw_stage_prog_data *stage_prog_data,
                                         uint32_t next_binding_table_offset)
 {
    const struct gl_linked_shader *shader = NULL;
-   int num_textures = _mesa_fls(prog->SamplersUsed);
+   int num_textures = util_last_bit(prog->SamplersUsed);
 
    if (shader_prog)
       shader = shader_prog->_LinkedShaders[stage];
@@ -1185,7 +1215,7 @@ brw_assign_common_binding_table_offsets(gl_shader_stage stage,
       stage_prog_data->binding_table.shader_time_start = 0xd0d0d0d0;
    }
 
-   if (prog->UsesGather) {
+   if (prog->nir->info->uses_texture_gather) {
       if (devinfo->gen >= 8) {
          stage_prog_data->binding_table.gather_texture_start =
             stage_prog_data->binding_table.texture_start;
@@ -1197,16 +1227,16 @@ brw_assign_common_binding_table_offsets(gl_shader_stage stage,
       stage_prog_data->binding_table.gather_texture_start = 0xd0d0d0d0;
    }
 
-   if (shader && shader->NumAtomicBuffers) {
+   if (prog->info.num_abos) {
       stage_prog_data->binding_table.abo_start = next_binding_table_offset;
-      next_binding_table_offset += shader->NumAtomicBuffers;
+      next_binding_table_offset += prog->info.num_abos;
    } else {
       stage_prog_data->binding_table.abo_start = 0xd0d0d0d0;
    }
 
-   if (shader && shader->NumImages) {
+   if (prog->info.num_images) {
       stage_prog_data->binding_table.image_start = next_binding_table_offset;
-      next_binding_table_offset += shader->NumImages;
+      next_binding_table_offset += prog->info.num_images;
    } else {
       stage_prog_data->binding_table.image_start = 0xd0d0d0d0;
    }
@@ -1224,9 +1254,10 @@ brw_assign_common_binding_table_offsets(gl_shader_stage stage,
    stage_prog_data->binding_table.plane_start[2] = next_binding_table_offset;
    next_binding_table_offset += num_textures;
 
-   assert(next_binding_table_offset <= BRW_MAX_SURFACES);
-
    /* prog_data->base.binding_table.size will be set by brw_mark_surface_used. */
+
+   assert(next_binding_table_offset <= BRW_MAX_SURFACES);
+   return next_binding_table_offset;
 }
 
 static void
@@ -1317,28 +1348,27 @@ brw_compile_tes(const struct brw_compiler *compiler,
                 unsigned *final_assembly_size,
                 char **error_str)
 {
-   const struct brw_device_info *devinfo = compiler->devinfo;
+   const struct gen_device_info *devinfo = compiler->devinfo;
    struct gl_linked_shader *shader =
       shader_prog->_LinkedShaders[MESA_SHADER_TESS_EVAL];
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_EVAL];
 
    nir_shader *nir = nir_shader_clone(mem_ctx, src_shader);
-   nir->info.inputs_read = key->inputs_read;
-   nir->info.patch_inputs_read = key->patch_inputs_read;
+   nir->info->inputs_read = key->inputs_read;
+   nir->info->patch_inputs_read = key->patch_inputs_read;
 
    struct brw_vue_map input_vue_map;
-   brw_compute_tess_vue_map(&input_vue_map,
-                            nir->info.inputs_read & ~VARYING_BIT_PRIMITIVE_ID,
-                            nir->info.patch_inputs_read);
+   brw_compute_tess_vue_map(&input_vue_map, nir->info->inputs_read,
+                            nir->info->patch_inputs_read);
 
-   nir = brw_nir_apply_sampler_key(nir, devinfo, &key->tex, is_scalar);
+   nir = brw_nir_apply_sampler_key(nir, compiler, &key->tex, is_scalar);
    brw_nir_lower_tes_inputs(nir, &input_vue_map);
    brw_nir_lower_vue_outputs(nir, is_scalar);
-   nir = brw_postprocess_nir(nir, compiler->devinfo, is_scalar);
+   nir = brw_postprocess_nir(nir, compiler, is_scalar);
 
    brw_compute_vue_map(devinfo, &prog_data->base.vue_map,
-                       nir->info.outputs_written,
-                       nir->info.separate_shader);
+                       nir->info->outputs_written,
+                       nir->info->separate_shader);
 
    unsigned output_size_bytes = prog_data->base.vue_map.num_slots * 4 * 4;
 
@@ -1349,10 +1379,16 @@ brw_compile_tes(const struct brw_compiler *compiler,
       return NULL;
    }
 
+   prog_data->base.clip_distance_mask =
+      ((1 << nir->info->clip_distance_array_size) - 1);
+   prog_data->base.cull_distance_mask =
+      ((1 << nir->info->cull_distance_array_size) - 1) <<
+      nir->info->clip_distance_array_size;
+
    /* URB entry sizes are stored as a multiple of 64 bytes. */
    prog_data->base.urb_entry_size = ALIGN(output_size_bytes, 64) / 64;
 
-   bool need_patch_header = nir->info.system_values_read &
+   bool need_patch_header = nir->info->system_values_read &
       (BITFIELD64_BIT(SYSTEM_VALUE_TESS_LEVEL_OUTER) |
        BITFIELD64_BIT(SYSTEM_VALUE_TESS_LEVEL_INNER));
 
@@ -1389,9 +1425,9 @@ brw_compile_tes(const struct brw_compiler *compiler,
       if (unlikely(INTEL_DEBUG & DEBUG_TES)) {
          g.enable_debug(ralloc_asprintf(mem_ctx,
                                         "%s tessellation evaluation shader %s",
-                                        nir->info.label ? nir->info.label
+                                        nir->info->label ? nir->info->label
                                                         : "unnamed",
-                                        nir->info.name));
+                                        nir->info->name));
       }
 
       g.generate_code(v.cfg, 8);

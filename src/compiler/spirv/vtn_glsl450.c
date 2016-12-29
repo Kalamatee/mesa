@@ -565,16 +565,21 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
                                    build_exp(nb, nir_fneg(nb, src[0]))));
       return;
 
-   case GLSLstd450Tanh:
-      /* (0.5 * (e^x - e^(-x))) / (0.5 * (e^x + e^(-x))) */
-      val->ssa->def =
-         nir_fdiv(nb, nir_fmul(nb, nir_imm_float(nb, 0.5f),
-                                   nir_fsub(nb, build_exp(nb, src[0]),
-                                                build_exp(nb, nir_fneg(nb, src[0])))),
-                      nir_fmul(nb, nir_imm_float(nb, 0.5f),
-                                   nir_fadd(nb, build_exp(nb, src[0]),
-                                                build_exp(nb, nir_fneg(nb, src[0])))));
+   case GLSLstd450Tanh: {
+      /* tanh(x) := (0.5 * (e^x - e^(-x))) / (0.5 * (e^x + e^(-x)))
+       *
+       * With a little algebra this reduces to (e^2x - 1) / (e^2x + 1)
+       *
+       * We clamp x to (-inf, +10] to avoid precision problems.  When x > 10,
+       * e^2x is so much larger than 1.0 that 1.0 gets flushed to zero in the
+       * computation e^2x +/- 1 so it can be ignored.
+       */
+      nir_ssa_def *x = nir_fmin(nb, src[0], nir_imm_float(nb, 10));
+      nir_ssa_def *exp2x = build_exp(nb, nir_fmul(nb, x, nir_imm_float(nb, 2)));
+      val->ssa->def = nir_fdiv(nb, nir_fsub(nb, exp2x, nir_imm_float(nb, 1)),
+                                   nir_fadd(nb, exp2x, nir_imm_float(nb, 1)));
       return;
+   }
 
    case GLSLstd450Asinh:
       val->ssa->def = nir_fmul(nb, nir_fsign(nb, src[0]),
@@ -634,6 +639,57 @@ handle_glsl450_alu(struct vtn_builder *b, enum GLSLstd450 entrypoint,
    }
 }
 
+static void
+handle_glsl450_interpolation(struct vtn_builder *b, enum GLSLstd450 opcode,
+                             const uint32_t *w, unsigned count)
+{
+   const struct glsl_type *dest_type =
+      vtn_value(b, w[1], vtn_value_type_type)->type->type;
+
+   struct vtn_value *val = vtn_push_value(b, w[2], vtn_value_type_ssa);
+   val->ssa = vtn_create_ssa_value(b, dest_type);
+
+   nir_intrinsic_op op;
+   switch (opcode) {
+   case GLSLstd450InterpolateAtCentroid:
+      op = nir_intrinsic_interp_var_at_centroid;
+      break;
+   case GLSLstd450InterpolateAtSample:
+      op = nir_intrinsic_interp_var_at_sample;
+      break;
+   case GLSLstd450InterpolateAtOffset:
+      op = nir_intrinsic_interp_var_at_offset;
+      break;
+   default:
+      unreachable("Invalid opcode");
+   }
+
+   nir_intrinsic_instr *intrin = nir_intrinsic_instr_create(b->nb.shader, op);
+
+   nir_deref_var *deref = vtn_nir_deref(b, w[5]);
+   intrin->variables[0] =
+      nir_deref_as_var(nir_copy_deref(intrin, &deref->deref));
+
+   switch (opcode) {
+   case GLSLstd450InterpolateAtCentroid:
+      break;
+   case GLSLstd450InterpolateAtSample:
+   case GLSLstd450InterpolateAtOffset:
+      intrin->src[0] = nir_src_for_ssa(vtn_ssa_value(b, w[6])->def);
+      break;
+   default:
+      unreachable("Invalid opcode");
+   }
+
+   intrin->num_components = glsl_get_vector_elements(dest_type);
+   nir_ssa_dest_init(&intrin->instr, &intrin->dest,
+                     glsl_get_vector_elements(dest_type),
+                     glsl_get_bit_size(dest_type), NULL);
+   val->ssa->def = &intrin->dest.ssa;
+
+   nir_builder_instr_insert(&b->nb, &intrin->instr);
+}
+
 bool
 vtn_handle_glsl450_instruction(struct vtn_builder *b, uint32_t ext_opcode,
                                const uint32_t *w, unsigned count)
@@ -656,7 +712,8 @@ vtn_handle_glsl450_instruction(struct vtn_builder *b, uint32_t ext_opcode,
    case GLSLstd450InterpolateAtCentroid:
    case GLSLstd450InterpolateAtSample:
    case GLSLstd450InterpolateAtOffset:
-      unreachable("Unhandled opcode");
+      handle_glsl450_interpolation(b, ext_opcode, w, count);
+      break;
 
    default:
       handle_glsl450_alu(b, (enum GLSLstd450)ext_opcode, w, count);

@@ -52,7 +52,7 @@
 extern "C" {
 #endif
 
-struct brw_device_info;
+struct gen_device_info;
 
 /** Number of general purpose registers (VS, WM, etc) */
 #define BRW_MAX_GRF 128
@@ -223,7 +223,7 @@ enum PACKED brw_reg_type {
    BRW_REGISTER_TYPE_Q,
 };
 
-unsigned brw_reg_type_to_hw_type(const struct brw_device_info *devinfo,
+unsigned brw_reg_type_to_hw_type(const struct gen_device_info *devinfo,
                                  enum brw_reg_type type, enum brw_reg_file file);
 const char *brw_reg_type_letters(unsigned brw_reg_type);
 uint32_t brw_swizzle_immediate(enum brw_reg_type type, uint32_t x, unsigned swz);
@@ -520,14 +520,6 @@ sechalf(struct brw_reg reg)
 }
 
 static inline struct brw_reg
-suboffset(struct brw_reg reg, unsigned delta)
-{
-   reg.subnr += delta * type_sz(reg.type);
-   return reg;
-}
-
-
-static inline struct brw_reg
 offset(struct brw_reg reg, unsigned delta)
 {
    reg.nr += delta;
@@ -544,6 +536,11 @@ byte_offset(struct brw_reg reg, unsigned bytes)
    return reg;
 }
 
+static inline struct brw_reg
+suboffset(struct brw_reg reg, unsigned delta)
+{
+   return byte_offset(reg, delta * type_sz(reg.type));
+}
 
 /** Construct unsigned word[16] register */
 static inline struct brw_reg
@@ -564,6 +561,12 @@ static inline struct brw_reg
 brw_uw1_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
 {
    return suboffset(retype(brw_vec1_reg(file, nr, 0), BRW_REGISTER_TYPE_UW), subnr);
+}
+
+static inline struct brw_reg
+brw_ud1_reg(enum brw_reg_file file, unsigned nr, unsigned subnr)
+{
+   return retype(brw_vec1_reg(file, nr, subnr), BRW_REGISTER_TYPE_UD);
 }
 
 static inline struct brw_reg
@@ -789,19 +792,9 @@ brw_notification_reg(void)
 }
 
 static inline struct brw_reg
-brw_sr0_reg(void)
+brw_sr0_reg(unsigned subnr)
 {
-   return brw_reg(BRW_ARCHITECTURE_REGISTER_FILE,
-                  BRW_ARF_STATE,
-                  0,
-                  0,
-                  0,
-                  BRW_REGISTER_TYPE_UD,
-                  BRW_VERTICAL_STRIDE_8,
-                  BRW_WIDTH_8,
-                  BRW_HORIZONTAL_STRIDE_1,
-                  BRW_SWIZZLE_XYZW,
-                  WRITEMASK_XYZW);
+   return brw_ud1_reg(BRW_ARCHITECTURE_REGISTER_FILE, BRW_ARF_STATE, subnr);
 }
 
 static inline struct brw_reg
@@ -827,6 +820,18 @@ static inline struct brw_reg
 brw_mask_reg(unsigned subnr)
 {
    return brw_uw1_reg(BRW_ARCHITECTURE_REGISTER_FILE, BRW_ARF_MASK, subnr);
+}
+
+static inline struct brw_reg
+brw_vmask_reg()
+{
+   return brw_sr0_reg(3);
+}
+
+static inline struct brw_reg
+brw_dmask_reg()
+{
+   return brw_sr0_reg(2);
 }
 
 static inline struct brw_reg

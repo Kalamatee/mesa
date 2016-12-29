@@ -199,6 +199,7 @@ ilo_get_compute_param(struct pipe_screen *screen,
       uint32_t max_compute_units;
       uint32_t images_supported;
       uint32_t subgroup_size;
+      uint32_t address_bits;
    } val;
    const void *ptr;
    int size;
@@ -266,6 +267,11 @@ ilo_get_compute_param(struct pipe_screen *screen,
       ptr = &val.max_input_size;
       size = sizeof(val.max_input_size);
       break;
+   case PIPE_COMPUTE_CAP_ADDRESS_BITS:
+      val.address_bits = 32;
+      ptr = &val.address_bits;
+      size = sizeof(val.address_bits);
+      break;
    case PIPE_COMPUTE_CAP_MAX_MEM_ALLOC_SIZE:
       val.max_mem_alloc_size = 1u << 31;
 
@@ -297,6 +303,8 @@ ilo_get_compute_param(struct pipe_screen *screen,
       ptr = &val.subgroup_size;
       size = sizeof(val.subgroup_size);
       break;
+   case PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK:
+      /* fallthrough */
    default:
       ptr = NULL;
       size = 0;
@@ -391,6 +399,7 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_STREAM_OUTPUT_INTERLEAVED_COMPONENTS:
       return ILO_MAX_SO_BINDINGS;
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
+   case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
       if (ilo_dev_gen(&is->dev) >= ILO_GEN(7))
          return is->dev.has_gen7_sol_reset;
       else
@@ -450,6 +459,7 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_ENDIANNESS:
       return PIPE_ENDIAN_LITTLE;
    case PIPE_CAP_MIXED_FRAMEBUFFER_SIZES:
+   case PIPE_CAP_MIXED_COLOR_DEPTH_BITS:
       return true;
    case PIPE_CAP_TGSI_VS_LAYER_VIEWPORT:
    case PIPE_CAP_MAX_GEOMETRY_OUTPUT_VERTICES:
@@ -506,6 +516,9 @@ ilo_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MAX_WINDOW_RECTANGLES:
    case PIPE_CAP_POLYGON_OFFSET_UNITS_UNSCALED:
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
+   case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
+   case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
+   case PIPE_CAP_NATIVE_FENCE_FD:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -696,6 +709,7 @@ ilo_screen_fence_reference(struct pipe_screen *screen,
 
 static boolean
 ilo_screen_fence_finish(struct pipe_screen *screen,
+                        struct pipe_context *ctx,
                         struct pipe_fence_handle *fence,
                         uint64_t timeout)
 {

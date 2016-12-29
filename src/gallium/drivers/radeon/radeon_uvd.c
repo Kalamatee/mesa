@@ -113,7 +113,8 @@ static void send_cmd(struct ruvd_decoder *dec, unsigned cmd,
 {
 	int reloc_idx;
 
-	reloc_idx = dec->ws->cs_add_buffer(dec->cs, buf, usage, domain,
+	reloc_idx = dec->ws->cs_add_buffer(dec->cs, buf, usage | RADEON_USAGE_SYNCHRONIZED,
+					   domain,
 					  RADEON_PRIO_UVD);
 	if (!dec->use_legacy) {
 		uint64_t addr;
@@ -122,6 +123,7 @@ static void send_cmd(struct ruvd_decoder *dec, unsigned cmd,
 		set_reg(dec, RUVD_GPCOM_VCPU_DATA0, addr);
 		set_reg(dec, RUVD_GPCOM_VCPU_DATA1, addr >> 32);
 	} else {
+		off += dec->ws->buffer_get_reloc_offset(buf);
 		set_reg(dec, RUVD_GPCOM_VCPU_DATA0, off);
 		set_reg(dec, RUVD_GPCOM_VCPU_DATA1, reloc_idx * 4);
 	}
@@ -1351,7 +1353,7 @@ static unsigned bank_wh(unsigned bankwh)
 void ruvd_set_dt_surfaces(struct ruvd_msg *msg, struct radeon_surf *luma,
 			  struct radeon_surf *chroma)
 {
-	msg->body.decode.dt_pitch = luma->level[0].pitch_bytes;
+	msg->body.decode.dt_pitch = luma->level[0].nblk_x * luma->bpe;
 	switch (luma->level[0].mode) {
 	case RADEON_SURF_MODE_LINEAR_ALIGNED:
 		msg->body.decode.dt_tiling_mode = RUVD_TILE_LINEAR;

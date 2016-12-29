@@ -149,8 +149,8 @@ struct vtn_block {
    /** Points to the switch case started by this block (if any) */
    struct vtn_case *switch_case;
 
-   /** The last block in this SPIR-V block. */
-   nir_block *end_block;
+   /** Every block ends in a nop intrinsic so that we can find it again */
+   nir_intrinsic_instr *end_nop;
 };
 
 struct vtn_function {
@@ -279,6 +279,7 @@ struct vtn_variable {
 
    unsigned descriptor_set;
    unsigned binding;
+   unsigned input_attachment_index;
 
    nir_variable *var;
    nir_variable **members;
@@ -346,6 +347,7 @@ struct vtn_builder {
 
    nir_shader *shader;
    nir_function_impl *impl;
+   const struct nir_spirv_supported_extensions *ext;
    struct vtn_block *block;
 
    /* Current file, line, and column.  Useful for debugging.  Set

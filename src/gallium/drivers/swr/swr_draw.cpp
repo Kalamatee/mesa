@@ -90,8 +90,7 @@ swr_draw_vbo(struct pipe_context *pipe, const struct pipe_draw_info *info)
    }
 
    /* Update derived state, pass draw info to update function */
-   if (ctx->dirty)
-      swr_update_derived(pipe, info);
+   swr_update_derived(pipe, info);
 
    swr_update_draw_context(ctx);
 
@@ -239,7 +238,7 @@ swr_finish(struct pipe_context *pipe)
    struct pipe_fence_handle *fence = nullptr;
 
    swr_flush(pipe, &fence, 0);
-   swr_fence_finish(pipe->screen, fence, 0);
+   swr_fence_finish(pipe->screen, NULL, fence, 0);
    swr_fence_reference(pipe->screen, &fence, NULL);
 }
 
@@ -258,37 +257,15 @@ swr_store_render_target(struct pipe_context *pipe,
 
    /* Only proceed if there's a valid surface to store to */
    if (renderTarget->pBaseAddress) {
-      /* Set viewport to full renderTarget width/height and disable scissor
-       * before StoreTiles */
-      boolean change_viewport =
-         (ctx->derived.vp.x != 0.0f || ctx->derived.vp.y != 0.0f
-          || ctx->derived.vp.width != renderTarget->width
-          || ctx->derived.vp.height != renderTarget->height);
-      if (change_viewport) {
-         SWR_VIEWPORT vp = {0};
-         vp.width = renderTarget->width;
-         vp.height = renderTarget->height;
-         SwrSetViewports(ctx->swrContext, 1, &vp, NULL);
-      }
-
-      boolean scissor_enable = ctx->derived.rastState.scissorEnable;
-      if (scissor_enable) {
-         ctx->derived.rastState.scissorEnable = FALSE;
-         SwrSetRastState(ctx->swrContext, &ctx->derived.rastState);
-      }
-
       swr_update_draw_context(ctx);
+      SWR_RECT full_rect =
+         {0, 0,
+          (int32_t)u_minify(renderTarget->width, renderTarget->lod),
+          (int32_t)u_minify(renderTarget->height, renderTarget->lod)};
       SwrStoreTiles(ctx->swrContext,
-                    (enum SWR_RENDERTARGET_ATTACHMENT)attachment,
-                    post_tile_state);
-
-      /* Restore viewport and scissor enable */
-      if (change_viewport)
-         SwrSetViewports(ctx->swrContext, 1, &ctx->derived.vp, &ctx->derived.vpm);
-      if (scissor_enable) {
-         ctx->derived.rastState.scissorEnable = scissor_enable;
-         SwrSetRastState(ctx->swrContext, &ctx->derived.rastState);
-      }
+                    1 << attachment,
+                    post_tile_state,
+                    full_rect);
    }
 }
 
@@ -306,7 +283,9 @@ swr_store_dirty_resource(struct pipe_context *pipe,
       swr_draw_context *pDC = &ctx->swrDC;
       SWR_SURFACE_STATE *renderTargets = pDC->renderTargets;
       for (uint32_t i = 0; i < SWR_NUM_ATTACHMENTS; i++)
-         if (renderTargets[i].pBaseAddress == spr->swr.pBaseAddress) {
+         if (renderTargets[i].pBaseAddress == spr->swr.pBaseAddress ||
+             (spr->secondary.pBaseAddress &&
+              renderTargets[i].pBaseAddress == spr->secondary.pBaseAddress)) {
             swr_store_render_target(pipe, i, post_tile_state);
 
             /* Mesa thinks depth/stencil are fused, so we'll never get an

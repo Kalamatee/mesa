@@ -36,7 +36,6 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 #include "main/context.h"
 #include "main/enums.h"
 #include "main/image.h"
-#include "util/simple_list.h"
 #include "main/teximage.h"
 #include "main/texobj.h"
 
@@ -329,7 +328,7 @@ void radeonTexUpdateParameters(struct gl_context *ctx, GLuint unit)
 
 static void radeonTexParameter( struct gl_context *ctx,
 				struct gl_texture_object *texObj,
-				GLenum pname, const GLfloat *params )
+				GLenum pname )
 {
    radeonTexObj* t = radeon_tex_obj(texObj);
 

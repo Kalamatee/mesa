@@ -80,6 +80,8 @@ struct _egl_resource
    EGLBoolean IsLinked;
    EGLint RefCount;
 
+   EGLLabelKHR Label;
+
    /* used to link resources of the same type */
    _EGLResource *Next;
 };
@@ -93,6 +95,7 @@ struct _egl_extensions
    /* Please keep these sorted alphabetically. */
    EGLBoolean ANDROID_framebuffer_target;
    EGLBoolean ANDROID_image_native_buffer;
+   EGLBoolean ANDROID_native_fence_sync;
    EGLBoolean ANDROID_recordable;
 
    EGLBoolean CHROMIUM_sync_control;
@@ -103,6 +106,7 @@ struct _egl_extensions
    EGLBoolean EXT_swap_buffers_with_damage;
 
    EGLBoolean KHR_cl_event2;
+   EGLBoolean KHR_config_attribs;
    EGLBoolean KHR_create_context;
    EGLBoolean KHR_fence_sync;
    EGLBoolean KHR_get_all_proc_addresses;
@@ -113,11 +117,11 @@ struct _egl_extensions
    EGLBoolean KHR_gl_texture_cubemap_image;
    EGLBoolean KHR_image_base;
    EGLBoolean KHR_image_pixmap;
+   EGLBoolean KHR_no_config_context;
    EGLBoolean KHR_reusable_sync;
    EGLBoolean KHR_surfaceless_context;
    EGLBoolean KHR_wait_sync;
 
-   EGLBoolean MESA_configless_context;
    EGLBoolean MESA_drm_image;
    EGLBoolean MESA_image_dma_buf_export;
 
@@ -166,6 +170,8 @@ struct _egl_display
 
    /* lists of resources */
    _EGLResource *ResourceLists[_EGL_NUM_RESOURCES];
+
+   EGLLabelKHR Label;
 };
 
 
@@ -271,6 +277,11 @@ _eglGetWaylandDisplay(struct wl_display *native_display,
                       const EGLint *attrib_list);
 #endif
 
+#ifdef HAVE_SURFACELESS_PLATFORM
+_EGLDisplay*
+_eglGetSurfacelessDisplay(void *native_display,
+                          const EGLint *attrib_list);
+#endif
 
 #ifdef __cplusplus
 }

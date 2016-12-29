@@ -116,9 +116,10 @@ _mesa_lookup_texture(struct gl_context *ctx, GLuint id)
 struct gl_texture_object *
 _mesa_lookup_texture_err(struct gl_context *ctx, GLuint id, const char* func)
 {
-   struct gl_texture_object *texObj;
+   struct gl_texture_object *texObj = NULL;
 
-   texObj = _mesa_lookup_texture(ctx, id); /* Returns NULL if not found. */
+   if (id > 0)
+      texObj = _mesa_lookup_texture(ctx, id); /* Returns NULL if not found. */
 
    if (!texObj)
       _mesa_error(ctx, GL_INVALID_OPERATION, "%s(texture)", func);
@@ -184,10 +185,10 @@ _mesa_get_current_tex_object(struct gl_context *ctx, GLenum target)
          return ctx->Extensions.ARB_texture_cube_map
                 ? ctx->Texture.ProxyTex[TEXTURE_CUBE_INDEX] : NULL;
       case GL_TEXTURE_CUBE_MAP_ARRAY:
-         return ctx->Extensions.ARB_texture_cube_map_array
+         return _mesa_has_texture_cube_map_array(ctx)
                 ? texUnit->CurrentTex[TEXTURE_CUBE_ARRAY_INDEX] : NULL;
       case GL_PROXY_TEXTURE_CUBE_MAP_ARRAY:
-         return ctx->Extensions.ARB_texture_cube_map_array
+         return _mesa_has_texture_cube_map_array(ctx)
                 ? ctx->Texture.ProxyTex[TEXTURE_CUBE_ARRAY_INDEX] : NULL;
       case GL_TEXTURE_RECTANGLE_NV:
          return ctx->Extensions.NV_texture_rectangle
@@ -365,15 +366,12 @@ finish_texture_init(struct gl_context *ctx, GLenum target,
          obj->Sampler.MinFilter = filter;
          obj->Sampler.MagFilter = filter;
          if (ctx->Driver.TexParameter) {
-            static const GLfloat fparam_wrap[1] = {(GLfloat) GL_CLAMP_TO_EDGE};
-            const GLfloat fparam_filter[1] = {(GLfloat) filter};
-            ctx->Driver.TexParameter(ctx, obj, GL_TEXTURE_WRAP_S, fparam_wrap);
-            ctx->Driver.TexParameter(ctx, obj, GL_TEXTURE_WRAP_T, fparam_wrap);
-            ctx->Driver.TexParameter(ctx, obj, GL_TEXTURE_WRAP_R, fparam_wrap);
-            ctx->Driver.TexParameter(ctx, obj,
-                  GL_TEXTURE_MIN_FILTER, fparam_filter);
-            ctx->Driver.TexParameter(ctx, obj,
-                  GL_TEXTURE_MAG_FILTER, fparam_filter);
+            /* XXX we probably don't need to make all these calls */
+            ctx->Driver.TexParameter(ctx, obj, GL_TEXTURE_WRAP_S);
+            ctx->Driver.TexParameter(ctx, obj, GL_TEXTURE_WRAP_T);
+            ctx->Driver.TexParameter(ctx, obj, GL_TEXTURE_WRAP_R);
+            ctx->Driver.TexParameter(ctx, obj, GL_TEXTURE_MIN_FILTER);
+            ctx->Driver.TexParameter(ctx, obj, GL_TEXTURE_MAG_FILTER);
          }
          break;
 
@@ -1579,7 +1577,7 @@ _mesa_tex_target_to_index(const struct gl_context *ctx, GLenum target)
       return _mesa_is_gles(ctx) && ctx->Extensions.OES_EGL_image_external
          ? TEXTURE_EXTERNAL_INDEX : -1;
    case GL_TEXTURE_CUBE_MAP_ARRAY:
-      return _mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_cube_map_array
+      return _mesa_has_texture_cube_map_array(ctx)
          ? TEXTURE_CUBE_ARRAY_INDEX : -1;
    case GL_TEXTURE_2D_MULTISAMPLE:
       return ((_mesa_is_desktop_gl(ctx) && ctx->Extensions.ARB_texture_multisample) ||

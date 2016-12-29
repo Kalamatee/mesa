@@ -93,10 +93,10 @@ emit_depth_packets(struct brw_context *brw,
       assert(depth_mt);
       BEGIN_BATCH(5);
       OUT_BATCH(GEN7_3DSTATE_HIER_DEPTH_BUFFER << 16 | (5 - 2));
-      OUT_BATCH((depth_mt->hiz_buf->pitch - 1) | mocs_wb << 25);
-      OUT_RELOC64(depth_mt->hiz_buf->bo,
+      OUT_BATCH((depth_mt->hiz_buf->aux_base.pitch - 1) | mocs_wb << 25);
+      OUT_RELOC64(depth_mt->hiz_buf->aux_base.bo,
                   I915_GEM_DOMAIN_RENDER, I915_GEM_DOMAIN_RENDER, 0);
-      OUT_BATCH(depth_mt->hiz_buf->qpitch >> 2);
+      OUT_BATCH(depth_mt->hiz_buf->aux_base.qpitch >> 2);
       ADVANCE_BATCH();
    }
 
@@ -218,7 +218,7 @@ gen8_emit_depth_stencil_hiz(struct brw_context *brw,
    }
 
    emit_depth_packets(brw, depth_mt, brw_depthbuffer_format(brw), surftype,
-                      ctx->Depth.Mask != 0,
+                      brw_depth_writes_enabled(brw),
                       stencil_mt, ctx->Stencil._WriteEnabled,
                       hiz, width, height, depth, lod, min_array_element);
 }
@@ -236,6 +236,9 @@ static bool
 pma_fix_enable(const struct brw_context *brw)
 {
    const struct gl_context *ctx = &brw->ctx;
+   /* BRW_NEW_FS_PROG_DATA */
+   const struct brw_wm_prog_data *wm_prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
    /* _NEW_BUFFERS */
    struct intel_renderbuffer *depth_irb =
       intel_get_renderbuffer(ctx->DrawBuffer, BUFFER_DEPTH);
@@ -252,10 +255,8 @@ pma_fix_enable(const struct brw_context *brw)
     */
    const bool hiz_enabled = depth_irb && intel_renderbuffer_has_hiz(depth_irb);
 
-   /* BRW_NEW_FS_PROG_DATA:
-    * 3DSTATE_WM::Early Depth/Stencil Control != EDSC_PREPS (2).
-    */
-   const bool edsc_not_preps = !brw->wm.prog_data->early_fragment_tests;
+   /* 3DSTATE_WM::Early Depth/Stencil Control != EDSC_PREPS (2). */
+   const bool edsc_not_preps = !wm_prog_data->early_fragment_tests;
 
    /* 3DSTATE_PS_EXTRA::PixelShaderValid is always true. */
    const bool pixel_shader_valid = true;
@@ -279,7 +280,7 @@ pma_fix_enable(const struct brw_context *brw)
     * 3DSTATE_WM_DEPTH_STENCIL::DepthWriteEnable &&
     * 3DSTATE_DEPTH_BUFFER::DEPTH_WRITE_ENABLE.
     */
-   const bool depth_writes_enabled = ctx->Depth.Mask;
+   const bool depth_writes_enabled = brw_depth_writes_enabled(brw);
 
    /* _NEW_STENCIL:
     * !DEPTH_STENCIL_STATE::Stencil Buffer Write Enable ||
@@ -288,25 +289,25 @@ pma_fix_enable(const struct brw_context *brw)
     */
    const bool stencil_writes_enabled = ctx->Stencil._WriteEnabled;
 
-   /* BRW_NEW_FS_PROG_DATA:
-    * 3DSTATE_PS_EXTRA::Pixel Shader Computed Depth Mode != PSCDEPTH_OFF
-    */
+   /* 3DSTATE_PS_EXTRA::Pixel Shader Computed Depth Mode != PSCDEPTH_OFF */
    const bool ps_computes_depth =
-      brw->wm.prog_data->computed_depth_mode != BRW_PSCDEPTH_OFF;
+      wm_prog_data->computed_depth_mode != BRW_PSCDEPTH_OFF;
 
-   /* BRW_NEW_FS_PROG_DATA:        3DSTATE_PS_EXTRA::PixelShaderKillsPixels
-    * BRW_NEW_FS_PROG_DATA:        3DSTATE_PS_EXTRA::oMask Present to RenderTarget
+   /* BRW_NEW_FS_PROG_DATA:     3DSTATE_PS_EXTRA::PixelShaderKillsPixels
+    * BRW_NEW_FS_PROG_DATA:     3DSTATE_PS_EXTRA::oMask Present to RenderTarget
     * _NEW_MULTISAMPLE:         3DSTATE_PS_BLEND::AlphaToCoverageEnable
     * _NEW_COLOR:               3DSTATE_PS_BLEND::AlphaTestEnable
+    * _NEW_BUFFERS:             3DSTATE_PS_BLEND::AlphaTestEnable
+    *                           3DSTATE_PS_BLEND::AlphaToCoverageEnable
     *
     * 3DSTATE_WM_CHROMAKEY::ChromaKeyKillEnable is always false.
     * 3DSTATE_WM::ForceKillPix != ForceOff is always true.
     */
    const bool kill_pixel =
-      brw->wm.prog_data->uses_kill ||
-      brw->wm.prog_data->uses_omask ||
-      (_mesa_is_multisample_enabled(ctx) && ctx->Multisample.SampleAlphaToCoverage) ||
-      ctx->Color.AlphaEnabled;
+      wm_prog_data->uses_kill ||
+      wm_prog_data->uses_omask ||
+      _mesa_is_alpha_test_enabled(ctx) ||
+      _mesa_is_alpha_to_coverage_enabled(ctx);
 
    /* The big formula in CACHE_MODE_1::NP PMA FIX ENABLE. */
    return !wm_force_thread_dispatch &&
@@ -398,9 +399,9 @@ const struct brw_tracked_state gen8_pma_fix = {
  */
 void
 gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
-              unsigned int level, unsigned int layer, enum gen6_hiz_op op)
+              unsigned int level, unsigned int layer, enum blorp_hiz_op op)
 {
-   if (op == GEN6_HIZ_OP_NONE)
+   if (op == BLORP_HIZ_OP_NONE)
       return;
 
    /* Disable the PMA stall fix since we're about to do a HiZ operation. */
@@ -468,16 +469,16 @@ gen8_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
    uint32_t dw1 = 0;
 
    switch (op) {
-   case GEN6_HIZ_OP_DEPTH_RESOLVE:
+   case BLORP_HIZ_OP_DEPTH_RESOLVE:
       dw1 |= GEN8_WM_HZ_DEPTH_RESOLVE;
       break;
-   case GEN6_HIZ_OP_HIZ_RESOLVE:
+   case BLORP_HIZ_OP_HIZ_RESOLVE:
       dw1 |= GEN8_WM_HZ_HIZ_RESOLVE;
       break;
-   case GEN6_HIZ_OP_DEPTH_CLEAR:
+   case BLORP_HIZ_OP_DEPTH_CLEAR:
       dw1 |= GEN8_WM_HZ_DEPTH_CLEAR;
       break;
-   case GEN6_HIZ_OP_NONE:
+   case BLORP_HIZ_OP_NONE:
       unreachable("Should not get here.");
    }
 

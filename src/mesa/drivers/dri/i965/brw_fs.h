@@ -133,11 +133,11 @@ public:
    bool opt_redundant_discard_jumps();
    bool opt_cse();
    bool opt_cse_local(bblock_t *block);
-   bool opt_copy_propagate();
+   bool opt_copy_propagation();
    bool try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry);
    bool try_constant_propagate(fs_inst *inst, acp_entry *entry);
-   bool opt_copy_propagate_local(void *mem_ctx, bblock_t *block,
-                                 exec_list *acp);
+   bool opt_copy_propagation_local(void *mem_ctx, bblock_t *block,
+                                   exec_list *acp);
    bool opt_drop_redundant_mov_to_flags();
    bool opt_register_renaming();
    bool register_coalesce();
@@ -190,8 +190,6 @@ public:
    bool opt_zero_samples();
 
    void emit_nir_code();
-   void nir_setup_single_output_varying(fs_reg *reg, const glsl_type *type,
-                                        unsigned *location);
    void nir_setup_outputs();
    void nir_setup_uniforms();
    void nir_emit_system_values();
@@ -244,6 +242,8 @@ public:
                                  fs_reg color1, fs_reg color2,
                                  fs_reg src0_alpha, unsigned components);
    void emit_fb_writes();
+   fs_inst *emit_non_coherent_fb_read(const brw::fs_builder &bld,
+                                      const fs_reg &dst, unsigned target);
    void emit_urb_writes(const fs_reg &gs_vertex_count = fs_reg());
    void set_gs_stream_control_data_bits(const fs_reg &vertex_count,
                                         unsigned stream_id);
@@ -316,15 +316,12 @@ public:
    fs_reg sample_mask;
    fs_reg outputs[VARYING_SLOT_MAX];
    fs_reg dual_src_output;
-   bool do_dual_src;
    int first_non_payload_grf;
    /** Either BRW_MAX_GRF or GEN7_MRF_HACK_START */
    unsigned max_grf;
 
    fs_reg *nir_locals;
    fs_reg *nir_ssa_values;
-   fs_reg nir_inputs;
-   fs_reg nir_outputs;
    fs_reg *nir_system_values;
 
    bool failed;
@@ -399,6 +396,8 @@ private:
                       struct brw_reg implied_header,
                       GLuint nr);
    void generate_fb_write(fs_inst *inst, struct brw_reg payload);
+   void generate_fb_read(fs_inst *inst, struct brw_reg dst,
+                         struct brw_reg payload);
    void generate_urb_read(fs_inst *inst, struct brw_reg dst, struct brw_reg payload);
    void generate_urb_write(fs_inst *inst, struct brw_reg payload);
    void generate_cs_terminate(fs_inst *inst, struct brw_reg payload);
@@ -422,7 +421,7 @@ private:
    void generate_uniform_pull_constant_load_gen7(fs_inst *inst,
                                                  struct brw_reg dst,
                                                  struct brw_reg surf_index,
-                                                 struct brw_reg offset);
+                                                 struct brw_reg payload);
    void generate_varying_pull_constant_load_gen4(fs_inst *inst,
                                                  struct brw_reg dst,
                                                  struct brw_reg index);
@@ -443,9 +442,6 @@ private:
                                struct brw_reg src0,
                                struct brw_reg src1);
 
-   void generate_set_simd4x2_offset(fs_inst *inst,
-                                    struct brw_reg dst,
-                                    struct brw_reg offset);
    void generate_discard_jump(fs_inst *inst);
 
    void generate_pack_half_2x16_split(fs_inst *inst,
@@ -471,7 +467,7 @@ private:
    const struct brw_compiler *compiler;
    void *log_data; /* Passed to compiler->*_log functions */
 
-   const struct brw_device_info *devinfo;
+   const struct gen_device_info *devinfo;
 
    struct brw_codegen *p;
    const void * const key;

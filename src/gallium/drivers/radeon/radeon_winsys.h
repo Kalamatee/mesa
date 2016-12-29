@@ -28,6 +28,8 @@
 
 #include "pipebuffer/pb_buffer.h"
 
+#include "amd/common/amd_family.h"
+
 #define RADEON_FLUSH_ASYNC		(1 << 0)
 #define RADEON_FLUSH_END_OF_FRAME       (1 << 1)
 
@@ -50,96 +52,18 @@ enum radeon_bo_flag { /* bitfield */
     RADEON_FLAG_GTT_WC =        (1 << 0),
     RADEON_FLAG_CPU_ACCESS =    (1 << 1),
     RADEON_FLAG_NO_CPU_ACCESS = (1 << 2),
+    RADEON_FLAG_HANDLE =        (1 << 3), /* the buffer most not be suballocated */
 };
 
 enum radeon_bo_usage { /* bitfield */
     RADEON_USAGE_READ = 2,
     RADEON_USAGE_WRITE = 4,
-    RADEON_USAGE_READWRITE = RADEON_USAGE_READ | RADEON_USAGE_WRITE
-};
+    RADEON_USAGE_READWRITE = RADEON_USAGE_READ | RADEON_USAGE_WRITE,
 
-enum radeon_family {
-    CHIP_UNKNOWN = 0,
-    CHIP_R300, /* R3xx-based cores. */
-    CHIP_R350,
-    CHIP_RV350,
-    CHIP_RV370,
-    CHIP_RV380,
-    CHIP_RS400,
-    CHIP_RC410,
-    CHIP_RS480,
-    CHIP_R420,     /* R4xx-based cores. */
-    CHIP_R423,
-    CHIP_R430,
-    CHIP_R480,
-    CHIP_R481,
-    CHIP_RV410,
-    CHIP_RS600,
-    CHIP_RS690,
-    CHIP_RS740,
-    CHIP_RV515,    /* R5xx-based cores. */
-    CHIP_R520,
-    CHIP_RV530,
-    CHIP_R580,
-    CHIP_RV560,
-    CHIP_RV570,
-    CHIP_R600,
-    CHIP_RV610,
-    CHIP_RV630,
-    CHIP_RV670,
-    CHIP_RV620,
-    CHIP_RV635,
-    CHIP_RS780,
-    CHIP_RS880,
-    CHIP_RV770,
-    CHIP_RV730,
-    CHIP_RV710,
-    CHIP_RV740,
-    CHIP_CEDAR,
-    CHIP_REDWOOD,
-    CHIP_JUNIPER,
-    CHIP_CYPRESS,
-    CHIP_HEMLOCK,
-    CHIP_PALM,
-    CHIP_SUMO,
-    CHIP_SUMO2,
-    CHIP_BARTS,
-    CHIP_TURKS,
-    CHIP_CAICOS,
-    CHIP_CAYMAN,
-    CHIP_ARUBA,
-    CHIP_TAHITI,
-    CHIP_PITCAIRN,
-    CHIP_VERDE,
-    CHIP_OLAND,
-    CHIP_HAINAN,
-    CHIP_BONAIRE,
-    CHIP_KAVERI,
-    CHIP_KABINI,
-    CHIP_HAWAII,
-    CHIP_MULLINS,
-    CHIP_TONGA,
-    CHIP_ICELAND,
-    CHIP_CARRIZO,
-    CHIP_FIJI,
-    CHIP_STONEY,
-    CHIP_POLARIS10,
-    CHIP_POLARIS11,
-    CHIP_LAST,
-};
-
-enum chip_class {
-    CLASS_UNKNOWN = 0,
-    R300,
-    R400,
-    R500,
-    R600,
-    R700,
-    EVERGREEN,
-    CAYMAN,
-    SI,
-    CIK,
-    VI,
+    /* The winsys ensures that the CS submission will be scheduled after
+     * previously flushed CSs referencing this BO in a conflicting way.
+     */
+    RADEON_USAGE_SYNCHRONIZED = 8
 };
 
 enum ring_type {
@@ -154,10 +78,13 @@ enum ring_type {
 enum radeon_value_id {
     RADEON_REQUESTED_VRAM_MEMORY,
     RADEON_REQUESTED_GTT_MEMORY,
+    RADEON_MAPPED_VRAM,
+    RADEON_MAPPED_GTT,
     RADEON_BUFFER_WAIT_TIME_NS,
     RADEON_TIMESTAMP,
     RADEON_NUM_CS_FLUSHES,
     RADEON_NUM_BYTES_MOVED,
+    RADEON_NUM_EVICTIONS,
     RADEON_VRAM_USAGE,
     RADEON_GTT_USAGE,
     RADEON_GPU_TEMPERATURE, /* DRM 2.42.0 */
@@ -178,46 +105,44 @@ enum radeon_bo_priority {
     RADEON_PRIO_DRAW_INDIRECT,
     RADEON_PRIO_INDEX_BUFFER,
 
-    RADEON_PRIO_CP_DMA = 8,
-
-    RADEON_PRIO_VCE = 12,
+    RADEON_PRIO_VCE = 8,
     RADEON_PRIO_UVD,
     RADEON_PRIO_SDMA_BUFFER,
     RADEON_PRIO_SDMA_TEXTURE,
 
-    RADEON_PRIO_USER_SHADER = 16,
-    RADEON_PRIO_INTERNAL_SHADER, /* fetch shader, etc. */
+    RADEON_PRIO_CP_DMA = 12,
 
-    /* gap: 20 */
-
-    RADEON_PRIO_CONST_BUFFER = 24,
+    RADEON_PRIO_CONST_BUFFER = 16,
     RADEON_PRIO_DESCRIPTORS,
     RADEON_PRIO_BORDER_COLORS,
 
-    RADEON_PRIO_SAMPLER_BUFFER = 28,
+    RADEON_PRIO_SAMPLER_BUFFER = 20,
     RADEON_PRIO_VERTEX_BUFFER,
 
-    RADEON_PRIO_SHADER_RW_BUFFER = 32,
-    RADEON_PRIO_RINGS_STREAMOUT,
-    RADEON_PRIO_SCRATCH_BUFFER,
+    RADEON_PRIO_SHADER_RW_BUFFER = 24,
     RADEON_PRIO_COMPUTE_GLOBAL,
 
-    RADEON_PRIO_SAMPLER_TEXTURE = 36,
+    RADEON_PRIO_SAMPLER_TEXTURE = 28,
     RADEON_PRIO_SHADER_RW_IMAGE,
 
-    RADEON_PRIO_SAMPLER_TEXTURE_MSAA = 40,
+    RADEON_PRIO_SAMPLER_TEXTURE_MSAA = 32,
 
-    RADEON_PRIO_COLOR_BUFFER = 44,
+    RADEON_PRIO_COLOR_BUFFER = 36,
 
-    RADEON_PRIO_DEPTH_BUFFER = 48,
+    RADEON_PRIO_DEPTH_BUFFER = 40,
 
-    RADEON_PRIO_COLOR_BUFFER_MSAA = 52,
+    RADEON_PRIO_COLOR_BUFFER_MSAA = 44,
 
-    RADEON_PRIO_DEPTH_BUFFER_MSAA = 56,
+    RADEON_PRIO_DEPTH_BUFFER_MSAA = 48,
 
-    RADEON_PRIO_CMASK = 60,
+    RADEON_PRIO_CMASK = 52,
     RADEON_PRIO_DCC,
     RADEON_PRIO_HTILE,
+    RADEON_PRIO_SHADER_BINARY, /* the hw can't hide instruction cache misses */
+
+    RADEON_PRIO_SHADER_RINGS = 56,
+
+    RADEON_PRIO_SCRATCH_BUFFER = 60,
     /* 63 is the maximum value */
 };
 
@@ -258,6 +183,7 @@ struct radeon_info {
     uint64_t                    gart_size;
     uint64_t                    vram_size;
     uint64_t                    max_alloc_size;
+    uint32_t                    min_alloc_size;
     bool                        has_dedicated_vram;
     bool                        has_virtual_memory;
     bool                        gfx_ib_pad_with_type2;
@@ -329,95 +255,92 @@ enum radeon_feature_id {
     RADEON_FID_R300_CMASK_ACCESS,
 };
 
-#define RADEON_SURF_MAX_LEVEL                   32
+#define RADEON_SURF_MAX_LEVELS                  15
 
-#define RADEON_SURF_TYPE_MASK                   0xFF
-#define RADEON_SURF_TYPE_SHIFT                  0
-#define     RADEON_SURF_TYPE_1D                     0
-#define     RADEON_SURF_TYPE_2D                     1
-#define     RADEON_SURF_TYPE_3D                     2
-#define     RADEON_SURF_TYPE_CUBEMAP                3
-#define     RADEON_SURF_TYPE_1D_ARRAY               4
-#define     RADEON_SURF_TYPE_2D_ARRAY               5
-#define RADEON_SURF_MODE_MASK                   0xFF
-#define RADEON_SURF_MODE_SHIFT                  8
-#define     RADEON_SURF_MODE_LINEAR_ALIGNED         1
-#define     RADEON_SURF_MODE_1D                     2
-#define     RADEON_SURF_MODE_2D                     3
+enum radeon_surf_mode {
+    RADEON_SURF_MODE_LINEAR_ALIGNED = 1,
+    RADEON_SURF_MODE_1D = 2,
+    RADEON_SURF_MODE_2D = 3,
+};
+
+/* These are defined exactly like GB_TILE_MODEn.MICRO_TILE_MODE_NEW. */
+enum radeon_micro_mode {
+    RADEON_MICRO_MODE_DISPLAY = 0,
+    RADEON_MICRO_MODE_THIN = 1,
+    RADEON_MICRO_MODE_DEPTH = 2,
+    RADEON_MICRO_MODE_ROTATED = 3,
+};
+
+/* the first 16 bits are reserved for libdrm_radeon, don't use them */
 #define RADEON_SURF_SCANOUT                     (1 << 16)
 #define RADEON_SURF_ZBUFFER                     (1 << 17)
 #define RADEON_SURF_SBUFFER                     (1 << 18)
 #define RADEON_SURF_Z_OR_SBUFFER                (RADEON_SURF_ZBUFFER | RADEON_SURF_SBUFFER)
-#define RADEON_SURF_HAS_SBUFFER_MIPTREE         (1 << 19)
-#define RADEON_SURF_HAS_TILE_MODE_INDEX         (1 << 20)
+/* bits 19 and 20 are reserved for libdrm_radeon, don't use them */
 #define RADEON_SURF_FMASK                       (1 << 21)
 #define RADEON_SURF_DISABLE_DCC                 (1 << 22)
-
-#define RADEON_SURF_GET(v, field)   (((v) >> RADEON_SURF_ ## field ## _SHIFT) & RADEON_SURF_ ## field ## _MASK)
-#define RADEON_SURF_SET(v, field)   (((v) & RADEON_SURF_ ## field ## _MASK) << RADEON_SURF_ ## field ## _SHIFT)
-#define RADEON_SURF_CLR(v, field)   ((v) & ~(RADEON_SURF_ ## field ## _MASK << RADEON_SURF_ ## field ## _SHIFT))
+#define RADEON_SURF_TC_COMPATIBLE_HTILE         (1 << 23)
+#define RADEON_SURF_IMPORTED                    (1 << 24)
+#define RADEON_SURF_OPTIMIZE_FOR_SPACE          (1 << 25)
 
 struct radeon_surf_level {
     uint64_t                    offset;
     uint64_t                    slice_size;
-    uint32_t                    npix_x;
-    uint32_t                    npix_y;
-    uint32_t                    npix_z;
-    uint32_t                    nblk_x;
-    uint32_t                    nblk_y;
-    uint32_t                    nblk_z;
-    uint32_t                    pitch_bytes;
-    uint32_t                    mode;
     uint64_t                    dcc_offset;
     uint64_t                    dcc_fast_clear_size;
-    bool                        dcc_enabled;
+    uint16_t                    nblk_x;
+    uint16_t                    nblk_y;
+    enum radeon_surf_mode       mode;
 };
 
 struct radeon_surf {
-    /* These are inputs to the calculator. */
-    uint32_t                    npix_x;
-    uint32_t                    npix_y;
-    uint32_t                    npix_z;
-    uint32_t                    blk_w;
-    uint32_t                    blk_h;
-    uint32_t                    blk_d;
-    uint32_t                    array_size;
-    uint32_t                    last_level;
-    uint32_t                    bpe;
-    uint32_t                    nsamples;
+    /* Format properties. */
+    unsigned                    blk_w:4;
+    unsigned                    blk_h:4;
+    unsigned                    bpe:5;
+    /* Number of mipmap levels where DCC is enabled starting from level 0.
+     * Non-zero levels may be disabled due to alignment constraints, but not
+     * the first level.
+     */
+    unsigned                    num_dcc_levels:4;
+    unsigned                    is_linear:1;
     uint32_t                    flags;
 
     /* These are return values. Some of them can be set by the caller, but
      * they will be treated as hints (e.g. bankw, bankh) and might be
      * changed by the calculator.
      */
-    uint64_t                    bo_size;
-    uint64_t                    bo_alignment;
+    uint64_t                    surf_size;
+    uint64_t                    dcc_size;
+    uint64_t                    htile_size;
+
+    uint32_t                    surf_alignment;
+    uint32_t                    dcc_alignment;
+    uint32_t                    htile_alignment;
+
     /* This applies to EG and later. */
-    uint32_t                    bankw;
-    uint32_t                    bankh;
-    uint32_t                    mtilea;
-    uint32_t                    tile_split;
-    uint32_t                    stencil_tile_split;
-    struct radeon_surf_level    level[RADEON_SURF_MAX_LEVEL];
-    struct radeon_surf_level    stencil_level[RADEON_SURF_MAX_LEVEL];
-    uint32_t                    tiling_index[RADEON_SURF_MAX_LEVEL];
-    uint32_t                    stencil_tiling_index[RADEON_SURF_MAX_LEVEL];
-    uint32_t                    pipe_config;
-    uint32_t                    num_banks;
-    uint32_t                    macro_tile_index;
-    uint32_t                    micro_tile_mode; /* displayable, thin, depth, rotated */
+    unsigned                    bankw:4;  /* max 8 */
+    unsigned                    bankh:4;  /* max 8 */
+    unsigned                    mtilea:4; /* max 8 */
+    unsigned                    tile_split:13;         /* max 4K */
+    unsigned                    stencil_tile_split:13; /* max 4K */
+    unsigned                    pipe_config:5;      /* max 17 */
+    unsigned                    num_banks:5;        /* max 16 */
+    unsigned                    macro_tile_index:4; /* max 15 */
+    unsigned                    micro_tile_mode:3; /* displayable, thin, depth, rotated */
 
     /* Whether the depth miptree or stencil miptree as used by the DB are
      * adjusted from their TC compatible form to ensure depth/stencil
      * compatibility. If either is true, the corresponding plane cannot be
      * sampled from.
      */
-    bool                        depth_adjusted;
-    bool                        stencil_adjusted;
+    unsigned                    depth_adjusted:1;
+    unsigned                    stencil_adjusted:1;
 
-    uint64_t                    dcc_size;
-    uint64_t                    dcc_alignment;
+    struct radeon_surf_level    level[RADEON_SURF_MAX_LEVELS];
+    struct radeon_surf_level    stencil_level[RADEON_SURF_MAX_LEVELS];
+    uint8_t                     tiling_index[RADEON_SURF_MAX_LEVELS];
+    uint8_t                     stencil_tiling_index[RADEON_SURF_MAX_LEVELS];
 };
 
 struct radeon_bo_list_item {
@@ -580,10 +503,25 @@ struct radeon_winsys {
     /**
      * Return the virtual address of a buffer.
      *
+     * When virtual memory is not in use, this is the offset relative to the
+     * relocation base (non-zero for sub-allocated buffers).
+     *
      * \param buf       A winsys buffer object
      * \return          virtual address
      */
     uint64_t (*buffer_get_virtual_address)(struct pb_buffer *buf);
+
+    /**
+     * Return the offset of this buffer relative to the relocation base.
+     * This is only non-zero for sub-allocated buffers.
+     *
+     * This is only supported in the radeon winsys, since amdgpu uses virtual
+     * addresses in submissions even for the video engines.
+     *
+     * \param buf      A winsys buffer object
+     * \return         the offset for relocations
+     */
+    unsigned (*buffer_get_reloc_offset)(struct pb_buffer *buf);
 
     /**
      * Query the initial placement of the buffer from the kernel driver.
@@ -684,6 +622,9 @@ struct radeon_winsys {
     /**
      * Return the index of an already-added buffer.
      *
+     * Not supported on amdgpu. Drivers with GPUVM should not care about
+     * buffer indices.
+     *
      * \param cs        Command stream
      * \param buf       Buffer
      * \return          The buffer index, or -1 if the buffer has not been added.
@@ -712,6 +653,9 @@ struct radeon_winsys {
 
     /**
      * Return the buffer list.
+     *
+     * This is the buffer list as passed to the kernel, i.e. it only contains
+     * the parent buffers of sub-allocated buffers.
      *
      * \param cs    Command stream
      * \param list  Returned buffer list. Set to NULL to query the count only.
@@ -788,18 +732,16 @@ struct radeon_winsys {
      * Initialize surface
      *
      * \param ws        The winsys this function is called from.
-     * \param surf      Surface structure ptr
+     * \param tex       Input texture description
+     * \param flags     Bitmask of RADEON_SURF_* flags
+     * \param bpe       Bytes per pixel, it can be different for Z buffers.
+     * \param mode      Preferred tile mode. (linear, 1D, or 2D)
+     * \param surf      Output structure
      */
     int (*surface_init)(struct radeon_winsys *ws,
-                        struct radeon_surf *surf);
-
-    /**
-     * Find best values for a surface
-     *
-     * \param ws        The winsys this function is called from.
-     * \param surf      Surface structure ptr
-     */
-    int (*surface_best)(struct radeon_winsys *ws,
+                        const struct pipe_resource *tex,
+                        unsigned flags, unsigned bpe,
+                        enum radeon_surf_mode mode,
                         struct radeon_surf *surf);
 
     uint64_t (*query_value)(struct radeon_winsys *ws,

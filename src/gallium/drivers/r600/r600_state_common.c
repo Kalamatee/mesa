@@ -366,7 +366,7 @@ static void r600_bind_rs_state(struct pipe_context *ctx, void *state)
 		r600_mark_atom_dirty(rctx, &rctx->clip_misc_state.atom);
 	}
 
-	r600_set_scissor_enable(&rctx->b, rs->scissor_enable);
+	r600_viewport_set_rast_deps(&rctx->b, rs->scissor_enable, rs->clip_halfz);
 
 	/* Re-emit PA_SC_LINE_STIPPLE. */
 	rctx->last_primitive_type = -1;
@@ -408,7 +408,7 @@ void r600_sampler_states_dirty(struct r600_context *rctx,
 }
 
 static void r600_bind_sampler_states(struct pipe_context *pipe,
-                               unsigned shader,
+			       enum pipe_shader_type shader,
 			       unsigned start,
 			       unsigned count, void **states)
 {
@@ -597,7 +597,8 @@ void r600_sampler_views_dirty(struct r600_context *rctx,
 	}
 }
 
-static void r600_set_sampler_views(struct pipe_context *pipe, unsigned shader,
+static void r600_set_sampler_views(struct pipe_context *pipe,
+				   enum pipe_shader_type shader,
 				   unsigned start, unsigned count,
 				   struct pipe_sampler_view **views)
 {
@@ -1325,14 +1326,14 @@ static void update_gs_block_state(struct r600_context *rctx, unsigned enable)
 		if (enable && !rctx->gs_rings.esgs_ring.buffer) {
 			unsigned size = 0x1C000;
 			rctx->gs_rings.esgs_ring.buffer =
-					pipe_buffer_create(rctx->b.b.screen, PIPE_BIND_CUSTOM,
+					pipe_buffer_create(rctx->b.b.screen, 0,
 							PIPE_USAGE_DEFAULT, size);
 			rctx->gs_rings.esgs_ring.buffer_size = size;
 
 			size = 0x4000000;
 
 			rctx->gs_rings.gsvs_ring.buffer =
-					pipe_buffer_create(rctx->b.b.screen, PIPE_BIND_CUSTOM,
+					pipe_buffer_create(rctx->b.b.screen, 0,
 							PIPE_USAGE_DEFAULT, size);
 			rctx->gs_rings.gsvs_ring.buffer_size = size;
 		}
@@ -2156,7 +2157,7 @@ void r600_emit_shader(struct r600_context *rctx, struct r600_atom *a)
 	r600_emit_command_buffer(cs, &shader->command_buffer);
 	radeon_emit(cs, PKT3(PKT3_NOP, 0, 0));
 	radeon_emit(cs, radeon_add_to_buffer_list(&rctx->b, &rctx->b.gfx, shader->bo,
-					      RADEON_USAGE_READ, RADEON_PRIO_USER_SHADER));
+					      RADEON_USAGE_READ, RADEON_PRIO_SHADER_BINARY));
 }
 
 unsigned r600_get_swizzle_combined(const unsigned char *swizzle_format,
@@ -2781,12 +2782,11 @@ static void r600_invalidate_buffer(struct pipe_context *ctx, struct pipe_resourc
 {
 	struct r600_context *rctx = (struct r600_context*)ctx;
 	struct r600_resource *rbuffer = r600_resource(buf);
-	unsigned i, shader, mask, alignment = rbuffer->buf->alignment;
+	unsigned i, shader, mask;
 	struct r600_pipe_sampler_view *view;
 
 	/* Reallocate the buffer in the same pipe_resource. */
-	r600_init_resource(&rctx->screen->b, rbuffer, rbuffer->b.b.width0,
-			   alignment);
+	r600_alloc_resource(&rctx->screen->b, rbuffer);
 
 	/* We changed the buffer, now we need to bind it where the old one was bound. */
 	/* Vertex buffers. */
@@ -2829,10 +2829,9 @@ static void r600_invalidate_buffer(struct pipe_context *ctx, struct pipe_resourc
 	}
 
 	/* Texture buffer objects - update the virtual addresses in descriptors. */
-	LIST_FOR_EACH_ENTRY(view, &rctx->b.texture_buffers, list) {
+	LIST_FOR_EACH_ENTRY(view, &rctx->texture_buffers, list) {
 		if (view->base.texture == &rbuffer->b.b) {
-			unsigned stride = util_format_get_blocksize(view->base.format);
-			uint64_t offset = (uint64_t)view->base.u.buf.first_element * stride;
+			uint64_t offset = view->base.u.buf.offset;
 			uint64_t va = rbuffer->gpu_address + offset;
 
 			view->tex_resource_words[0] = va;

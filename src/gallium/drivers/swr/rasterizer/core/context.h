@@ -1,5 +1,5 @@
 /****************************************************************************
-* Copyright (C) 2014-2015 Intel Corporation.   All Rights Reserved.
+* Copyright (C) 2014-2016 Intel Corporation.   All Rights Reserved.
 *
 * Permission is hereby granted, free of charge, to any person obtaining a
 * copy of this software and associated documentation files (the "Software"),
@@ -42,6 +42,7 @@
 #include "common/simdintrin.h"
 #include "core/threads.h"
 #include "ringbuffer.h"
+#include "archrast/archrast.h"
 
 // x.8 fixed point precision values
 #define FIXED_POINT_SHIFT 8
@@ -63,6 +64,7 @@ struct TRI_FLAGS
     float pointSize;
     uint32_t primID;
     uint32_t renderTargetArrayIndex;
+    uint32_t viewportIndex;
 };
 
 //////////////////////////////////////////////////////////////////////////
@@ -98,18 +100,11 @@ struct TRIANGLE_WORK_DESC
     TRI_FLAGS triFlags;
 };
 
-union CLEAR_FLAGS
-{
-    struct
-    {
-        uint32_t mask : 3;
-    };
-    uint32_t bits;
-};
-
 struct CLEAR_DESC
 {
-    CLEAR_FLAGS flags;
+    SWR_RECT rect;
+    uint32_t attachmentMask;
+    uint32_t renderTargetArrayIndex;
     float clearRTColor[4];  // RGBA_32F
     float clearDepth;   // [0..1]
     uint8_t clearStencil;
@@ -132,15 +127,11 @@ struct SYNC_DESC
     uint64_t userData3;
 };
 
-struct QUERY_DESC
-{
-    SWR_STATS* pStats;
-};
-
 struct STORE_TILES_DESC
 {
-    SWR_RENDERTARGET_ATTACHMENT attachment;
+    uint32_t attachmentMask;
     SWR_TILE_STATE postStoreTileState;
+    SWR_RECT rect;
 };
 
 struct COMPUTE_DESC
@@ -159,10 +150,10 @@ enum WORK_TYPE
     CLEAR,
     DISCARDINVALIDATETILES,
     STORETILES,
-    QUERYSTATS,
+    SHUTDOWN,
 };
 
-struct BE_WORK
+OSALIGNSIMD(struct) BE_WORK
 {
     WORK_TYPE type;
     PFN_WORK_FUNC pfnWork;
@@ -173,7 +164,6 @@ struct BE_WORK
         CLEAR_DESC clear;
         DISCARD_INVALIDATE_TILES_DESC discardInvalidateTiles;
         STORE_TILES_DESC storeTiles;
-        QUERY_DESC queryStats;
     } desc;
 };
 
@@ -210,20 +200,22 @@ struct FE_WORK
         CLEAR_DESC clear;
         DISCARD_INVALIDATE_TILES_DESC discardInvalidateTiles;
         STORE_TILES_DESC storeTiles;
-        QUERY_DESC queryStats;
     } desc;
 };
 
-struct GUARDBAND
+struct GUARDBANDS
 {
-    float left, right, top, bottom;
+    float left[KNOB_NUM_VIEWPORTS_SCISSORS];
+    float right[KNOB_NUM_VIEWPORTS_SCISSORS];
+    float top[KNOB_NUM_VIEWPORTS_SCISSORS];
+    float bottom[KNOB_NUM_VIEWPORTS_SCISSORS];
 };
 
 struct PA_STATE;
 
 // function signature for pipeline stages that execute after primitive assembly
 typedef void(*PFN_PROCESS_PRIMS)(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], 
-    uint32_t primMask, simdscalari primID);
+    uint32_t primMask, simdscalari primID, simdscalari viewportIdx);
 
 OSALIGNLINE(struct) API_STATE
 {
@@ -274,16 +266,19 @@ OSALIGNLINE(struct) API_STATE
     // floating point multisample offsets
     float samplePos[SWR_MAX_NUM_MULTISAMPLES * 2];
 
-    GUARDBAND               gbState;
+    GUARDBANDS               gbState;
 
     SWR_VIEWPORT            vp[KNOB_NUM_VIEWPORTS_SCISSORS];
-    SWR_VIEWPORT_MATRIX     vpMatrix[KNOB_NUM_VIEWPORTS_SCISSORS];
+    SWR_VIEWPORT_MATRICES   vpMatrices;
 
-    BBOX                    scissorRects[KNOB_NUM_VIEWPORTS_SCISSORS];
-    BBOX                    scissorInFixedPoint;
+    SWR_RECT                scissorRects[KNOB_NUM_VIEWPORTS_SCISSORS];
+    SWR_RECT                scissorsInFixedPoint[KNOB_NUM_VIEWPORTS_SCISSORS];
+    bool                    scissorsTileAligned;
 
     // Backend state
     SWR_BACKEND_STATE       backendState;
+
+    SWR_DEPTH_BOUNDS_STATE  depthBoundsState;
 
     // PS - Pixel shader state
     SWR_PS_STATE            psState;
@@ -294,14 +289,13 @@ OSALIGNLINE(struct) API_STATE
     SWR_BLEND_STATE         blendState;
     PFN_BLEND_JIT_FUNC      pfnBlendFunc[SWR_NUM_RENDERTARGETS];
 
-    // Stats are incremented when this is true.
-    bool enableStats;
-
     struct
     {
-        uint32_t colorHottileEnable : 8;
-        uint32_t depthHottileEnable: 1;
-        uint32_t stencilHottileEnable : 1;
+        uint32_t enableStatsFE : 1;             // Enable frontend pipeline stats
+        uint32_t enableStatsBE : 1;             // Enable backend pipeline stats
+        uint32_t colorHottileEnable : 8;        // Bitmask of enabled color hottiles
+        uint32_t depthHottileEnable: 1;         // Enable depth buffer hottile
+        uint32_t stencilHottileEnable : 1;      // Enable stencil buffer hottile
     };
 
     PFN_QUANTIZE_DEPTH      pfnQuantizeDepth;
@@ -367,6 +361,23 @@ struct DRAW_STATE
     CachingArena* pArena;     // This should only be used by API thread.
 };
 
+struct DRAW_DYNAMIC_STATE
+{
+    void Reset(uint32_t numThreads)
+    {
+        SWR_STATS* pSavePtr = pStats;
+        memset(this, 0, sizeof(*this));
+        pStats = pSavePtr;
+        memset(pStats, 0, sizeof(SWR_STATS) * numThreads);
+    }
+    ///@todo Currently assumes only a single FE can do stream output for a draw.
+    uint32_t SoWriteOffset[4];
+    bool     SoWriteOffsetDirty[4];
+
+    SWR_STATS_FE statsFE;   // Only one FE thread per DC.
+    SWR_STATS*   pStats;
+};
+
 // Draw Context
 //    The api thread sets up a draw context that exists for the life of the draw.
 //    This draw context maintains all of the state needed for the draw operation.
@@ -378,11 +389,14 @@ struct DRAW_CONTEXT
         MacroTileMgr*   pTileMgr;
         DispatchQueue*  pDispatch;      // Queue for thread groups. (isCompute)
     };
-    DRAW_STATE*     pState;
+    DRAW_STATE*     pState;             // Read-only state. Core should not update this outside of API thread.
+    DRAW_DYNAMIC_STATE dynState;
+
     CachingArena*   pArena;
 
     uint32_t        drawId;
-    bool            dependent;
+    bool            dependentFE;    // Frontend work is dependent on all previous FE
+    bool            dependent;      // Backend work is dependent on all previous BE
     bool            isCompute;      // Is this DC a compute context?
     bool            cleanupState;   // True if this is the last draw using an entry in the state ring.
     volatile bool   doneFE;         // Is FE work done for this draw?
@@ -390,9 +404,11 @@ struct DRAW_CONTEXT
     FE_WORK         FeWork;
 
     volatile OSALIGNLINE(uint32_t)   FeLock;
-    volatile int64_t    threadsDone;
+    volatile int32_t    threadsDone;
 
     SYNC_DESC       retireCallback; // Call this func when this DC is retired.
+
+
 };
 
 static_assert((sizeof(DRAW_CONTEXT) & 63) == 0, "Invalid size for DRAW_CONTEXT");
@@ -455,33 +471,71 @@ struct SWR_CONTEXT
     uint32_t NumBEThreads;
 
     THREAD_POOL threadPool; // Thread pool associated with this context
+    SWR_THREADING_INFO threadInfo;
 
     std::condition_variable FifosNotEmpty;
     std::mutex WaitLock;
-
-    DRIVER_TYPE driverType;
 
     uint32_t privateStateSize;
 
     HotTileMgr *pHotTileMgr;
 
-    // tile load/store functions, passed in at create context time
-    PFN_LOAD_TILE pfnLoadTile;
-    PFN_STORE_TILE pfnStoreTile;
-    PFN_CLEAR_TILE pfnClearTile;
+    // Callback functions, passed in at create context time
+    PFN_LOAD_TILE               pfnLoadTile;
+    PFN_STORE_TILE              pfnStoreTile;
+    PFN_CLEAR_TILE              pfnClearTile;
+    PFN_UPDATE_SO_WRITE_OFFSET  pfnUpdateSoWriteOffset;
+    PFN_UPDATE_STATS            pfnUpdateStats;
+    PFN_UPDATE_STATS_FE         pfnUpdateStatsFE;
+
 
     // Global Stats
-    SWR_STATS stats[KNOB_MAX_NUM_THREADS];
+    SWR_STATS* pStats;
 
     // Scratch space for workers.
-    uint8_t* pScratch[KNOB_MAX_NUM_THREADS];
+    uint8_t** ppScratch;
+
+    volatile int32_t  drawsOutstandingFE;
 
     CachingAllocator cachingArenaAllocator;
     uint32_t frameCount;
+
+    uint32_t lastFrameChecked;
+    uint64_t lastDrawChecked;
+    TileSet singleThreadLockedTiles;
+
+    // ArchRast thread contexts.
+    HANDLE* pArContext;
 };
 
-void WaitForDependencies(SWR_CONTEXT *pContext, uint64_t drawId);
-void WakeAllThreads(SWR_CONTEXT *pContext);
+#define UPDATE_STAT_BE(name, count) if (GetApiState(pDC).enableStatsBE) { pDC->dynState.pStats[workerId].name += count; }
+#define UPDATE_STAT_FE(name, count) if (GetApiState(pDC).enableStatsFE) { pDC->dynState.statsFE.name += count; }
 
-#define UPDATE_STAT(name, count) if (GetApiState(pDC).enableStats) { pContext->stats[workerId].name += count; }
-#define SET_STAT(name, count) if (GetApiState(pDC).enableStats) { pContext->stats[workerId].name = count; }
+// ArchRast instrumentation framework
+#define AR_WORKER_CTX  pContext->pArContext[workerId]
+#define AR_API_CTX     pContext->pArContext[pContext->NumWorkerThreads]
+
+#ifdef KNOB_ENABLE_AR
+    #define _AR_BEGIN(ctx, type, id)    ArchRast::Dispatch(ctx, ArchRast::Start(ArchRast::type, id))
+    #define _AR_END(ctx, type, count)   ArchRast::Dispatch(ctx, ArchRast::End(ArchRast::type, count))
+    #define _AR_EVENT(ctx, event)       ArchRast::Dispatch(ctx, ArchRast::event)
+#else
+    #ifdef KNOB_ENABLE_RDTSC
+        #define _AR_BEGIN(ctx, type, id) (void)ctx; RDTSC_START(type)
+        #define _AR_END(ctx, type, id)   RDTSC_STOP(type, id, 0)
+    #else
+        #define _AR_BEGIN(ctx, type, id) (void)ctx
+        #define _AR_END(ctx, type, id)
+    #endif
+    #define _AR_EVENT(ctx, event)
+#endif
+
+// Use these macros for api thread.
+#define AR_API_BEGIN(type, id) _AR_BEGIN(AR_API_CTX, type, id)
+#define AR_API_END(type, count) _AR_END(AR_API_CTX, type, count)
+#define AR_API_EVENT(event) _AR_EVENT(AR_API_CTX, event)
+
+// Use these macros for worker threads.
+#define AR_BEGIN(type, id) _AR_BEGIN(AR_WORKER_CTX, type, id)
+#define AR_END(type, count) _AR_END(AR_WORKER_CTX, type, count)
+#define AR_EVENT(event) _AR_EVENT(AR_WORKER_CTX, event)

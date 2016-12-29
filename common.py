@@ -59,7 +59,7 @@ if target_platform == 'windows' and host_platform != 'windows':
 
 
 # find default_llvm value
-if 'LLVM' in os.environ:
+if 'LLVM' in os.environ or 'LLVM_CONFIG' in os.environ:
     default_llvm = 'yes'
 else:
     default_llvm = 'no'
@@ -86,7 +86,7 @@ def AddOptions(opts):
         from SCons.Options.EnumOption import EnumOption
     opts.Add(EnumOption('build', 'build type', 'debug',
                         allowed_values=('debug', 'checked', 'profile',
-                                        'release')))
+                                        'release', 'opt')))
     opts.Add(BoolOption('verbose', 'verbose output', 'no'))
     opts.Add(EnumOption('machine', 'use machine-specific assembly code',
                         default_machine,
@@ -110,5 +110,6 @@ def AddOptions(opts):
     opts.Add(BoolOption('texture_float',
                         'enable floating-point textures and renderbuffers',
                         'no'))
+    opts.Add(BoolOption('swr', 'Build OpenSWR', 'no'))
     if host_platform == 'windows':
         opts.Add('MSVC_VERSION', 'Microsoft Visual C/C++ version')

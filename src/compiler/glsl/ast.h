@@ -49,7 +49,7 @@ struct YYLTYPE;
  */
 class ast_node {
 public:
-   DECLARE_RALLOC_CXX_OPERATORS(ast_node);
+   DECLARE_LINEAR_ZALLOC_CXX_OPERATORS(ast_node);
 
    /**
     * Print an AST node in something approximating the original GLSL code
@@ -377,8 +377,7 @@ public:
 
    bool process_qualifier_constant(struct _mesa_glsl_parse_state *state,
                                    const char *qual_indentifier,
-                                   unsigned *value, bool can_be_zero,
-                                   bool must_match = false);
+                                   unsigned *value, bool can_be_zero);
 
    void merge_qualifier(ast_layout_expression *l_expr)
    {
@@ -553,6 +552,11 @@ struct ast_type_qualifier {
           */
          unsigned local_size:3;
 
+	 /** \name Layout qualifiers for ARB_compute_variable_group_size. */
+	 /** \{ */
+	 unsigned local_size_variable:1;
+	 /** \} */
+
 	 /** \name Layout and memory qualifiers for ARB_shader_image_load_store. */
 	 /** \{ */
 	 unsigned early_fragment_tests:1;
@@ -596,6 +600,21 @@ struct ast_type_qualifier {
          unsigned subroutine:1;  /**< Is this marked 'subroutine' */
          unsigned subroutine_def:1; /**< Is this marked 'subroutine' with a list of types */
 	 /** \} */
+
+         /** \name Qualifiers for GL_KHR_blend_equation_advanced */
+         /** \{ */
+         unsigned blend_support:1; /**< Are there any blend_support_ qualifiers */
+         /** \} */
+
+         /**
+          * Flag set if GL_ARB_post_depth_coverage layout qualifier is used.
+          */
+         unsigned post_depth_coverage:1;
+         /**
+          * Flag set if GL_INTEL_conservartive_rasterization layout qualifier
+          * is used.
+          */
+         unsigned inner_coverage:1;
       }
       /** \brief Set of flags, accessed by name. */
       q;
@@ -715,9 +734,6 @@ struct ast_type_qualifier {
     */
    glsl_base_type image_base_type;
 
-   /** Flag to know if this represents a default value for a qualifier */
-   bool is_default_qualifier;
-
    /**
     * Return true if and only if an interpolation qualifier is present.
     */
@@ -738,20 +754,48 @@ struct ast_type_qualifier {
     */
    bool has_auxiliary_storage() const;
 
+   /**
+    * Return true if and only if a memory qualifier is present.
+    */
+   bool has_memory() const;
+
    bool merge_qualifier(YYLTYPE *loc,
 			_mesa_glsl_parse_state *state,
                         const ast_type_qualifier &q,
-                        bool is_single_layout_merge);
+                        bool is_single_layout_merge,
+                        bool is_multiple_layouts_merge = false);
 
-   bool merge_out_qualifier(YYLTYPE *loc,
-                           _mesa_glsl_parse_state *state,
-                           const ast_type_qualifier &q,
-                           ast_node* &node, bool create_node);
+   /**
+    * Validate current qualifier against the global out one.
+    */
+   bool validate_out_qualifier(YYLTYPE *loc,
+                               _mesa_glsl_parse_state *state);
 
-   bool merge_in_qualifier(YYLTYPE *loc,
-                           _mesa_glsl_parse_state *state,
-                           const ast_type_qualifier &q,
-                           ast_node* &node, bool create_node);
+   /**
+    * Merge current qualifier into the global out one.
+    */
+   bool merge_into_out_qualifier(YYLTYPE *loc,
+                                 _mesa_glsl_parse_state *state,
+                                 ast_node* &node);
+
+   /**
+    * Validate current qualifier against the global in one.
+    */
+   bool validate_in_qualifier(YYLTYPE *loc,
+                              _mesa_glsl_parse_state *state);
+
+   /**
+    * Merge current qualifier into the global in one.
+    */
+   bool merge_into_in_qualifier(YYLTYPE *loc,
+                                _mesa_glsl_parse_state *state,
+                                ast_node* &node);
+
+   /**
+    * Push pending layout qualifiers to the global values.
+    */
+   bool push_to_global(YYLTYPE *loc,
+                       _mesa_glsl_parse_state *state);
 
    bool validate_flags(YYLTYPE *loc,
                        _mesa_glsl_parse_state *state,
@@ -765,7 +809,7 @@ class ast_declarator_list;
 
 class ast_struct_specifier : public ast_node {
 public:
-   ast_struct_specifier(const char *identifier,
+   ast_struct_specifier(void *lin_ctx, const char *identifier,
 			ast_declarator_list *declarator_list);
    virtual void print(void) const;
 
@@ -1129,6 +1173,7 @@ public:
    virtual ir_rvalue *hir(exec_list *instructions,
 			  struct _mesa_glsl_parse_state *state);
 
+   ast_type_qualifier default_layout;
    ast_type_qualifier layout;
    const char *block_name;
 

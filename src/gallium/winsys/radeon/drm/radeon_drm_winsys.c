@@ -35,7 +35,6 @@
 #include "radeon_drm_cs.h"
 #include "radeon_drm_public.h"
 
-#include "pipebuffer/pb_bufmgr.h"
 #include "util/u_memory.h"
 #include "util/u_hash_table.h"
 
@@ -44,6 +43,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <radeon_surface.h>
 
 #ifndef RADEON_INFO_ACTIVE_CU_COUNT
@@ -373,7 +373,9 @@ static bool do_winsys_init(struct radeon_drm_winsys *ws)
     ws->info.gart_size = gem_info.gart_size;
     ws->info.vram_size = gem_info.vram_size;
 
-    ws->info.max_alloc_size = MAX2(ws->info.vram_size, ws->info.gart_size);
+    /* Radeon allocates all buffers as contigous, which makes large allocations
+     * unlikely to succeed. */
+    ws->info.max_alloc_size = MAX2(ws->info.vram_size, ws->info.gart_size) * 0.7;
     if (ws->info.drm_minor < 40)
         ws->info.max_alloc_size = MIN2(ws->info.max_alloc_size, 256*1024*1024);
 
@@ -546,6 +548,8 @@ static void radeon_winsys_destroy(struct radeon_winsys *rws)
     pipe_mutex_destroy(ws->hyperz_owner_mutex);
     pipe_mutex_destroy(ws->cmask_owner_mutex);
 
+    if (ws->info.has_virtual_memory)
+        pb_slabs_deinit(&ws->bo_slabs);
     pb_cache_deinit(&ws->bo_cache);
 
     if (ws->gen >= DRV_R600) {
@@ -557,6 +561,7 @@ static void radeon_winsys_destroy(struct radeon_winsys *rws)
     util_hash_table_destroy(ws->bo_vas);
     pipe_mutex_destroy(ws->bo_handles_mutex);
     pipe_mutex_destroy(ws->bo_va_mutex);
+    pipe_mutex_destroy(ws->bo_fence_lock);
 
     if (ws->fd >= 0)
         close(ws->fd);
@@ -603,6 +608,10 @@ static uint64_t radeon_query_value(struct radeon_winsys *rws,
         return ws->allocated_vram;
     case RADEON_REQUESTED_GTT_MEMORY:
         return ws->allocated_gtt;
+    case RADEON_MAPPED_VRAM:
+       return ws->mapped_vram;
+    case RADEON_MAPPED_GTT:
+       return ws->mapped_gtt;
     case RADEON_BUFFER_WAIT_TIME_NS:
         return ws->buffer_wait_time;
     case RADEON_TIMESTAMP:
@@ -620,6 +629,8 @@ static uint64_t radeon_query_value(struct radeon_winsys *rws,
         radeon_get_drm_value(ws->fd, RADEON_INFO_NUM_BYTES_MOVED,
                              "num-bytes-moved", (uint32_t*)&retval);
         return retval;
+    case RADEON_NUM_EVICTIONS:
+        return 0; /* unimplemented */
     case RADEON_VRAM_USAGE:
         radeon_get_drm_value(ws->fd, RADEON_INFO_VRAM_USAGE,
                              "vram-usage", (uint32_t*)&retval);
@@ -743,7 +754,7 @@ radeon_drm_winsys_create(int fd, radeon_screen_create_t screen_create)
         return NULL;
     }
 
-    ws->fd = dup(fd);
+    ws->fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
 
     if (!do_winsys_init(ws))
         goto fail1;
@@ -753,10 +764,29 @@ radeon_drm_winsys_create(int fd, radeon_screen_create_t screen_create)
                   radeon_bo_destroy,
                   radeon_bo_can_reclaim);
 
+    if (ws->info.has_virtual_memory) {
+        /* There is no fundamental obstacle to using slab buffer allocation
+         * without GPUVM, but enabling it requires making sure that the drivers
+         * honor the address offset.
+         */
+        if (!pb_slabs_init(&ws->bo_slabs,
+                           RADEON_SLAB_MIN_SIZE_LOG2, RADEON_SLAB_MAX_SIZE_LOG2,
+                           12,
+                           ws,
+                           radeon_bo_can_reclaim_slab,
+                           radeon_bo_slab_alloc,
+                           radeon_bo_slab_free))
+            goto fail_cache;
+
+        ws->info.min_alloc_size = 1 << RADEON_SLAB_MIN_SIZE_LOG2;
+    } else {
+        ws->info.min_alloc_size = ws->info.gart_page_size;
+    }
+
     if (ws->gen >= DRV_R600) {
         ws->surf_man = radeon_surface_manager_new(ws->fd);
         if (!ws->surf_man)
-            goto fail;
+            goto fail_slab;
     }
 
     /* init reference */
@@ -782,6 +812,7 @@ radeon_drm_winsys_create(int fd, radeon_screen_create_t screen_create)
     ws->bo_vas = util_hash_table_create(handle_hash, handle_compare);
     pipe_mutex_init(ws->bo_handles_mutex);
     pipe_mutex_init(ws->bo_va_mutex);
+    pipe_mutex_init(ws->bo_fence_lock);
     ws->va_offset = ws->va_start;
     list_inithead(&ws->va_holes);
 
@@ -812,7 +843,10 @@ radeon_drm_winsys_create(int fd, radeon_screen_create_t screen_create)
 
     return &ws->base;
 
-fail:
+fail_slab:
+    if (ws->info.has_virtual_memory)
+        pb_slabs_deinit(&ws->bo_slabs);
+fail_cache:
     pb_cache_deinit(&ws->bo_cache);
 fail1:
     pipe_mutex_unlock(fd_tab_mutex);

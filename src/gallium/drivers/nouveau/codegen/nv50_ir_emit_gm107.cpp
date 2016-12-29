@@ -152,6 +152,7 @@ private:
    void emitIADD();
    void emitIMUL();
    void emitIMAD();
+   void emitISCADD();
    void emitIMNMX();
    void emitICMP();
    void emitISET();
@@ -179,6 +180,7 @@ private:
    void emitIPA();
    void emitATOM();
    void emitATOMS();
+   void emitRED();
    void emitCCTL();
 
    void emitPIXLD();
@@ -1813,6 +1815,34 @@ CodeEmitterGM107::emitIMAD()
 }
 
 void
+CodeEmitterGM107::emitISCADD()
+{
+   switch (insn->src(2).getFile()) {
+   case FILE_GPR:
+      emitInsn(0x5c180000);
+      emitGPR (0x14, insn->src(2));
+      break;
+   case FILE_MEMORY_CONST:
+      emitInsn(0x4c180000);
+      emitCBUF(0x22, -1, 0x14, 16, 2, insn->src(2));
+      break;
+   case FILE_IMMEDIATE:
+      emitInsn(0x38180000);
+      emitIMMD(0x14, 19, insn->src(2));
+      break;
+   default:
+      assert(!"bad src1 file");
+      break;
+   }
+   emitNEG (0x31, insn->src(0));
+   emitNEG (0x30, insn->src(2));
+   emitCC  (0x2f);
+   emitIMMD(0x27, 5, insn->src(1));
+   emitGPR (0x08, insn->src(0));
+   emitGPR (0x00, insn->def(0));
+}
+
+void
 CodeEmitterGM107::emitIMNMX()
 {
    switch (insn->src(1).getFile()) {
@@ -2307,6 +2337,7 @@ CodeEmitterGM107::emitAL2P()
 {
    emitInsn (0xefa00000);
    emitField(0x2f, 2, (insn->getDef(0)->reg.size / 4) - 1);
+   emitPRED (0x2c);
    emitO    (0x20);
    emitField(0x14, 11, insn->src(0).get()->reg.data.offset);
    emitGPR  (0x08, insn->src(0).getIndirect(0));
@@ -2466,6 +2497,29 @@ CodeEmitterGM107::emitATOMS()
 }
 
 void
+CodeEmitterGM107::emitRED()
+{
+   unsigned dType;
+
+   switch (insn->dType) {
+   case TYPE_U32: dType = 0; break;
+   case TYPE_S32: dType = 1; break;
+   case TYPE_U64: dType = 2; break;
+   case TYPE_F32: dType = 3; break;
+   case TYPE_B128: dType = 4; break;
+   case TYPE_S64: dType = 5; break;
+   default: assert(!"unexpected dType"); dType = 0; break;
+   }
+
+   emitInsn (0xebf80000);
+   emitField(0x30, 1, insn->src(0).getIndirect(0)->getSize() == 8);
+   emitField(0x17, 3, insn->subOp);
+   emitField(0x14, 3, dType);
+   emitADDR (0x08, 0x1c, 20, 0, insn->src(0));
+   emitGPR  (0x00, insn->src(1));
+}
+
+void
 CodeEmitterGM107::emitCCTL()
 {
    unsigned width;
@@ -2530,7 +2584,7 @@ CodeEmitterGM107::emitTEX()
 
    if (insn->tex.rIndirectSrc >= 0) {
       emitInsn (0xdeb80000);
-      emitField(0x35, 2, lodm);
+      emitField(0x25, 2, lodm);
       emitField(0x24, 1, insn->tex.useOffsets == 1);
    } else {
       emitInsn (0xc0380000);
@@ -3097,6 +3151,9 @@ CodeEmitterGM107::emitInstruction(Instruction *i)
          emitIMAD();
       }
       break;
+   case OP_SHLADD:
+      emitISCADD();
+      break;
    case OP_MIN:
    case OP_MAX:
       if (isFloatType(insn->dType)) {
@@ -3204,7 +3261,10 @@ CodeEmitterGM107::emitInstruction(Instruction *i)
       if (insn->src(0).getFile() == FILE_MEMORY_SHARED)
          emitATOMS();
       else
-         emitATOM();
+         if (!insn->defExists(0) && insn->subOp < NV50_IR_SUBOP_ATOM_CAS)
+            emitRED();
+         else
+            emitATOM();
       break;
    case OP_CCTL:
       emitCCTL();

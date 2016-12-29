@@ -79,13 +79,33 @@ void qir_validate(struct vc4_compile *c)
                 case QFILE_FRAG_X:
                 case QFILE_FRAG_Y:
                 case QFILE_FRAG_REV_FLAG:
+                case QFILE_QPU_ELEMENT:
                 case QFILE_SMALL_IMM:
                 case QFILE_LOAD_IMM:
                         fail_instr(c, inst, "Bad dest file");
                         break;
+
+                case QFILE_TEX_S:
+                case QFILE_TEX_T:
+                case QFILE_TEX_R:
+                case QFILE_TEX_B:
+                        if (inst->src[qir_get_tex_uniform_src(inst)].file !=
+                            QFILE_UNIF) {
+                                fail_instr(c, inst,
+                                           "tex op missing implicit uniform");
+                        }
+                        break;
+
+                case QFILE_TEX_S_DIRECT:
+                        if (inst->op != QOP_ADD) {
+                                fail_instr(c, inst,
+                                           "kernel validation requires that "
+                                           "direct texture lookups use an ADD");
+                        }
+                        break;
                 }
 
-                for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
+                for (int i = 0; i < qir_get_nsrc(inst); i++) {
                         struct qreg src = inst->src[i];
 
                         switch (src.file) {
@@ -98,6 +118,7 @@ void qir_validate(struct vc4_compile *c)
                         case QFILE_UNIF:
                         case QFILE_VPM:
                         case QFILE_LOAD_IMM:
+                        case QFILE_QPU_ELEMENT:
                                 break;
 
                         case QFILE_SMALL_IMM:
@@ -117,6 +138,11 @@ void qir_validate(struct vc4_compile *c)
                         case QFILE_TLB_COLOR_WRITE_MS:
                         case QFILE_TLB_Z_WRITE:
                         case QFILE_TLB_STENCIL_SETUP:
+                        case QFILE_TEX_S_DIRECT:
+                        case QFILE_TEX_S:
+                        case QFILE_TEX_T:
+                        case QFILE_TEX_R:
+                        case QFILE_TEX_B:
                                 fail_instr(c, inst, "Bad src file");
                                 break;
                         }

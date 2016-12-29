@@ -94,9 +94,9 @@ vec4_tcs_visitor::emit_prolog()
     * HS instance dispatched will only have its bottom half doing real
     * work, and so we need to disable the upper half:
     */
-   if (nir->info.tcs.vertices_out % 2) {
+   if (nir->info->tcs.vertices_out % 2) {
       emit(CMP(dst_null_d(), invocation_id,
-               brw_imm_ud(nir->info.tcs.vertices_out), BRW_CONDITIONAL_L));
+               brw_imm_ud(nir->info->tcs.vertices_out), BRW_CONDITIONAL_L));
 
       /* Matching ENDIF is in emit_thread_end() */
       emit(IF(BRW_PREDICATE_NORMAL));
@@ -110,7 +110,7 @@ vec4_tcs_visitor::emit_thread_end()
    vec4_instruction *inst;
    current_annotation = "thread end";
 
-   if (nir->info.tcs.vertices_out % 2) {
+   if (nir->info->tcs.vertices_out % 2) {
       emit(BRW_OPCODE_ENDIF);
    }
 
@@ -209,19 +209,19 @@ vec4_tcs_visitor::emit_output_urb_read(const dst_reg &dst,
    /* Set up the message header to reference the proper parts of the URB */
    dst_reg header = dst_reg(this, glsl_type::uvec4_type);
    inst = emit(TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, header,
-               brw_imm_ud(dst.writemask), indirect_offset);
+               brw_imm_ud(dst.writemask << first_component), indirect_offset);
    inst->force_writemask_all = true;
 
-   /* Read into a temporary, ignoring writemasking. */
    vec4_instruction *read = emit(VEC4_OPCODE_URB_READ, dst, src_reg(header));
    read->offset = base_offset;
    read->mlen = 1;
    read->base_mrf = -1;
 
    if (first_component) {
-      src_reg src = src_reg(dst);
-      src.swizzle = BRW_SWZ_COMP_INPUT(first_component);
-      emit(MOV(dst, src));
+      /* Read into a temporary and copy with a swizzle and writemask. */
+      read->dst = retype(dst_reg(this, glsl_type::ivec4_type), dst.type);
+      emit(MOV(dst, swizzle(src_reg(read->dst),
+                            BRW_SWZ_COMP_INPUT(first_component))));
    }
 }
 
@@ -240,7 +240,8 @@ vec4_tcs_visitor::emit_urb_write(const src_reg &value,
    inst = emit(TCS_OPCODE_SET_OUTPUT_URB_OFFSETS, dst_reg(message),
                brw_imm_ud(writemask), indirect_offset);
    inst->force_writemask_all = true;
-   inst = emit(MOV(offset(dst_reg(retype(message, value.type)), 1), value));
+   inst = emit(MOV(byte_offset(dst_reg(retype(message, value.type)), REG_SIZE),
+                   value));
    inst->force_writemask_all = true;
 
    inst = emit(TCS_OPCODE_URB_WRITE, dst_null_f(), message);
@@ -451,32 +452,33 @@ brw_compile_tcs(const struct brw_compiler *compiler,
                 unsigned *final_assembly_size,
                 char **error_str)
 {
-   const struct brw_device_info *devinfo = compiler->devinfo;
+   const struct gen_device_info *devinfo = compiler->devinfo;
    struct brw_vue_prog_data *vue_prog_data = &prog_data->base;
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_TESS_CTRL];
 
    nir_shader *nir = nir_shader_clone(mem_ctx, src_shader);
-   nir->info.outputs_written = key->outputs_written;
-   nir->info.patch_outputs_written = key->patch_outputs_written;
+   nir->info->outputs_written = key->outputs_written;
+   nir->info->patch_outputs_written = key->patch_outputs_written;
 
    struct brw_vue_map input_vue_map;
-   brw_compute_vue_map(devinfo, &input_vue_map,
-                       nir->info.inputs_read & ~VARYING_BIT_PRIMITIVE_ID,
-                       true);
-
+   brw_compute_vue_map(devinfo, &input_vue_map, nir->info->inputs_read,
+                       nir->info->separate_shader);
    brw_compute_tess_vue_map(&vue_prog_data->vue_map,
-                            nir->info.outputs_written,
-                            nir->info.patch_outputs_written);
+                            nir->info->outputs_written,
+                            nir->info->patch_outputs_written);
 
-   nir = brw_nir_apply_sampler_key(nir, devinfo, &key->tex, is_scalar);
+   nir = brw_nir_apply_sampler_key(nir, compiler, &key->tex, is_scalar);
    brw_nir_lower_vue_inputs(nir, is_scalar, &input_vue_map);
    brw_nir_lower_tcs_outputs(nir, &vue_prog_data->vue_map);
-   nir = brw_postprocess_nir(nir, compiler->devinfo, is_scalar);
+   if (key->quads_workaround)
+      brw_nir_apply_tcs_quads_workaround(nir);
+
+   nir = brw_postprocess_nir(nir, compiler, is_scalar);
 
    if (is_scalar)
-      prog_data->instances = DIV_ROUND_UP(nir->info.tcs.vertices_out, 8);
+      prog_data->instances = DIV_ROUND_UP(nir->info->tcs.vertices_out, 8);
    else
-      prog_data->instances = DIV_ROUND_UP(nir->info.tcs.vertices_out, 2);
+      prog_data->instances = DIV_ROUND_UP(nir->info->tcs.vertices_out, 2);
 
    /* Compute URB entry size.  The maximum allowed URB entry size is 32k.
     * That divides up as follows:
@@ -495,7 +497,7 @@ brw_compile_tcs(const struct brw_compiler *compiler,
    unsigned output_size_bytes = 0;
    /* Note that the patch header is counted in num_per_patch_slots. */
    output_size_bytes += num_per_patch_slots * 16;
-   output_size_bytes += nir->info.tcs.vertices_out * num_per_vertex_slots * 16;
+   output_size_bytes += nir->info->tcs.vertices_out * num_per_vertex_slots * 16;
 
    assert(output_size_bytes >= 1);
    if (output_size_bytes > GEN7_MAX_HS_URB_ENTRY_SIZE_BYTES)
@@ -536,9 +538,9 @@ brw_compile_tcs(const struct brw_compiler *compiler,
       if (unlikely(INTEL_DEBUG & DEBUG_TCS)) {
          g.enable_debug(ralloc_asprintf(mem_ctx,
                                         "%s tessellation control shader %s",
-                                        nir->info.label ? nir->info.label
+                                        nir->info->label ? nir->info->label
                                                         : "unnamed",
-                                        nir->info.name));
+                                        nir->info->name));
       }
 
       g.generate_code(v.cfg, 8);

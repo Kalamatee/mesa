@@ -166,6 +166,8 @@ private:
    void find_lsb_to_float_cast(ir_expression *ir);
    void find_msb_to_float_cast(ir_expression *ir);
    void imul_high_to_mul(ir_expression *ir);
+
+   ir_expression *_carry(operand a, operand b);
 };
 
 } /* anonymous namespace */
@@ -390,7 +392,6 @@ lower_instructions_visitor::ldexp_to_arith(ir_expression *ir)
    ir_constant *sign_mask = new(ir) ir_constant(0x80000000u, vec_elem);
 
    ir_constant *exp_shift = new(ir) ir_constant(23, vec_elem);
-   ir_constant *exp_width = new(ir) ir_constant(8, vec_elem);
 
    /* Temporary variables */
    ir_variable *x = new(ir) ir_variable(ir->type, "x", ir_var_temporary);
@@ -453,10 +454,22 @@ lower_instructions_visitor::ldexp_to_arith(ir_expression *ir)
     */
 
    ir_constant *exp_shift_clone = exp_shift->clone(ir, NULL);
-   ir->operation = ir_unop_bitcast_i2f;
-   ir->operands[0] = bitfield_insert(bitcast_f2i(x), resulting_biased_exp,
-                                     exp_shift_clone, exp_width);
-   ir->operands[1] = NULL;
+
+   /* Don't generate new IR that would need to be lowered in an additional
+    * pass.
+    */
+   if (!lowering(INSERT_TO_SHIFTS)) {
+      ir_constant *exp_width = new(ir) ir_constant(8, vec_elem);
+      ir->operation = ir_unop_bitcast_i2f;
+      ir->operands[0] = bitfield_insert(bitcast_f2i(x), resulting_biased_exp,
+                                        exp_shift_clone, exp_width);
+      ir->operands[1] = NULL;
+   } else {
+      ir_constant *sign_mantissa_mask = new(ir) ir_constant(0x807fffffu, vec_elem);
+      ir->operation = ir_unop_bitcast_u2f;
+      ir->operands[0] = bit_or(bit_and(bitcast_f2u(x), sign_mantissa_mask),
+                               lshift(i2u(resulting_biased_exp), exp_shift_clone));
+   }
 
    this->progress = true;
 }
@@ -1413,6 +1426,16 @@ lower_instructions_visitor::find_msb_to_float_cast(ir_expression *ir)
    this->progress = true;
 }
 
+ir_expression *
+lower_instructions_visitor::_carry(operand a, operand b)
+{
+   if (lowering(CARRY_TO_ARITH))
+      return i2u(b2i(less(add(a, b),
+                          a.val->clone(ralloc_parent(a.val), NULL))));
+   else
+      return carry(a, b);
+}
+
 void
 lower_instructions_visitor::imul_high_to_mul(ir_expression *ir)
 {
@@ -1518,11 +1541,11 @@ lower_instructions_visitor::imul_high_to_mul(ir_expression *ir)
    i.insert_before(assign(t2, mul(src1h, src2l)));
    i.insert_before(assign(hi, mul(src1h, src2h)));
 
-   i.insert_before(assign(hi, add(hi, carry(lo, lshift(t1, c16->clone(ir, NULL))))));
-   i.insert_before(assign(lo,           add(lo, lshift(t1, c16->clone(ir, NULL)))));
+   i.insert_before(assign(hi, add(hi, _carry(lo, lshift(t1, c16->clone(ir, NULL))))));
+   i.insert_before(assign(lo,            add(lo, lshift(t1, c16->clone(ir, NULL)))));
 
-   i.insert_before(assign(hi, add(hi, carry(lo, lshift(t2, c16->clone(ir, NULL))))));
-   i.insert_before(assign(lo,           add(lo, lshift(t2, c16->clone(ir, NULL)))));
+   i.insert_before(assign(hi, add(hi, _carry(lo, lshift(t2, c16->clone(ir, NULL))))));
+   i.insert_before(assign(lo,            add(lo, lshift(t2, c16->clone(ir, NULL)))));
 
    if (different_signs == NULL) {
       assert(ir->operands[0]->type->base_type == GLSL_TYPE_UINT);
@@ -1547,7 +1570,7 @@ lower_instructions_visitor::imul_high_to_mul(ir_expression *ir)
 
       i.insert_before(neg_hi);
       i.insert_before(assign(neg_hi, add(bit_not(u2i(hi)),
-                                         u2i(carry(bit_not(lo), c1)))));
+                                         u2i(_carry(bit_not(lo), c1)))));
 
       ir->operation = ir_triop_csel;
       ir->operands[0] = new(ir) ir_dereference_variable(different_signs);

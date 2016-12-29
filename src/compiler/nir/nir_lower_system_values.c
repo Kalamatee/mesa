@@ -58,14 +58,12 @@ convert_block(nir_block *block, nir_builder *b)
           */
 
          nir_const_value local_size;
-         local_size.u32[0] = b->shader->info.cs.local_size[0];
-         local_size.u32[1] = b->shader->info.cs.local_size[1];
-         local_size.u32[2] = b->shader->info.cs.local_size[2];
+         local_size.u32[0] = b->shader->info->cs.local_size[0];
+         local_size.u32[1] = b->shader->info->cs.local_size[1];
+         local_size.u32[2] = b->shader->info->cs.local_size[2];
 
-         nir_ssa_def *group_id =
-            nir_load_system_value(b, nir_intrinsic_load_work_group_id, 0);
-         nir_ssa_def *local_id =
-            nir_load_system_value(b, nir_intrinsic_load_local_invocation_id, 0);
+         nir_ssa_def *group_id = nir_load_work_group_id(b);
+         nir_ssa_def *local_id = nir_load_local_invocation_id(b);
 
          sysval = nir_iadd(b, nir_imul(b, group_id,
                                        nir_build_imm(b, 3, 32, local_size)),
@@ -87,11 +85,12 @@ convert_block(nir_block *block, nir_builder *b)
           *    gl_WorkGroupSize.y + gl_LocalInvocationID.y *
           *    gl_WorkGroupSize.x + gl_LocalInvocationID.x"
           */
-         nir_ssa_def *local_id =
-            nir_load_system_value(b, nir_intrinsic_load_local_invocation_id, 0);
+         nir_ssa_def *local_id = nir_load_local_invocation_id(b);
 
-         nir_ssa_def *size_x = nir_imm_int(b, b->shader->info.cs.local_size[0]);
-         nir_ssa_def *size_y = nir_imm_int(b, b->shader->info.cs.local_size[1]);
+         nir_ssa_def *size_x =
+            nir_imm_int(b, b->shader->info->cs.local_size[0]);
+         nir_ssa_def *size_y =
+            nir_imm_int(b, b->shader->info->cs.local_size[1]);
 
          sysval = nir_imul(b, nir_channel(b, local_id, 2),
                               nir_imul(b, size_x, size_y));
@@ -104,17 +103,17 @@ convert_block(nir_block *block, nir_builder *b)
       case SYSTEM_VALUE_VERTEX_ID:
          if (b->shader->options->vertex_id_zero_based) {
             sysval = nir_iadd(b,
-               nir_load_system_value(b, nir_intrinsic_load_vertex_id_zero_base, 0),
-               nir_load_system_value(b, nir_intrinsic_load_base_vertex, 0));
+                              nir_load_vertex_id_zero_base(b),
+                              nir_load_base_vertex(b));
          } else {
-            sysval = nir_load_system_value(b, nir_intrinsic_load_vertex_id, 0);
+            sysval = nir_load_vertex_id(b);
          }
          break;
 
       case SYSTEM_VALUE_INSTANCE_INDEX:
          sysval = nir_iadd(b,
-            nir_load_system_value(b, nir_intrinsic_load_instance_id, 0),
-            nir_load_system_value(b, nir_intrinsic_load_base_instance, 0));
+                           nir_load_instance_id(b),
+                           nir_load_base_instance(b));
          break;
 
       default:

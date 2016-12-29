@@ -395,7 +395,7 @@ vlVdpVideoSurfaceClear(vlVdpSurface *vlsurf)
          c.f[0] = c.f[1] = c.f[2] = c.f[3] = 0.5f;
 
       pipe->clear_render_target(pipe, surfaces[i], &c, 0, 0,
-                                surfaces[i]->width, surfaces[i]->height);
+                                surfaces[i]->width, surfaces[i]->height, false);
    }
    pipe->flush(pipe, NULL, 0);
 }
@@ -470,7 +470,8 @@ VdpStatus vlVdpVideoSurfaceDMABuf(VdpVideoSurface surface,
    whandle.layer = surf->u.tex.first_layer;
 
    pscreen = surf->texture->screen;
-   if (!pscreen->resource_get_handle(pscreen, surf->texture, &whandle,
+   if (!pscreen->resource_get_handle(pscreen, p_surf->device->context,
+                                     surf->texture, &whandle,
 				     PIPE_HANDLE_USAGE_READ_WRITE))
       return VDP_STATUS_NO_IMPLEMENTATION;
 

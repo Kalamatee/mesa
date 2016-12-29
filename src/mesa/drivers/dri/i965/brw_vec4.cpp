@@ -68,7 +68,7 @@ src_reg::src_reg()
 src_reg::src_reg(struct ::brw_reg reg) :
    backend_reg(reg)
 {
-   this->reg_offset = 0;
+   this->offset = 0;
    this->reladdr = NULL;
 }
 
@@ -125,7 +125,7 @@ dst_reg::dst_reg(enum brw_reg_file file, int nr, brw_reg_type type,
 dst_reg::dst_reg(struct ::brw_reg reg) :
    backend_reg(reg)
 {
-   this->reg_offset = 0;
+   this->offset = 0;
    this->reladdr = NULL;
 }
 
@@ -199,11 +199,8 @@ vec4_instruction::has_source_and_destination_hazard() const
 }
 
 unsigned
-vec4_instruction::regs_read(unsigned arg) const
+vec4_instruction::size_read(unsigned arg) const
 {
-   if (src[arg].file == BAD_FILE)
-      return 0;
-
    switch (opcode) {
    case SHADER_OPCODE_SHADER_TIME_ADD:
    case SHADER_OPCODE_UNTYPED_ATOMIC:
@@ -213,18 +210,31 @@ vec4_instruction::regs_read(unsigned arg) const
    case SHADER_OPCODE_TYPED_SURFACE_READ:
    case SHADER_OPCODE_TYPED_SURFACE_WRITE:
    case TCS_OPCODE_URB_WRITE:
-      return arg == 0 ? mlen : 1;
-
+      if (arg == 0)
+         return mlen * REG_SIZE;
+      break;
    case VS_OPCODE_PULL_CONSTANT_LOAD_GEN7:
-      return arg == 1 ? mlen : 1;
-
+      if (arg == 1)
+         return mlen * REG_SIZE;
+      break;
    default:
-      return 1;
+      break;
+   }
+
+   switch (src[arg].file) {
+   case BAD_FILE:
+      return 0;
+   case IMM:
+   case UNIFORM:
+      return 4 * type_sz(src[arg].type);
+   default:
+      /* XXX - Represent actual execution size and vertical stride. */
+      return 8 * type_sz(src[arg].type);
    }
 }
 
 bool
-vec4_instruction::can_do_source_mods(const struct brw_device_info *devinfo)
+vec4_instruction::can_do_source_mods(const struct gen_device_info *devinfo)
 {
    if (devinfo->gen == 6 && is_math())
       return false;
@@ -239,7 +249,7 @@ vec4_instruction::can_do_source_mods(const struct brw_device_info *devinfo)
 }
 
 bool
-vec4_instruction::can_do_writemask(const struct brw_device_info *devinfo)
+vec4_instruction::can_do_writemask(const struct gen_device_info *devinfo)
 {
    switch (opcode) {
    case SHADER_OPCODE_GEN4_SCRATCH_READ:
@@ -354,94 +364,96 @@ vec4_visitor::opt_vector_float()
 {
    bool progress = false;
 
-   int last_reg = -1, last_reg_offset = -1;
-   enum brw_reg_file last_reg_file = BAD_FILE;
+   foreach_block(block, cfg) {
+      int last_reg = -1, last_offset = -1;
+      enum brw_reg_file last_reg_file = BAD_FILE;
 
-   uint8_t imm[4] = { 0 };
-   int inst_count = 0;
-   vec4_instruction *imm_inst[4];
-   unsigned writemask = 0;
-   enum brw_reg_type dest_type = BRW_REGISTER_TYPE_F;
+      uint8_t imm[4] = { 0 };
+      int inst_count = 0;
+      vec4_instruction *imm_inst[4];
+      unsigned writemask = 0;
+      enum brw_reg_type dest_type = BRW_REGISTER_TYPE_F;
 
-   foreach_block_and_inst_safe(block, vec4_instruction, inst, cfg) {
-      int vf = -1;
-      enum brw_reg_type need_type;
+      foreach_inst_in_block_safe(vec4_instruction, inst, block) {
+         int vf = -1;
+         enum brw_reg_type need_type;
 
-      /* Look for unconditional MOVs from an immediate with a partial
-       * writemask.  Skip type-conversion MOVs other than integer 0,
-       * where the type doesn't matter.  See if the immediate can be
-       * represented as a VF.
-       */
-      if (inst->opcode == BRW_OPCODE_MOV &&
-          inst->src[0].file == IMM &&
-          inst->predicate == BRW_PREDICATE_NONE &&
-          inst->dst.writemask != WRITEMASK_XYZW &&
-          (inst->src[0].type == inst->dst.type || inst->src[0].d == 0)) {
+         /* Look for unconditional MOVs from an immediate with a partial
+          * writemask.  Skip type-conversion MOVs other than integer 0,
+          * where the type doesn't matter.  See if the immediate can be
+          * represented as a VF.
+          */
+         if (inst->opcode == BRW_OPCODE_MOV &&
+             inst->src[0].file == IMM &&
+             inst->predicate == BRW_PREDICATE_NONE &&
+             inst->dst.writemask != WRITEMASK_XYZW &&
+             (inst->src[0].type == inst->dst.type || inst->src[0].d == 0)) {
 
-         vf = brw_float_to_vf(inst->src[0].d);
-         need_type = BRW_REGISTER_TYPE_D;
+            vf = brw_float_to_vf(inst->src[0].d);
+            need_type = BRW_REGISTER_TYPE_D;
 
-         if (vf == -1) {
-            vf = brw_float_to_vf(inst->src[0].f);
-            need_type = BRW_REGISTER_TYPE_F;
+            if (vf == -1) {
+               vf = brw_float_to_vf(inst->src[0].f);
+               need_type = BRW_REGISTER_TYPE_F;
+            }
+         } else {
+            last_reg = -1;
          }
-      } else {
-         last_reg = -1;
-      }
 
-      /* If this wasn't a MOV, or the destination register doesn't match,
-       * or we have to switch destination types, then this breaks our
-       * sequence.  Combine anything we've accumulated so far.
-       */
-      if (last_reg != inst->dst.nr ||
-          last_reg_offset != inst->dst.reg_offset ||
-          last_reg_file != inst->dst.file ||
-          (vf > 0 && dest_type != need_type)) {
+         /* If this wasn't a MOV, or the destination register doesn't match,
+          * or we have to switch destination types, then this breaks our
+          * sequence.  Combine anything we've accumulated so far.
+          */
+         if (last_reg != inst->dst.nr ||
+             last_offset != inst->dst.offset ||
+             last_reg_file != inst->dst.file ||
+             (vf > 0 && dest_type != need_type)) {
 
-         if (inst_count > 1) {
-            unsigned vf;
-            memcpy(&vf, imm, sizeof(vf));
-            vec4_instruction *mov = MOV(imm_inst[0]->dst, brw_imm_vf(vf));
-            mov->dst.type = dest_type;
-            mov->dst.writemask = writemask;
-            inst->insert_before(block, mov);
+            if (inst_count > 1) {
+               unsigned vf;
+               memcpy(&vf, imm, sizeof(vf));
+               vec4_instruction *mov = MOV(imm_inst[0]->dst, brw_imm_vf(vf));
+               mov->dst.type = dest_type;
+               mov->dst.writemask = writemask;
+               inst->insert_before(block, mov);
 
-            for (int i = 0; i < inst_count; i++) {
-               imm_inst[i]->remove(block);
+               for (int i = 0; i < inst_count; i++) {
+                  imm_inst[i]->remove(block);
+               }
+
+               progress = true;
             }
 
-            progress = true;
+            inst_count = 0;
+            last_reg = -1;
+            writemask = 0;
+            dest_type = BRW_REGISTER_TYPE_F;
+
+            for (int i = 0; i < 4; i++) {
+               imm[i] = 0;
+            }
          }
 
-         inst_count = 0;
-         last_reg = -1;
-         writemask = 0;
-         dest_type = BRW_REGISTER_TYPE_F;
+         /* Record this instruction's value (if it was representable). */
+         if (vf != -1) {
+            if ((inst->dst.writemask & WRITEMASK_X) != 0)
+               imm[0] = vf;
+            if ((inst->dst.writemask & WRITEMASK_Y) != 0)
+               imm[1] = vf;
+            if ((inst->dst.writemask & WRITEMASK_Z) != 0)
+               imm[2] = vf;
+            if ((inst->dst.writemask & WRITEMASK_W) != 0)
+               imm[3] = vf;
 
-         for (int i = 0; i < 4; i++) {
-            imm[i] = 0;
+            writemask |= inst->dst.writemask;
+            imm_inst[inst_count++] = inst;
+
+            last_reg = inst->dst.nr;
+            last_offset = inst->dst.offset;
+            last_reg_file = inst->dst.file;
+            if (vf > 0)
+               dest_type = need_type;
          }
-      }
-
-      /* Record this instruction's value (if it was representable). */
-      if (vf != -1) {
-         if ((inst->dst.writemask & WRITEMASK_X) != 0)
-            imm[0] = vf;
-         if ((inst->dst.writemask & WRITEMASK_Y) != 0)
-            imm[1] = vf;
-         if ((inst->dst.writemask & WRITEMASK_Z) != 0)
-            imm[2] = vf;
-         if ((inst->dst.writemask & WRITEMASK_W) != 0)
-            imm[3] = vf;
-
-         writemask |= inst->dst.writemask;
-         imm_inst[inst_count++] = inst;
-
-         last_reg = inst->dst.nr;
-         last_reg_offset = inst->dst.reg_offset;
-         last_reg_file = inst->dst.file;
-         if (vf > 0)
-            dest_type = need_type;
       }
    }
 
@@ -537,8 +549,8 @@ vec4_visitor::split_uniform_registers()
 
 	 assert(!inst->src[i].reladdr);
 
-         inst->src[i].nr += inst->src[i].reg_offset;
-	 inst->src[i].reg_offset = 0;
+         inst->src[i].nr += inst->src[i].offset / 16;
+	 inst->src[i].offset %= 16;
       }
    }
 }
@@ -855,7 +867,7 @@ vec4_visitor::move_push_constants_to_pull_constants()
 
 	 inst->src[i].file = temp.file;
          inst->src[i].nr = temp.nr;
-	 inst->src[i].reg_offset = temp.reg_offset;
+	 inst->src[i].offset %= 16;
 	 inst->src[i].reladdr = NULL;
       }
    }
@@ -946,7 +958,7 @@ vec4_visitor::opt_set_dependency_control()
           * on, don't do dependency control across the read.
           */
          for (int i = 0; i < 3; i++) {
-            int reg = inst->src[i].nr + inst->src[i].reg_offset;
+            int reg = inst->src[i].nr + inst->src[i].offset / REG_SIZE;
             if (inst->src[i].file == VGRF) {
                last_grf_write[reg] = NULL;
             } else if (inst->src[i].file == FIXED_GRF) {
@@ -965,9 +977,10 @@ vec4_visitor::opt_set_dependency_control()
          /* Now, see if we can do dependency control for this instruction
           * against a previous one writing to its destination.
           */
-         int reg = inst->dst.nr + inst->dst.reg_offset;
+         int reg = inst->dst.nr + inst->dst.offset / REG_SIZE;
          if (inst->dst.file == VGRF || inst->dst.file == FIXED_GRF) {
             if (last_grf_write[reg] &&
+                last_grf_write[reg]->dst.offset == inst->dst.offset &&
                 !(inst->dst.writemask & grf_channels_written[reg])) {
                last_grf_write[reg]->no_dd_clear = true;
                inst->no_dd_check = true;
@@ -979,6 +992,7 @@ vec4_visitor::opt_set_dependency_control()
             grf_channels_written[reg] |= inst->dst.writemask;
          } else if (inst->dst.file == MRF) {
             if (last_mrf_write[reg] &&
+                last_mrf_write[reg]->dst.offset == inst->dst.offset &&
                 !(inst->dst.writemask & mrf_channels_written[reg])) {
                last_mrf_write[reg]->no_dd_clear = true;
                inst->no_dd_check = true;
@@ -994,7 +1008,7 @@ vec4_visitor::opt_set_dependency_control()
 }
 
 bool
-vec4_instruction::can_reswizzle(const struct brw_device_info *devinfo,
+vec4_instruction::can_reswizzle(const struct gen_device_info *devinfo,
                                 int dst_writemask,
                                 int swizzle,
                                 int swizzle_mask)
@@ -1084,7 +1098,7 @@ vec4_visitor::opt_register_coalesce()
       /* Remove no-op MOVs */
       if (inst->dst.file == inst->src[0].file &&
           inst->dst.nr == inst->src[0].nr &&
-          inst->dst.reg_offset == inst->src[0].reg_offset) {
+          inst->dst.offset == inst->src[0].offset) {
          bool is_nop_mov = true;
 
          for (unsigned c = 0; c < 4; c++) {
@@ -1109,7 +1123,7 @@ vec4_visitor::opt_register_coalesce()
       /* Can't coalesce this GRF if someone else was going to
        * read it later.
        */
-      if (var_range_end(var_from_reg(alloc, inst->src[0]), 4) > ip)
+      if (var_range_end(var_from_reg(alloc, dst_reg(inst->src[0])), 4) > ip)
 	 continue;
 
       /* We need to check interference with the final destination between this
@@ -1131,7 +1145,8 @@ vec4_visitor::opt_register_coalesce()
                                                   inst) {
          _scan_inst = scan_inst;
 
-         if (inst->src[0].in_range(scan_inst->dst, scan_inst->regs_written)) {
+         if (regions_overlap(inst->src[0], inst->size_read(0),
+                             scan_inst->dst, scan_inst->size_written)) {
             /* Found something writing to the reg we want to coalesce away. */
             if (to_mrf) {
                /* SEND instructions can't have MRF as a destination. */
@@ -1166,8 +1181,11 @@ vec4_visitor::opt_register_coalesce()
                break;
             }
 
-            /* This doesn't handle coalescing of multiple registers. */
-            if (scan_inst->regs_written > 1)
+            /* This only handles coalescing of a single register starting at
+             * the source offset of the copy instruction.
+             */
+            if (scan_inst->size_written > REG_SIZE ||
+                scan_inst->dst.offset != inst->src[0].offset)
                break;
 
 	    /* Mark which channels we found unconditional writes for. */
@@ -1185,8 +1203,8 @@ vec4_visitor::opt_register_coalesce()
           */
 	 bool interfered = false;
 	 for (int i = 0; i < 3; i++) {
-            if (inst->src[0].in_range(scan_inst->src[i],
-                                      scan_inst->regs_read(i)))
+            if (regions_overlap(inst->src[0], inst->size_read(0),
+                                scan_inst->src[i], scan_inst->size_read(i)))
 	       interfered = true;
 	 }
 	 if (interfered)
@@ -1195,7 +1213,8 @@ vec4_visitor::opt_register_coalesce()
          /* If somebody else writes the same channels of our destination here,
           * we can't coalesce before that.
           */
-         if (inst->dst.in_range(scan_inst->dst, scan_inst->regs_written) &&
+         if (regions_overlap(inst->dst, inst->size_written,
+                             scan_inst->dst, scan_inst->size_written) &&
              (inst->dst.writemask & scan_inst->dst.writemask) != 0) {
             break;
          }
@@ -1211,8 +1230,8 @@ vec4_visitor::opt_register_coalesce()
             }
          } else {
             for (int i = 0; i < 3; i++) {
-               if (inst->dst.in_range(scan_inst->src[i],
-                                      scan_inst->regs_read(i)))
+               if (regions_overlap(inst->dst, inst->size_written,
+                                   scan_inst->src[i], scan_inst->size_read(i)))
                   interfered = true;
             }
             if (interfered)
@@ -1230,12 +1249,12 @@ vec4_visitor::opt_register_coalesce()
 	 while (scan_inst != inst) {
 	    if (scan_inst->dst.file == VGRF &&
                 scan_inst->dst.nr == inst->src[0].nr &&
-		scan_inst->dst.reg_offset == inst->src[0].reg_offset) {
+		scan_inst->dst.offset == inst->src[0].offset) {
                scan_inst->reswizzle(inst->dst.writemask,
                                     inst->src[0].swizzle);
 	       scan_inst->dst.file = inst->dst.file;
                scan_inst->dst.nr = inst->dst.nr;
-	       scan_inst->dst.reg_offset = inst->dst.reg_offset;
+	       scan_inst->dst.offset = inst->dst.offset;
                if (inst->saturate &&
                    inst->dst.type != scan_inst->dst.type) {
                   /* If we have reached this point, scan_inst is a non
@@ -1272,6 +1291,14 @@ vec4_visitor::eliminate_find_live_channel()
    bool progress = false;
    unsigned depth = 0;
 
+   if (!brw_stage_has_packed_dispatch(devinfo, stage, stage_prog_data)) {
+      /* The optimization below assumes that channel zero is live on thread
+       * dispatch, which may not be the case if the fixed function dispatches
+       * threads sparsely.
+       */
+      return false;
+   }
+
    foreach_block_and_inst_safe(block, vec4_instruction, inst, cfg) {
       switch (inst->opcode) {
       case BRW_OPCODE_IF:
@@ -1305,10 +1332,10 @@ vec4_visitor::eliminate_find_live_channel()
  * Splits virtual GRFs requesting more than one contiguous physical register.
  *
  * We initially create large virtual GRFs for temporary structures, arrays,
- * and matrices, so that the dereference visitor functions can add reg_offsets
- * to work their way down to the actual member being accessed.  But when it
- * comes to optimization, we'd like to treat each register as individual
- * storage if possible.
+ * and matrices, so that the visitor functions can add offsets to work their
+ * way down to the actual member being accessed.  But when it comes to
+ * optimization, we'd like to treat each register as individual storage if
+ * possible.
  *
  * So far, the only thing that might prevent splitting is a send message from
  * a GRF on IVB.
@@ -1331,11 +1358,11 @@ vec4_visitor::split_virtual_grfs()
     * to split.
     */
    foreach_block_and_inst(block, vec4_instruction, inst, cfg) {
-      if (inst->dst.file == VGRF && inst->regs_written > 1)
+      if (inst->dst.file == VGRF && regs_written(inst) > 1)
          split_grf[inst->dst.nr] = false;
 
       for (int i = 0; i < 3; i++) {
-         if (inst->src[i].file == VGRF && inst->regs_read(i) > 1)
+         if (inst->src[i].file == VGRF && regs_read(inst, i) > 1)
             split_grf[inst->src[i].nr] = false;
       }
    }
@@ -1358,17 +1385,17 @@ vec4_visitor::split_virtual_grfs()
 
    foreach_block_and_inst(block, vec4_instruction, inst, cfg) {
       if (inst->dst.file == VGRF && split_grf[inst->dst.nr] &&
-          inst->dst.reg_offset != 0) {
+          inst->dst.offset / REG_SIZE != 0) {
          inst->dst.nr = (new_virtual_grf[inst->dst.nr] +
-                          inst->dst.reg_offset - 1);
-         inst->dst.reg_offset = 0;
+                         inst->dst.offset / REG_SIZE - 1);
+         inst->dst.offset %= REG_SIZE;
       }
       for (int i = 0; i < 3; i++) {
          if (inst->src[i].file == VGRF && split_grf[inst->src[i].nr] &&
-             inst->src[i].reg_offset != 0) {
+             inst->src[i].offset / REG_SIZE != 0) {
             inst->src[i].nr = (new_virtual_grf[inst->src[i].nr] +
-                                inst->src[i].reg_offset - 1);
-            inst->src[i].reg_offset = 0;
+                                inst->src[i].offset / REG_SIZE - 1);
+            inst->src[i].offset %= REG_SIZE;
          }
       }
    }
@@ -1409,7 +1436,7 @@ vec4_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
 
    switch (inst->dst.file) {
    case VGRF:
-      fprintf(file, "vgrf%d.%d", inst->dst.nr, inst->dst.reg_offset);
+      fprintf(file, "vgrf%d", inst->dst.nr);
       break;
    case FIXED_GRF:
       fprintf(file, "g%d", inst->dst.nr);
@@ -1435,8 +1462,6 @@ vec4_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
          fprintf(file, "arf%d.%d", inst->dst.nr & 0xf, inst->dst.subnr);
          break;
       }
-      if (inst->dst.subnr)
-         fprintf(file, "+%d", inst->dst.subnr);
       break;
    case BAD_FILE:
       fprintf(file, "(null)");
@@ -1445,6 +1470,13 @@ vec4_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
    case ATTR:
    case UNIFORM:
       unreachable("not reached");
+   }
+   if (inst->dst.offset ||
+       (inst->dst.file == VGRF &&
+        alloc.sizes[inst->dst.nr] * REG_SIZE != inst->size_written)) {
+      const unsigned reg_size = (inst->dst.file == UNIFORM ? 16 : REG_SIZE);
+      fprintf(file, "+%d.%d", inst->dst.offset / reg_size,
+              inst->dst.offset % reg_size);
    }
    if (inst->dst.writemask != WRITEMASK_XYZW) {
       fprintf(file, ".");
@@ -1521,8 +1553,6 @@ vec4_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
             fprintf(file, "arf%d.%d", inst->src[i].nr & 0xf, inst->src[i].subnr);
             break;
          }
-         if (inst->src[i].subnr)
-            fprintf(file, "+%d", inst->src[i].subnr);
          break;
       case BAD_FILE:
          fprintf(file, "(null)");
@@ -1531,11 +1561,13 @@ vec4_visitor::dump_instruction(backend_instruction *be_inst, FILE *file)
          unreachable("not reached");
       }
 
-      /* Don't print .0; and only VGRFs have reg_offsets and sizes */
-      if (inst->src[i].reg_offset != 0 &&
-          inst->src[i].file == VGRF &&
-          alloc.sizes[inst->src[i].nr] != 1)
-         fprintf(file, ".%d", inst->src[i].reg_offset);
+      if (inst->src[i].offset ||
+          (inst->src[i].file == VGRF &&
+           alloc.sizes[inst->src[i].nr] * REG_SIZE != inst->size_read(i))) {
+         const unsigned reg_size = (inst->src[i].file == UNIFORM ? 16 : REG_SIZE);
+         fprintf(file, "+%d.%d", inst->src[i].offset / reg_size,
+                 inst->src[i].offset % reg_size);
+      }
 
       if (inst->src[i].file != IMM) {
          static const char *chans[4] = {"x", "y", "z", "w"};
@@ -1594,7 +1626,9 @@ vec4_visitor::lower_attributes_to_hw_regs(const int *attribute_map,
 	 if (inst->src[i].file != ATTR)
 	    continue;
 
-         int grf = attribute_map[inst->src[i].nr + inst->src[i].reg_offset];
+         int grf = attribute_map[inst->src[i].nr +
+                                 inst->src[i].offset / REG_SIZE];
+         assert(inst->src[i].offset % REG_SIZE == 0);
 
          /* All attributes used in the shader need to have been assigned a
           * hardware register by the caller
@@ -1806,7 +1840,7 @@ vec4_visitor::emit_shader_time_write(int shader_time_subindex, src_reg value)
 
    dst_reg offset = dst;
    dst_reg time = dst;
-   time.reg_offset++;
+   time.offset += REG_SIZE;
 
    offset.type = BRW_REGISTER_TYPE_UD;
    int index = shader_time_index * 3 + shader_time_subindex;
@@ -1829,7 +1863,7 @@ vec4_visitor::convert_to_hw_regs()
          struct brw_reg reg;
          switch (src.file) {
          case VGRF:
-            reg = brw_vec8_grf(src.nr + src.reg_offset, 0);
+            reg = byte_offset(brw_vec8_grf(src.nr, 0), src.offset);
             reg.type = src.type;
             reg.swizzle = src.swizzle;
             reg.abs = src.abs;
@@ -1837,9 +1871,10 @@ vec4_visitor::convert_to_hw_regs()
             break;
 
          case UNIFORM:
-            reg = stride(brw_vec4_grf(prog_data->base.dispatch_grf_start_reg +
-                                      (src.nr + src.reg_offset) / 2,
-                                      ((src.nr + src.reg_offset) % 2) * 4),
+            reg = stride(byte_offset(brw_vec4_grf(
+                                        prog_data->base.dispatch_grf_start_reg +
+                                        src.nr / 2, src.nr % 2 * 4),
+                                     src.offset),
                          0, 4, 1);
             reg.type = src.type;
             reg.swizzle = src.swizzle;
@@ -1885,14 +1920,14 @@ vec4_visitor::convert_to_hw_regs()
 
       switch (inst->dst.file) {
       case VGRF:
-         reg = brw_vec8_grf(dst.nr + dst.reg_offset, 0);
+         reg = byte_offset(brw_vec8_grf(dst.nr, 0), dst.offset);
          reg.type = dst.type;
          reg.writemask = dst.writemask;
          break;
 
       case MRF:
-         assert(((dst.nr + dst.reg_offset) & ~BRW_MRF_COMPR4) < BRW_MAX_MRF(devinfo->gen));
-         reg = brw_message_reg(dst.nr + dst.reg_offset);
+         reg = byte_offset(brw_message_reg(dst.nr), dst.offset);
+         assert((reg.nr & ~BRW_MRF_COMPR4) < BRW_MAX_MRF(devinfo->gen));
          reg.type = dst.type;
          reg.writemask = dst.writemask;
          break;
@@ -1953,7 +1988,7 @@ vec4_visitor::run()
       if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER) && this_progress) {  \
          char filename[64];                                            \
          snprintf(filename, 64, "%s-%s-%02d-%02d-" #pass,              \
-                  stage_abbrev, nir->info.name, iteration, pass_num);  \
+                  stage_abbrev, nir->info->name, iteration, pass_num); \
                                                                        \
          backend_shader::dump_instructions(filename);                  \
       }                                                                \
@@ -1966,7 +2001,7 @@ vec4_visitor::run()
    if (unlikely(INTEL_DEBUG & DEBUG_OPTIMIZER)) {
       char filename[64];
       snprintf(filename, 64, "%s-%s-00-00-start",
-               stage_abbrev, nir->info.name);
+               stage_abbrev, nir->info->name);
 
       backend_shader::dump_instructions(filename);
    }
@@ -2077,21 +2112,26 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
 {
    const bool is_scalar = compiler->scalar_stage[MESA_SHADER_VERTEX];
    nir_shader *shader = nir_shader_clone(mem_ctx, src_shader);
-   shader = brw_nir_apply_sampler_key(shader, compiler->devinfo, &key->tex,
-                                      is_scalar);
-   brw_nir_lower_vs_inputs(shader, compiler->devinfo, is_scalar,
+   shader = brw_nir_apply_sampler_key(shader, compiler, &key->tex, is_scalar);
+   brw_nir_lower_vs_inputs(shader, is_scalar,
                            use_legacy_snorm_formula, key->gl_attrib_wa_flags);
    brw_nir_lower_vue_outputs(shader, is_scalar);
-   shader = brw_postprocess_nir(shader, compiler->devinfo, is_scalar);
+   shader = brw_postprocess_nir(shader, compiler, is_scalar);
 
    const unsigned *assembly = NULL;
+
+   prog_data->base.clip_distance_mask =
+      ((1 << shader->info->clip_distance_array_size) - 1);
+   prog_data->base.cull_distance_mask =
+      ((1 << shader->info->cull_distance_array_size) - 1) <<
+      shader->info->clip_distance_array_size;
 
    unsigned nr_attributes = _mesa_bitcount_64(prog_data->inputs_read);
 
    /* gl_VertexID and gl_InstanceID are system values, but arrive via an
     * incoming vertex attribute.  So, add an extra slot.
     */
-   if (shader->info.system_values_read &
+   if (shader->info->system_values_read &
        (BITFIELD64_BIT(SYSTEM_VALUE_BASE_VERTEX) |
         BITFIELD64_BIT(SYSTEM_VALUE_BASE_INSTANCE) |
         BITFIELD64_BIT(SYSTEM_VALUE_VERTEX_ID_ZERO_BASE) |
@@ -2100,13 +2140,14 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
    }
 
    /* gl_DrawID has its very own vec4 */
-   if (shader->info.system_values_read & BITFIELD64_BIT(SYSTEM_VALUE_DRAW_ID)) {
+   if (shader->info->system_values_read &
+       BITFIELD64_BIT(SYSTEM_VALUE_DRAW_ID)) {
       nr_attributes++;
    }
 
    unsigned nr_attribute_slots =
       nr_attributes +
-      _mesa_bitcount_64(shader->info.double_inputs_read);
+      _mesa_bitcount_64(shader->info->double_inputs_read);
 
    /* The 3DSTATE_VS documentation lists the lower bound on "Vertex URB Entry
     * Read Length" as 1 in vec4 mode, and 0 in SIMD8 mode.  Empirically, in
@@ -2155,8 +2196,9 @@ brw_compile_vs(const struct brw_compiler *compiler, void *log_data,
       if (INTEL_DEBUG & DEBUG_VS) {
          const char *debug_name =
             ralloc_asprintf(mem_ctx, "%s vertex shader %s",
-                            shader->info.label ? shader->info.label : "unnamed",
-                            shader->info.name);
+                            shader->info->label ? shader->info->label :
+                               "unnamed",
+                            shader->info->name);
 
          g.enable_debug(debug_name);
       }

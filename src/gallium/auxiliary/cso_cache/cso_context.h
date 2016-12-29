@@ -60,7 +60,7 @@ enum pipe_error cso_set_rasterizer( struct cso_context *cso,
 
 enum pipe_error
 cso_set_samplers(struct cso_context *cso,
-                 unsigned shader_stage,
+                 enum pipe_shader_type shader_stage,
                  unsigned count,
                  const struct pipe_sampler_state **states);
 
@@ -73,7 +73,8 @@ cso_single_sampler(struct cso_context *cso, unsigned shader_stage,
                    unsigned idx, const struct pipe_sampler_state *states);
 
 void
-cso_single_sampler_done(struct cso_context *cso, unsigned shader_stage);
+cso_single_sampler_done(struct cso_context *cso,
+                        enum pipe_shader_type shader_stage);
 
 
 enum pipe_error cso_set_vertex_elements(struct cso_context *ctx,
@@ -187,7 +188,7 @@ void cso_restore_state(struct cso_context *cso);
 
 void
 cso_set_sampler_views(struct cso_context *cso,
-                      unsigned shader_stage,
+                      enum pipe_shader_type shader_stage,
                       unsigned count,
                       struct pipe_sampler_view **views);
 
@@ -195,7 +196,8 @@ cso_set_sampler_views(struct cso_context *cso,
 /* shader images */
 
 void
-cso_set_shader_images(struct cso_context *cso, unsigned shader_stage,
+cso_set_shader_images(struct cso_context *cso,
+                      enum pipe_shader_type shader_stage,
                       unsigned start, unsigned count,
                       struct pipe_image_view *views);
 

@@ -43,8 +43,8 @@ namespace { /* avoid conflict with opt_copy_propagation_elements */
 struct acp_entry : public exec_node {
    fs_reg dst;
    fs_reg src;
-   uint8_t regs_written;
-   uint8_t regs_read;
+   uint8_t size_written;
+   uint8_t size_read;
    enum opcode opcode;
    bool saturate;
 };
@@ -129,7 +129,7 @@ fs_copy_prop_dataflow::fs_copy_prop_dataflow(void *mem_ctx, cfg_t *cfg,
          foreach_in_list(acp_entry, entry, &out_acp[block->num][i]) {
             acp[next_acp] = entry;
 
-            /* opt_copy_propagate_local populates out_acp with copies created
+            /* opt_copy_propagation_local populates out_acp with copies created
              * in a block which are still live at the end of the block.  This
              * is exactly what we want in the COPY set.
              */
@@ -161,8 +161,10 @@ fs_copy_prop_dataflow::setup_initial_values()
 
          /* Mark ACP entries which are killed by this instruction. */
          for (int i = 0; i < num_acp; i++) {
-            if (inst->overwrites_reg(acp[i]->dst) ||
-                inst->overwrites_reg(acp[i]->src)) {
+            if (regions_overlap(inst->dst, inst->size_written,
+                                acp[i]->dst, acp[i]->size_written) ||
+                regions_overlap(inst->dst, inst->size_written,
+                                acp[i]->src, acp[i]->size_read)) {
                BITSET_SET(bd[block->num].kill, i);
             }
          }
@@ -279,7 +281,7 @@ is_logic_op(enum opcode opcode)
 
 static bool
 can_take_stride(fs_inst *inst, unsigned arg, unsigned stride,
-                const brw_device_info *devinfo)
+                const gen_device_info *devinfo)
 {
    if (stride > 4)
       return false;
@@ -330,22 +332,6 @@ can_take_stride(fs_inst *inst, unsigned arg, unsigned stride,
    return true;
 }
 
-/**
- * Check that the register region read by src [src.reg_offset,
- * src.reg_offset + regs_read] is contained inside the register
- * region written by dst [dst.reg_offset, dst.reg_offset + regs_written]
- * Both src and dst must have the same register number and file.
- */
-static inline bool
-region_contained_in(const fs_reg &src, unsigned regs_read,
-                    const fs_reg &dst, unsigned regs_written)
-{
-   return src.file == dst.file && src.nr == dst.nr &&
-      (src.reg_offset * REG_SIZE + src.subreg_offset >=
-       dst.reg_offset * REG_SIZE + dst.subreg_offset) &&
-      src.reg_offset + regs_read <= dst.reg_offset + regs_written;
-}
-
 bool
 fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
 {
@@ -368,8 +354,8 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
    /* Bail if inst is reading a range that isn't contained in the range
     * that entry is writing.
     */
-   if (!region_contained_in(inst->src[arg], inst->regs_read(arg),
-                            entry->dst, entry->regs_written))
+   if (!region_contained_in(inst->src[arg], inst->size_read(arg),
+                            entry->dst, entry->size_written))
       return false;
 
    /* we can't generally copy-propagate UD negations because we
@@ -445,7 +431,9 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
    if (entry->saturate) {
       switch(inst->opcode) {
       case BRW_OPCODE_SEL:
-         if (inst->src[1].file != IMM ||
+         if ((inst->conditional_mod != BRW_CONDITIONAL_GE &&
+              inst->conditional_mod != BRW_CONDITIONAL_L) ||
+             inst->src[1].file != IMM ||
              inst->src[1].f < 0.0 ||
              inst->src[1].f > 1.0) {
             return false;
@@ -462,31 +450,21 @@ fs_visitor::try_copy_propagate(fs_inst *inst, int arg, acp_entry *entry)
    inst->saturate = inst->saturate || entry->saturate;
 
    /* Compute the offset of inst->src[arg] relative to entry->dst */
-   const unsigned rel_offset = (inst->src[arg].reg_offset
-                                - entry->dst.reg_offset) * REG_SIZE +
-                               inst->src[arg].subreg_offset;
+   const unsigned rel_offset = inst->src[arg].offset - entry->dst.offset;
 
    /* Compute the first component of the copy that the instruction is
     * reading, and the base byte offset within that component.
     */
-   assert(entry->dst.subreg_offset == 0 && entry->dst.stride == 1);
+   assert(entry->dst.offset % REG_SIZE == 0 && entry->dst.stride == 1);
    const unsigned component = rel_offset / type_sz(entry->dst.type);
    const unsigned suboffset = rel_offset % type_sz(entry->dst.type);
-
-   /* Account for the inconsistent units reg_offset is expressed in.
-    * FINISHME -- Make the units of reg_offset consistent (e.g. bytes?) for
-    *             all register files.
-    */
-   const unsigned reg_size = (entry->src.file == UNIFORM ? 4 : REG_SIZE);
 
    /* Calculate the byte offset at the origin of the copy of the given
     * component and suboffset.
     */
-   const unsigned offset = suboffset +
+   inst->src[arg].offset = suboffset +
       component * entry->src.stride * type_sz(entry->src.type) +
-      entry->src.reg_offset * reg_size + entry->src.subreg_offset;
-   inst->src[arg].reg_offset = offset / reg_size;
-   inst->src[arg].subreg_offset = offset % reg_size;
+      entry->src.offset;
 
    if (has_source_modifiers) {
       if (entry->dst.type != inst->src[arg].type) {
@@ -534,8 +512,8 @@ fs_visitor::try_constant_propagate(fs_inst *inst, acp_entry *entry)
       /* Bail if inst is reading a range that isn't contained in the range
        * that entry is writing.
        */
-      if (!region_contained_in(inst->src[i], inst->regs_read(i),
-                               entry->dst, entry->regs_written))
+      if (!region_contained_in(inst->src[i], inst->size_read(i),
+                               entry->dst, entry->size_written))
          continue;
 
       /* If the type sizes don't match each channel of the instruction is
@@ -746,8 +724,8 @@ can_propagate_from(fs_inst *inst)
    return (inst->opcode == BRW_OPCODE_MOV &&
            inst->dst.file == VGRF &&
            ((inst->src[0].file == VGRF &&
-             (inst->src[0].nr != inst->dst.nr ||
-              inst->src[0].reg_offset != inst->dst.reg_offset)) ||
+             !regions_overlap(inst->dst, inst->size_written,
+                              inst->src[0], inst->size_read(0))) ||
             inst->src[0].file == ATTR ||
             inst->src[0].file == UNIFORM ||
             inst->src[0].file == IMM) &&
@@ -759,8 +737,8 @@ can_propagate_from(fs_inst *inst)
  * list.
  */
 bool
-fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
-                                     exec_list *acp)
+fs_visitor::opt_copy_propagation_local(void *copy_prop_ctx, bblock_t *block,
+                                       exec_list *acp)
 {
    bool progress = false;
 
@@ -781,8 +759,8 @@ fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
       /* kill the destination from the ACP */
       if (inst->dst.file == VGRF) {
          foreach_in_list_safe(acp_entry, entry, &acp[inst->dst.nr % ACP_HASH_SIZE]) {
-            if (regions_overlap(entry->dst, entry->regs_written * REG_SIZE,
-                                inst->dst, inst->regs_written * REG_SIZE))
+            if (regions_overlap(entry->dst, entry->size_written,
+                                inst->dst, inst->size_written))
                entry->remove();
          }
 
@@ -794,8 +772,8 @@ fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
                /* Make sure we kill the entry if this instruction overwrites
                 * _any_ of the registers that it reads
                 */
-               if (regions_overlap(entry->src, entry->regs_read * REG_SIZE,
-                                   inst->dst, inst->regs_written * REG_SIZE))
+               if (regions_overlap(entry->src, entry->size_read,
+                                   inst->dst, inst->size_written))
                   entry->remove();
             }
 	 }
@@ -808,8 +786,8 @@ fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
          acp_entry *entry = ralloc(copy_prop_ctx, acp_entry);
          entry->dst = inst->dst;
          entry->src = inst->src[0];
-         entry->regs_written = inst->regs_written;
-         entry->regs_read = inst->regs_read(0);
+         entry->size_written = inst->size_written;
+         entry->size_read = inst->size_read(0);
          entry->opcode = inst->opcode;
          entry->saturate = inst->saturate;
          acp[entry->dst.nr % ACP_HASH_SIZE].push_tail(entry);
@@ -819,15 +797,14 @@ fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
          for (int i = 0; i < inst->sources; i++) {
             int effective_width = i < inst->header_size ? 8 : inst->exec_size;
             assert(effective_width * type_sz(inst->src[i].type) % REG_SIZE == 0);
-            int regs_written = effective_width *
-               type_sz(inst->src[i].type) / REG_SIZE;
+            const unsigned size_written = effective_width *
+                                          type_sz(inst->src[i].type);
             if (inst->src[i].file == VGRF) {
-               acp_entry *entry = ralloc(copy_prop_ctx, acp_entry);
-               entry->dst = inst->dst;
-               entry->dst.reg_offset += offset;
+               acp_entry *entry = rzalloc(copy_prop_ctx, acp_entry);
+               entry->dst = byte_offset(inst->dst, offset);
                entry->src = inst->src[i];
-               entry->regs_written = regs_written;
-               entry->regs_read = inst->regs_read(i);
+               entry->size_written = size_written;
+               entry->size_read = inst->size_read(i);
                entry->opcode = inst->opcode;
                if (!entry->dst.equals(inst->src[i])) {
                   acp[entry->dst.nr % ACP_HASH_SIZE].push_tail(entry);
@@ -835,7 +812,7 @@ fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
                   ralloc_free(entry);
                }
             }
-            offset += regs_written;
+            offset += size_written;
          }
       }
    }
@@ -844,7 +821,7 @@ fs_visitor::opt_copy_propagate_local(void *copy_prop_ctx, bblock_t *block,
 }
 
 bool
-fs_visitor::opt_copy_propagate()
+fs_visitor::opt_copy_propagation()
 {
    bool progress = false;
    void *copy_prop_ctx = ralloc_context(NULL);
@@ -857,8 +834,8 @@ fs_visitor::opt_copy_propagate()
     * the set of copies available at the end of the block.
     */
    foreach_block (block, cfg) {
-      progress = opt_copy_propagate_local(copy_prop_ctx, block,
-                                          out_acp[block->num]) || progress;
+      progress = opt_copy_propagation_local(copy_prop_ctx, block,
+                                            out_acp[block->num]) || progress;
    }
 
    /* Do dataflow analysis for those available copies. */
@@ -877,7 +854,8 @@ fs_visitor::opt_copy_propagate()
          }
       }
 
-      progress = opt_copy_propagate_local(copy_prop_ctx, block, in_acp) || progress;
+      progress = opt_copy_propagation_local(copy_prop_ctx, block, in_acp) ||
+                 progress;
    }
 
    for (int i = 0; i < cfg->num_blocks; i++)

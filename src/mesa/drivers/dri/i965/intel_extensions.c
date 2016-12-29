@@ -26,6 +26,7 @@
 #include "main/version.h"
 
 #include "brw_context.h"
+#include "brw_defines.h"
 #include "intel_batchbuffer.h"
 
 /**
@@ -270,7 +271,7 @@ intelInitExtensions(struct gl_context *ctx)
    ctx->Extensions.OES_texture_half_float_linear = true;
 
    if (brw->gen >= 8)
-      ctx->Const.GLSLVersion = 440;
+      ctx->Const.GLSLVersion = 450;
    else if (brw->gen >= 6)
       ctx->Const.GLSLVersion = 330;
    else
@@ -279,6 +280,11 @@ intelInitExtensions(struct gl_context *ctx)
 
    ctx->Extensions.EXT_shader_integer_mix = ctx->Const.GLSLVersion >= 130;
    ctx->Extensions.MESA_shader_integer_functions = ctx->Const.GLSLVersion >= 130;
+
+   if (brw->is_g4x || brw->gen >= 5) {
+      ctx->Extensions.MESA_shader_framebuffer_fetch_non_coherent = true;
+      ctx->Extensions.KHR_blend_equation_advanced = true;
+   }
 
    if (brw->gen >= 5) {
       ctx->Extensions.ARB_texture_query_levels = ctx->Const.GLSLVersion >= 130;
@@ -317,13 +323,14 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.OES_depth_texture_cube_map = true;
       ctx->Extensions.OES_sample_variables = true;
 
-      ctx->Extensions.ARB_timer_query = brw->intelScreen->hw_has_timestamp;
+      ctx->Extensions.ARB_timer_query = brw->screen->hw_has_timestamp;
 
       /* Only enable this in core profile because other parts of Mesa behave
        * slightly differently when the extension is enabled.
        */
       if (ctx->API == API_OPENGL_CORE) {
          ctx->Extensions.ARB_shader_subroutine = true;
+         ctx->Extensions.ARB_shader_viewport_layer_array = true;
          ctx->Extensions.ARB_viewport_array = true;
          ctx->Extensions.AMD_vertex_shader_viewport_index = true;
       }
@@ -339,6 +346,7 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.ARB_framebuffer_no_attachments = true;
       ctx->Extensions.ARB_gpu_shader5 = true;
       ctx->Extensions.ARB_shader_atomic_counters = true;
+      ctx->Extensions.ARB_shader_atomic_counter_ops = true;
       ctx->Extensions.ARB_shader_clock = true;
       ctx->Extensions.ARB_shader_image_load_store = true;
       ctx->Extensions.ARB_shader_image_size = true;
@@ -348,6 +356,7 @@ intelInitExtensions(struct gl_context *ctx)
       ctx->Extensions.ARB_texture_view = true;
       ctx->Extensions.ARB_shader_storage_buffer_object = true;
       ctx->Extensions.EXT_shader_samples_identical = true;
+      ctx->Extensions.OES_primitive_bounding_box = true;
       ctx->Extensions.OES_texture_buffer = true;
 
       if (brw->can_do_pipelined_register_writes) {
@@ -356,22 +365,28 @@ intelInitExtensions(struct gl_context *ctx)
          ctx->Extensions.ARB_transform_feedback3 = true;
          ctx->Extensions.ARB_transform_feedback_instanced = true;
 
-         if ((brw->gen >= 8 || brw->intelScreen->cmd_parser_version >= 5) &&
+         if ((brw->gen >= 8 || brw->screen->cmd_parser_version >= 5) &&
              ctx->Const.MaxComputeWorkGroupSize[0] >= 1024) {
             ctx->Extensions.ARB_compute_shader = true;
-            ctx->Extensions.ARB_ES3_1_compatibility = brw->gen >= 8;
+            ctx->Extensions.ARB_ES3_1_compatibility =
+               brw->gen >= 8 || brw->is_haswell;
          }
 
-         if (brw->intelScreen->cmd_parser_version >= 2)
+         if (brw->screen->cmd_parser_version >= 2)
             brw->predicate.supported = true;
       }
+   }
+
+   if (brw->gen >= 8 || brw->is_haswell) {
+      ctx->Extensions.ARB_stencil_texturing = true;
+      ctx->Extensions.ARB_texture_stencil8 = true;
    }
 
    if (brw->gen >= 8 || brw->is_haswell || brw->is_baytrail) {
       ctx->Extensions.ARB_robust_buffer_access_behavior = true;
    }
 
-   if (brw->intelScreen->has_mi_math_and_lrr) {
+   if (brw->screen->has_mi_math_and_lrr) {
       ctx->Extensions.ARB_query_buffer_object = true;
    }
 
@@ -384,18 +399,24 @@ intelInitExtensions(struct gl_context *ctx)
    }
 
    if (brw->gen >= 8) {
-      ctx->Extensions.ARB_shader_precision = true;
-      ctx->Extensions.ARB_stencil_texturing = true;
-      ctx->Extensions.ARB_texture_stencil8 = true;
       ctx->Extensions.ARB_gpu_shader_fp64 = true;
+      ctx->Extensions.ARB_shader_precision = true;
       ctx->Extensions.ARB_vertex_attrib_64bit = true;
-      ctx->Extensions.OES_shader_io_blocks = true;
+      ctx->Extensions.ARB_ES3_2_compatibility = true;
+      ctx->Extensions.OES_geometry_shader = true;
+      ctx->Extensions.OES_texture_cube_map_array = true;
+      ctx->Extensions.OES_viewport_array = true;
    }
 
    if (brw->gen >= 9) {
+      ctx->Extensions.ANDROID_extension_pack_es31a = true;
+      ctx->Extensions.ARB_shader_stencil_export = true;
+      ctx->Extensions.KHR_blend_equation_advanced_coherent = true;
       ctx->Extensions.KHR_texture_compression_astc_ldr = true;
       ctx->Extensions.KHR_texture_compression_astc_sliced_3d = true;
-      ctx->Extensions.ARB_shader_stencil_export = true;
+      ctx->Extensions.INTEL_conservative_rasterization = true;
+      ctx->Extensions.MESA_shader_framebuffer_fetch = true;
+      ctx->Extensions.ARB_post_depth_coverage = true;
    }
 
    if (ctx->API == API_OPENGL_CORE)

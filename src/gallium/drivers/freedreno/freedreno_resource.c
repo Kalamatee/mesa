@@ -107,16 +107,13 @@ realloc_bo(struct fd_resource *rsc, uint32_t size)
 	fd_bc_invalidate_resource(rsc, true);
 }
 
-static void fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard);
-static void fd_blitter_pipe_end(struct fd_context *ctx);
-
 static void
 do_blit(struct fd_context *ctx, const struct pipe_blit_info *blit, bool fallback)
 {
 	/* TODO size threshold too?? */
 	if ((blit->src.resource->target != PIPE_BUFFER) && !fallback) {
 		/* do blit on gpu: */
-		fd_blitter_pipe_begin(ctx, false, true);
+		fd_blitter_pipe_begin(ctx, false, true, FD_STAGE_BLIT);
 		util_blitter_blit(ctx->blitter, blit);
 		fd_blitter_pipe_end(ctx);
 	} else {
@@ -135,6 +132,9 @@ fd_try_shadow_resource(struct fd_context *ctx, struct fd_resource *rsc,
 	struct pipe_context *pctx = &ctx->base;
 	struct pipe_resource *prsc = &rsc->base.b;
 	bool fallback = false;
+
+	if (prsc->next)
+		return false;
 
 	/* TODO: somehow munge dimensions and format to copy unsupported
 	 * render target format to something that is supported?
@@ -428,7 +428,7 @@ fd_resource_transfer_unmap(struct pipe_context *pctx,
 				   ptrans->box.x + ptrans->box.width);
 
 	pipe_resource_reference(&ptrans->resource, NULL);
-	util_slab_free(&ctx->transfer_pool, ptrans);
+	slab_free(&ctx->transfer_pool, ptrans);
 
 	free(trans->staging);
 }
@@ -454,11 +454,11 @@ fd_resource_transfer_map(struct pipe_context *pctx,
 	DBG("prsc=%p, level=%u, usage=%x, box=%dx%d+%d,%d", prsc, level, usage,
 		box->width, box->height, box->x, box->y);
 
-	ptrans = util_slab_alloc(&ctx->transfer_pool);
+	ptrans = slab_alloc(&ctx->transfer_pool);
 	if (!ptrans)
 		return NULL;
 
-	/* util_slab_alloc() doesn't zero: */
+	/* slab_alloc_st() doesn't zero: */
 	trans = fd_transfer(ptrans);
 	memset(trans, 0, sizeof(*trans));
 
@@ -700,6 +700,7 @@ setup_slices(struct fd_resource *rsc, uint32_t alignment, enum pipe_format forma
 {
 	struct pipe_resource *prsc = &rsc->base.b;
 	enum util_format_layout layout = util_format_description(format)->layout;
+	uint32_t pitchalign = fd_screen(prsc->screen)->gmem_alignw;
 	uint32_t level, size = 0;
 	uint32_t width = prsc->width0;
 	uint32_t height = prsc->height0;
@@ -715,9 +716,9 @@ setup_slices(struct fd_resource *rsc, uint32_t alignment, enum pipe_format forma
 
 		if (layout == UTIL_FORMAT_LAYOUT_ASTC)
 			slice->pitch = width =
-				util_align_npot(width, 32 * util_format_get_blockwidth(format));
+				util_align_npot(width, pitchalign * util_format_get_blockwidth(format));
 		else
-			slice->pitch = width = align(width, 32);
+			slice->pitch = width = align(width, pitchalign);
 		slice->offset = size;
 		blocks = util_format_get_nblocks(format, width, height);
 		/* 1d array and 2d array textures must all have the same layer size
@@ -818,7 +819,7 @@ fd_resource_create(struct pipe_screen *pscreen,
 	assert(rsc->cpp);
 
 	alignment = slice_alignment(pscreen, tmpl);
-	if (is_a4xx(fd_screen(pscreen))) {
+	if (is_a4xx(fd_screen(pscreen)) || is_a5xx(fd_screen(pscreen))) {
 		switch (tmpl->target) {
 		case PIPE_TEXTURE_3D:
 			rsc->layer_first = false;
@@ -882,6 +883,7 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 	struct fd_resource *rsc = CALLOC_STRUCT(fd_resource);
 	struct fd_resource_slice *slice = &rsc->slices[0];
 	struct pipe_resource *prsc = &rsc->base.b;
+	uint32_t pitchalign = fd_screen(pscreen)->gmem_alignw;
 
 	DBG("target=%d, format=%s, %ux%ux%u, array_size=%u, last_level=%u, "
 			"nr_samples=%u, usage=%u, bind=%x, flags=%x",
@@ -901,14 +903,19 @@ fd_resource_from_handle(struct pipe_screen *pscreen,
 
 	util_range_init(&rsc->valid_buffer_range);
 
-	rsc->bo = fd_screen_bo_from_handle(pscreen, handle, &slice->pitch);
+	rsc->bo = fd_screen_bo_from_handle(pscreen, handle);
 	if (!rsc->bo)
 		goto fail;
 
 	rsc->base.vtbl = &fd_resource_vtbl;
 	rsc->cpp = util_format_get_blocksize(tmpl->format);
-	slice->pitch /= rsc->cpp;
+	slice->pitch = handle->stride / rsc->cpp;
 	slice->offset = handle->offset;
+	slice->size0 = handle->stride * prsc->height0;
+
+	if ((slice->pitch < align(prsc->width0, pitchalign)) ||
+			(slice->pitch & (pitchalign - 1)))
+		goto fail;
 
 	assert(rsc->cpp);
 
@@ -939,7 +946,7 @@ fd_blitter_pipe_copy_region(struct fd_context *ctx,
 		return false;
 
 	/* TODO we could discard if dst box covers dst level fully.. */
-	fd_blitter_pipe_begin(ctx, false, false);
+	fd_blitter_pipe_begin(ctx, false, false, FD_STAGE_BLIT);
 	util_blitter_copy_texture(ctx->blitter,
 			dst, dst_level, dstx, dsty, dstz,
 			src, src_level, src_box);
@@ -1045,14 +1052,17 @@ fd_blit(struct pipe_context *pctx, const struct pipe_blit_info *blit_info)
 		return;
 	}
 
-	fd_blitter_pipe_begin(ctx, info.render_condition_enable, discard);
+	fd_blitter_pipe_begin(ctx, info.render_condition_enable, discard, FD_STAGE_BLIT);
 	util_blitter_blit(ctx->blitter, &info);
 	fd_blitter_pipe_end(ctx);
 }
 
-static void
-fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard)
+void
+fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard,
+		enum fd_render_stage stage)
 {
+	util_blitter_save_fragment_constant_buffer_slot(ctx->blitter,
+			ctx->constbuf[PIPE_SHADER_FRAGMENT].cb);
 	util_blitter_save_vertex_buffer_slot(ctx->blitter, ctx->vtx.vertexbuf.vb);
 	util_blitter_save_vertex_elements(ctx->blitter, ctx->vtx.vtx);
 	util_blitter_save_vertex_shader(ctx->blitter, ctx->prog.vp);
@@ -1078,12 +1088,12 @@ fd_blitter_pipe_begin(struct fd_context *ctx, bool render_cond, bool discard)
 			ctx->cond_query, ctx->cond_cond, ctx->cond_mode);
 
 	if (ctx->batch)
-		fd_hw_query_set_stage(ctx->batch, ctx->batch->draw, FD_STAGE_BLIT);
+		fd_hw_query_set_stage(ctx->batch, ctx->batch->draw, stage);
 
 	ctx->in_blit = discard;
 }
 
-static void
+void
 fd_blitter_pipe_end(struct fd_context *ctx)
 {
 	if (ctx->batch)
@@ -1118,7 +1128,7 @@ fd_resource_context_init(struct pipe_context *pctx)
 	pctx->transfer_flush_region = u_transfer_flush_region_vtbl;
 	pctx->transfer_unmap = u_transfer_unmap_vtbl;
 	pctx->buffer_subdata = u_default_buffer_subdata;
-        pctx->texture_subdata = u_default_texture_subdata;
+	pctx->texture_subdata = u_default_texture_subdata;
 	pctx->create_surface = fd_create_surface;
 	pctx->surface_destroy = fd_surface_destroy;
 	pctx->resource_copy_region = fd_resource_copy_region;

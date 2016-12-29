@@ -143,7 +143,7 @@ fd3_sampler_state_create(struct pipe_context *pctx,
 
 static void
 fd3_sampler_states_bind(struct pipe_context *pctx,
-		unsigned shader, unsigned start,
+		enum pipe_shader_type shader, unsigned start,
 		unsigned nr, void **hwcso)
 {
 	struct fd_context *ctx = fd_context(pctx);
@@ -234,6 +234,8 @@ fd3_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 			fd3_tex_swiz(cso->format, cso->swizzle_r, cso->swizzle_g,
 						cso->swizzle_b, cso->swizzle_a);
 
+	if (prsc->target == PIPE_BUFFER || util_format_is_pure_integer(cso->format))
+		so->texconst0 |= A3XX_TEX_CONST_0_NOCONVERT;
 	if (util_format_is_srgb(cso->format))
 		so->texconst0 |= A3XX_TEX_CONST_0_SRGB;
 
@@ -241,8 +243,7 @@ fd3_sampler_view_create(struct pipe_context *pctx, struct pipe_resource *prsc,
 		lvl = 0;
 		so->texconst1 =
 			A3XX_TEX_CONST_1_FETCHSIZE(fd3_pipe2fetchsize(cso->format)) |
-			A3XX_TEX_CONST_1_WIDTH(cso->u.buf.last_element -
-								   cso->u.buf.first_element + 1) |
+			A3XX_TEX_CONST_1_WIDTH(cso->u.buf.size / util_format_get_blocksize(cso->format)) |
 			A3XX_TEX_CONST_1_HEIGHT(1);
 	} else {
 		unsigned miplevels;

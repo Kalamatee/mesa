@@ -91,6 +91,7 @@ nvc0_blend_state_create(struct pipe_context *pipe,
    struct nvc0_blend_stateobj *so = CALLOC_STRUCT(nvc0_blend_stateobj);
    int i;
    int r; /* reference */
+   uint32_t ms;
    uint8_t blend_en = 0;
    bool indep_masks = false;
    bool indep_funcs = false;
@@ -175,6 +176,15 @@ nvc0_blend_state_create(struct pipe_context *pipe,
          SB_DATA    (so, nvc0_colormask(cso->rt[0].colormask));
       }
    }
+
+   ms = 0;
+   if (cso->alpha_to_coverage)
+      ms |= NVC0_3D_MULTISAMPLE_CTRL_ALPHA_TO_COVERAGE;
+   if (cso->alpha_to_one)
+      ms |= NVC0_3D_MULTISAMPLE_CTRL_ALPHA_TO_ONE;
+
+   SB_BEGIN_3D(so, MULTISAMPLE_CTRL, 1);
+   SB_DATA    (so, ms);
 
    assert(so->size <= ARRAY_SIZE(so->state));
    return so;
@@ -426,7 +436,8 @@ nvc0_sampler_state_delete(struct pipe_context *pipe, void *hwcso)
 }
 
 static inline void
-nvc0_stage_sampler_states_bind(struct nvc0_context *nvc0, int s,
+nvc0_stage_sampler_states_bind(struct nvc0_context *nvc0,
+                               unsigned s,
                                unsigned nr, void **hwcso)
 {
    unsigned i;
@@ -450,83 +461,22 @@ nvc0_stage_sampler_states_bind(struct nvc0_context *nvc0, int s,
    }
 
    nvc0->num_samplers[s] = nr;
-
-   nvc0->dirty_3d |= NVC0_NEW_3D_SAMPLERS;
 }
 
 static void
-nvc0_stage_sampler_states_bind_range(struct nvc0_context *nvc0,
-                                     const unsigned s,
-                                     unsigned start, unsigned nr, void **cso)
+nvc0_bind_sampler_states(struct pipe_context *pipe,
+                         enum pipe_shader_type shader,
+                         unsigned start, unsigned nr, void **samplers)
 {
-   const unsigned end = start + nr;
-   int last_valid = -1;
-   unsigned i;
+   const unsigned s = nvc0_shader_stage(shader);
 
-   if (cso) {
-      for (i = start; i < end; ++i) {
-         const unsigned p = i - start;
-         if (cso[p])
-            last_valid = i;
-         if (cso[p] == nvc0->samplers[s][i])
-            continue;
-         nvc0->samplers_dirty[s] |= 1 << i;
+   assert(start == 0);
+   nvc0_stage_sampler_states_bind(nvc0_context(pipe), s, nr, samplers);
 
-         if (nvc0->samplers[s][i])
-            nvc0_screen_tsc_unlock(nvc0->screen, nvc0->samplers[s][i]);
-         nvc0->samplers[s][i] = cso[p];
-      }
-   } else {
-      for (i = start; i < end; ++i) {
-         if (nvc0->samplers[s][i]) {
-            nvc0_screen_tsc_unlock(nvc0->screen, nvc0->samplers[s][i]);
-            nvc0->samplers[s][i] = NULL;
-            nvc0->samplers_dirty[s] |= 1 << i;
-         }
-      }
-   }
-
-   if (nvc0->num_samplers[s] <= end) {
-      if (last_valid < 0) {
-         for (i = start; i && !nvc0->samplers[s][i - 1]; --i);
-         nvc0->num_samplers[s] = i;
-      } else {
-         nvc0->num_samplers[s] = last_valid + 1;
-      }
-   }
-}
-
-static void
-nvc0_bind_sampler_states(struct pipe_context *pipe, unsigned shader,
-                         unsigned start, unsigned nr, void **s)
-{
-   switch (shader) {
-   case PIPE_SHADER_VERTEX:
-      assert(start == 0);
-      nvc0_stage_sampler_states_bind(nvc0_context(pipe), 0, nr, s);
-      break;
-   case PIPE_SHADER_TESS_CTRL:
-      assert(start == 0);
-      nvc0_stage_sampler_states_bind(nvc0_context(pipe), 1, nr, s);
-      break;
-   case PIPE_SHADER_TESS_EVAL:
-      assert(start == 0);
-      nvc0_stage_sampler_states_bind(nvc0_context(pipe), 2, nr, s);
-      break;
-   case PIPE_SHADER_GEOMETRY:
-      assert(start == 0);
-      nvc0_stage_sampler_states_bind(nvc0_context(pipe), 3, nr, s);
-      break;
-   case PIPE_SHADER_FRAGMENT:
-      assert(start == 0);
-      nvc0_stage_sampler_states_bind(nvc0_context(pipe), 4, nr, s);
-      break;
-   case PIPE_SHADER_COMPUTE:
-      nvc0_stage_sampler_states_bind_range(nvc0_context(pipe), 5,
-                                           start, nr, s);
+   if (s == 5)
       nvc0_context(pipe)->dirty_cp |= NVC0_NEW_CP_SAMPLERS;
-      break;
-   }
+   else
+      nvc0_context(pipe)->dirty_3d |= NVC0_NEW_3D_SAMPLERS;
 }
 
 
@@ -568,7 +518,10 @@ nvc0_stage_set_sampler_views(struct nvc0_context *nvc0, int s,
       }
 
       if (old) {
-         nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TEX(s, i));
+         if (s == 5)
+            nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_TEX(i));
+         else
+            nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TEX(s, i));
          nvc0_screen_tic_unlock(nvc0->screen, old);
       }
 
@@ -578,110 +531,33 @@ nvc0_stage_set_sampler_views(struct nvc0_context *nvc0, int s,
    for (i = nr; i < nvc0->num_textures[s]; ++i) {
       struct nv50_tic_entry *old = nv50_tic_entry(nvc0->textures[s][i]);
       if (old) {
-         nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TEX(s, i));
+         if (s == 5)
+            nouveau_bufctx_reset(nvc0->bufctx_cp, NVC0_BIND_CP_TEX(i));
+         else
+            nouveau_bufctx_reset(nvc0->bufctx_3d, NVC0_BIND_3D_TEX(s, i));
          nvc0_screen_tic_unlock(nvc0->screen, old);
          pipe_sampler_view_reference(&nvc0->textures[s][i], NULL);
       }
    }
 
    nvc0->num_textures[s] = nr;
-
-   nvc0->dirty_3d |= NVC0_NEW_3D_TEXTURES;
 }
 
 static void
-nvc0_stage_set_sampler_views_range(struct nvc0_context *nvc0, const unsigned s,
-                                   unsigned start, unsigned nr,
-                                   struct pipe_sampler_view **views)
-{
-   struct nouveau_bufctx *bctx = (s == 5) ? nvc0->bufctx_cp : nvc0->bufctx_3d;
-   const unsigned end = start + nr;
-   const unsigned bin = (s == 5) ? NVC0_BIND_CP_TEX(0) : NVC0_BIND_3D_TEX(s, 0);
-   int last_valid = -1;
-   unsigned i;
-
-   if (views) {
-      for (i = start; i < end; ++i) {
-         const unsigned p = i - start;
-         if (views[p])
-            last_valid = i;
-         if (views[p] == nvc0->textures[s][i])
-            continue;
-         nvc0->textures_dirty[s] |= 1 << i;
-
-         if (views[p] && views[p]->texture) {
-            struct pipe_resource *res = views[p]->texture;
-            if (res->target == PIPE_BUFFER &&
-                (res->flags & PIPE_RESOURCE_FLAG_MAP_COHERENT))
-               nvc0->textures_coherent[s] |= 1 << i;
-            else
-               nvc0->textures_coherent[s] &= ~(1 << i);
-         } else {
-            nvc0->textures_coherent[s] &= ~(1 << i);
-         }
-
-         if (nvc0->textures[s][i]) {
-            struct nv50_tic_entry *old = nv50_tic_entry(nvc0->textures[s][i]);
-            nouveau_bufctx_reset(bctx, bin + i);
-            nvc0_screen_tic_unlock(nvc0->screen, old);
-         }
-         pipe_sampler_view_reference(&nvc0->textures[s][i], views[p]);
-      }
-   } else {
-      for (i = start; i < end; ++i) {
-         struct nv50_tic_entry *old = nv50_tic_entry(nvc0->textures[s][i]);
-         if (!old)
-            continue;
-         nvc0->textures_dirty[s] |= 1 << i;
-
-         nvc0_screen_tic_unlock(nvc0->screen, old);
-         pipe_sampler_view_reference(&nvc0->textures[s][i], NULL);
-         nouveau_bufctx_reset(bctx, bin + i);
-      }
-   }
-
-   if (nvc0->num_textures[s] <= end) {
-      if (last_valid < 0) {
-         for (i = start; i && !nvc0->textures[s][i - 1]; --i);
-         nvc0->num_textures[s] = i;
-      } else {
-         nvc0->num_textures[s] = last_valid + 1;
-      }
-   }
-}
-
-static void
-nvc0_set_sampler_views(struct pipe_context *pipe, unsigned shader,
+nvc0_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
                        unsigned start, unsigned nr,
                        struct pipe_sampler_view **views)
 {
-   assert(start == 0);
-   switch (shader) {
-   case PIPE_SHADER_VERTEX:
-      nvc0_stage_set_sampler_views(nvc0_context(pipe), 0, nr, views);
-      break;
-   case PIPE_SHADER_TESS_CTRL:
-      nvc0_stage_set_sampler_views(nvc0_context(pipe), 1, nr, views);
-      break;
-   case PIPE_SHADER_TESS_EVAL:
-      nvc0_stage_set_sampler_views(nvc0_context(pipe), 2, nr, views);
-      break;
-   case PIPE_SHADER_GEOMETRY:
-      nvc0_stage_set_sampler_views(nvc0_context(pipe), 3, nr, views);
-      break;
-   case PIPE_SHADER_FRAGMENT:
-      nvc0_stage_set_sampler_views(nvc0_context(pipe), 4, nr, views);
-      break;
-   case PIPE_SHADER_COMPUTE:
-      nvc0_stage_set_sampler_views_range(nvc0_context(pipe), 5,
-                                         start, nr, views);
-      nvc0_context(pipe)->dirty_cp |= NVC0_NEW_CP_TEXTURES;
-      break;
-   default:
-      ;
-   }
-}
+   const unsigned s = nvc0_shader_stage(shader);
 
+   assert(start == 0);
+   nvc0_stage_set_sampler_views(nvc0_context(pipe), s, nr, views);
+
+   if (s == 5)
+      nvc0_context(pipe)->dirty_cp |= NVC0_NEW_CP_TEXTURES;
+   else
+      nvc0_context(pipe)->dirty_3d |= NVC0_NEW_3D_TEXTURES;
+}
 
 /* ============================= SHADERS =======================================
  */
@@ -818,6 +694,10 @@ nvc0_cp_state_create(struct pipe_context *pipe,
    prog->parm_size = cso->req_input_mem;
 
    prog->pipe.tokens = tgsi_dup_tokens((const struct tgsi_token *)cso->prog);
+
+   prog->translated = nvc0_program_translate(
+      prog, nvc0_context(pipe)->screen->base.device->chipset,
+      &nouveau_context(pipe)->debug);
 
    return (void *)prog;
 }
@@ -1271,8 +1151,8 @@ nvc0_bind_images_range(struct nvc0_context *nvc0, const unsigned s,
             if (img->resource == NULL)
                continue;
             if (img->resource->target == PIPE_BUFFER &&
-                img->u.buf.first_element == pimages[p].u.buf.first_element &&
-                img->u.buf.last_element == pimages[p].u.buf.last_element)
+                img->u.buf.offset == pimages[p].u.buf.offset &&
+                img->u.buf.size == pimages[p].u.buf.size)
                continue;
             if (img->resource->target != PIPE_BUFFER &&
                 img->u.tex.first_layer == pimages[p].u.tex.first_layer &&
@@ -1339,7 +1219,8 @@ nvc0_bind_images_range(struct nvc0_context *nvc0, const unsigned s,
 }
 
 static void
-nvc0_set_shader_images(struct pipe_context *pipe, unsigned shader,
+nvc0_set_shader_images(struct pipe_context *pipe,
+                       enum pipe_shader_type shader,
                        unsigned start, unsigned nr,
                        const struct pipe_image_view *images)
 {
@@ -1404,7 +1285,7 @@ nvc0_bind_buffers_range(struct nvc0_context *nvc0, const unsigned t,
 
 static void
 nvc0_set_shader_buffers(struct pipe_context *pipe,
-                        unsigned shader,
+                        enum pipe_shader_type shader,
                         unsigned start, unsigned nr,
                         const struct pipe_shader_buffer *buffers)
 {

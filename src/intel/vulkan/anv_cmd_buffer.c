@@ -137,82 +137,26 @@ anv_cmd_state_reset(struct anv_cmd_buffer *cmd_buffer)
    state->need_query_wa = true;
 
    if (state->attachments != NULL) {
-      anv_free(&cmd_buffer->pool->alloc, state->attachments);
+      vk_free(&cmd_buffer->pool->alloc, state->attachments);
       state->attachments = NULL;
    }
 
    state->gen7.index_buffer = NULL;
 }
 
-/**
- * Setup anv_cmd_state::attachments for vkCmdBeginRenderPass.
- */
-void
-anv_cmd_state_setup_attachments(struct anv_cmd_buffer *cmd_buffer,
-                                const VkRenderPassBeginInfo *info)
-{
-   struct anv_cmd_state *state = &cmd_buffer->state;
-   ANV_FROM_HANDLE(anv_render_pass, pass, info->renderPass);
-
-   anv_free(&cmd_buffer->pool->alloc, state->attachments);
-
-   if (pass->attachment_count == 0) {
-      state->attachments = NULL;
-      return;
-   }
-
-   state->attachments = anv_alloc(&cmd_buffer->pool->alloc,
-                                  pass->attachment_count *
-                                       sizeof(state->attachments[0]),
-                                  8, VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
-   if (state->attachments == NULL) {
-      /* FIXME: Propagate VK_ERROR_OUT_OF_HOST_MEMORY to vkEndCommandBuffer */
-      abort();
-   }
-
-   for (uint32_t i = 0; i < pass->attachment_count; ++i) {
-      struct anv_render_pass_attachment *att = &pass->attachments[i];
-      VkImageAspectFlags att_aspects = vk_format_aspects(att->format);
-      VkImageAspectFlags clear_aspects = 0;
-
-      if (att_aspects == VK_IMAGE_ASPECT_COLOR_BIT) {
-         /* color attachment */
-         if (att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-            clear_aspects |= VK_IMAGE_ASPECT_COLOR_BIT;
-         }
-      } else {
-         /* depthstencil attachment */
-         if ((att_aspects & VK_IMAGE_ASPECT_DEPTH_BIT) &&
-             att->load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-            clear_aspects |= VK_IMAGE_ASPECT_DEPTH_BIT;
-         }
-         if ((att_aspects & VK_IMAGE_ASPECT_STENCIL_BIT) &&
-             att->stencil_load_op == VK_ATTACHMENT_LOAD_OP_CLEAR) {
-            clear_aspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
-         }
-      }
-
-      state->attachments[i].pending_clear_aspects = clear_aspects;
-      if (clear_aspects) {
-         assert(info->clearValueCount > i);
-         state->attachments[i].clear_value = info->pClearValues[i];
-      }
-   }
-}
-
-static VkResult
+VkResult
 anv_cmd_buffer_ensure_push_constants_size(struct anv_cmd_buffer *cmd_buffer,
                                           gl_shader_stage stage, uint32_t size)
 {
    struct anv_push_constants **ptr = &cmd_buffer->state.push_constants[stage];
 
    if (*ptr == NULL) {
-      *ptr = anv_alloc(&cmd_buffer->pool->alloc, size, 8,
+      *ptr = vk_alloc(&cmd_buffer->pool->alloc, size, 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
       if (*ptr == NULL)
          return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
    } else if ((*ptr)->size < size) {
-      *ptr = anv_realloc(&cmd_buffer->pool->alloc, *ptr, size, 8,
+      *ptr = vk_realloc(&cmd_buffer->pool->alloc, *ptr, size, 8,
                          VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
       if (*ptr == NULL)
          return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -221,11 +165,6 @@ anv_cmd_buffer_ensure_push_constants_size(struct anv_cmd_buffer *cmd_buffer,
 
    return VK_SUCCESS;
 }
-
-#define anv_cmd_buffer_ensure_push_constant_field(cmd_buffer, stage, field) \
-   anv_cmd_buffer_ensure_push_constants_size(cmd_buffer, stage, \
-      (offsetof(struct anv_push_constants, field) + \
-       sizeof(cmd_buffer->state.push_constants[0]->field)))
 
 static VkResult anv_create_cmd_buffer(
     struct anv_device *                         device,
@@ -236,7 +175,7 @@ static VkResult anv_create_cmd_buffer(
    struct anv_cmd_buffer *cmd_buffer;
    VkResult result;
 
-   cmd_buffer = anv_alloc(&pool->alloc, sizeof(*cmd_buffer), 8,
+   cmd_buffer = vk_alloc(&pool->alloc, sizeof(*cmd_buffer), 8,
                           VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (cmd_buffer == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -270,7 +209,7 @@ static VkResult anv_create_cmd_buffer(
    return VK_SUCCESS;
 
  fail:
-   anv_free(&cmd_buffer->pool->alloc, cmd_buffer);
+   vk_free(&cmd_buffer->pool->alloc, cmd_buffer);
 
    return result;
 }
@@ -310,8 +249,8 @@ anv_cmd_buffer_destroy(struct anv_cmd_buffer *cmd_buffer)
    anv_state_stream_finish(&cmd_buffer->surface_state_stream);
    anv_state_stream_finish(&cmd_buffer->dynamic_state_stream);
 
-   anv_free(&cmd_buffer->pool->alloc, cmd_buffer->state.attachments);
-   anv_free(&cmd_buffer->pool->alloc, cmd_buffer);
+   vk_free(&cmd_buffer->pool->alloc, cmd_buffer->state.attachments);
+   vk_free(&cmd_buffer->pool->alloc, cmd_buffer);
 }
 
 void anv_FreeCommandBuffers(
@@ -323,11 +262,14 @@ void anv_FreeCommandBuffers(
    for (uint32_t i = 0; i < commandBufferCount; i++) {
       ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, pCommandBuffers[i]);
 
+      if (!cmd_buffer)
+         continue;
+
       anv_cmd_buffer_destroy(cmd_buffer);
    }
 }
 
-static VkResult
+VkResult
 anv_cmd_buffer_reset(struct anv_cmd_buffer *cmd_buffer)
 {
    cmd_buffer->usage_flags = 0;
@@ -369,72 +311,6 @@ anv_cmd_buffer_emit_state_base_address(struct anv_cmd_buffer *cmd_buffer)
    default:
       unreachable("unsupported gen\n");
    }
-}
-
-VkResult anv_BeginCommandBuffer(
-    VkCommandBuffer                             commandBuffer,
-    const VkCommandBufferBeginInfo*             pBeginInfo)
-{
-   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
-
-   /* If this is the first vkBeginCommandBuffer, we must *initialize* the
-    * command buffer's state. Otherwise, we must *reset* its state. In both
-    * cases we reset it.
-    *
-    * From the Vulkan 1.0 spec:
-    *
-    *    If a command buffer is in the executable state and the command buffer
-    *    was allocated from a command pool with the
-    *    VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT flag set, then
-    *    vkBeginCommandBuffer implicitly resets the command buffer, behaving
-    *    as if vkResetCommandBuffer had been called with
-    *    VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT not set. It then puts
-    *    the command buffer in the recording state.
-    */
-   anv_cmd_buffer_reset(cmd_buffer);
-
-   cmd_buffer->usage_flags = pBeginInfo->flags;
-
-   assert(cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY ||
-          !(cmd_buffer->usage_flags & VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT));
-
-   anv_cmd_buffer_emit_state_base_address(cmd_buffer);
-
-   if (cmd_buffer->usage_flags &
-       VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT) {
-      cmd_buffer->state.framebuffer =
-         anv_framebuffer_from_handle(pBeginInfo->pInheritanceInfo->framebuffer);
-      cmd_buffer->state.pass =
-         anv_render_pass_from_handle(pBeginInfo->pInheritanceInfo->renderPass);
-
-      struct anv_subpass *subpass =
-         &cmd_buffer->state.pass->subpasses[pBeginInfo->pInheritanceInfo->subpass];
-
-      anv_cmd_buffer_set_subpass(cmd_buffer, subpass);
-   }
-
-   return VK_SUCCESS;
-}
-
-VkResult anv_EndCommandBuffer(
-    VkCommandBuffer                             commandBuffer)
-{
-   ANV_FROM_HANDLE(anv_cmd_buffer, cmd_buffer, commandBuffer);
-   struct anv_device *device = cmd_buffer->device;
-
-   anv_cmd_buffer_end_batch_buffer(cmd_buffer);
-
-   if (cmd_buffer->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
-      /* The algorithm used to compute the validate list is not threadsafe as
-       * it uses the bo->index field.  We have to lock the device around it.
-       * Fortunately, the chances for contention here are probably very low.
-       */
-      pthread_mutex_lock(&device->mutex);
-      anv_cmd_buffer_prepare_execbuf(cmd_buffer);
-      pthread_mutex_unlock(&device->mutex);
-   }
-
-   return VK_SUCCESS;
 }
 
 void anv_CmdBindPipeline(
@@ -680,20 +556,6 @@ void anv_CmdBindVertexBuffers(
    }
 }
 
-static void
-add_surface_state_reloc(struct anv_cmd_buffer *cmd_buffer,
-                        struct anv_state state, struct anv_bo *bo, uint32_t offset)
-{
-   /* The address goes in SURFACE_STATE dword 1 for gens < 8 and dwords 8 and
-    * 9 for gen8+.  We only write the first dword for gen8+ here and rely on
-    * the initial state to set the high bits to 0. */
-
-   const uint32_t dword = cmd_buffer->device->info.gen < 8 ? 1 : 8;
-
-   anv_reloc_list_add(&cmd_buffer->surface_relocs, &cmd_buffer->pool->alloc,
-                      state.offset + dword * 4, bo, offset);
-}
-
 enum isl_format
 anv_isl_format_for_descriptor_type(VkDescriptorType type)
 {
@@ -709,294 +571,6 @@ anv_isl_format_for_descriptor_type(VkDescriptorType type)
    default:
       unreachable("Invalid descriptor type");
    }
-}
-
-static struct anv_state
-anv_cmd_buffer_alloc_null_surface_state(struct anv_cmd_buffer *cmd_buffer,
-                                        struct anv_framebuffer *fb)
-{
-   switch (cmd_buffer->device->info.gen) {
-   case 7:
-      if (cmd_buffer->device->info.is_haswell) {
-         return gen75_cmd_buffer_alloc_null_surface_state(cmd_buffer, fb);
-      } else {
-         return gen7_cmd_buffer_alloc_null_surface_state(cmd_buffer, fb);
-      }
-   case 8:
-      return gen8_cmd_buffer_alloc_null_surface_state(cmd_buffer, fb);
-   case 9:
-      return gen9_cmd_buffer_alloc_null_surface_state(cmd_buffer, fb);
-   default:
-      unreachable("Invalid hardware generation");
-   }
-}
-
-VkResult
-anv_cmd_buffer_emit_binding_table(struct anv_cmd_buffer *cmd_buffer,
-                                  gl_shader_stage stage,
-                                  struct anv_state *bt_state)
-{
-   struct anv_framebuffer *fb = cmd_buffer->state.framebuffer;
-   struct anv_subpass *subpass = cmd_buffer->state.subpass;
-   struct anv_pipeline_bind_map *map;
-   uint32_t bias, state_offset;
-
-   switch (stage) {
-   case  MESA_SHADER_COMPUTE:
-      map = &cmd_buffer->state.compute_pipeline->bindings[stage];
-      bias = 1;
-      break;
-   default:
-      map = &cmd_buffer->state.pipeline->bindings[stage];
-      bias = 0;
-      break;
-   }
-
-   if (bias + map->surface_count == 0) {
-      *bt_state = (struct anv_state) { 0, };
-      return VK_SUCCESS;
-   }
-
-   *bt_state = anv_cmd_buffer_alloc_binding_table(cmd_buffer,
-                                                  bias + map->surface_count,
-                                                  &state_offset);
-   uint32_t *bt_map = bt_state->map;
-
-   if (bt_state->map == NULL)
-      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-
-   if (stage == MESA_SHADER_COMPUTE &&
-       get_cs_prog_data(cmd_buffer->state.compute_pipeline)->uses_num_work_groups) {
-      struct anv_bo *bo = cmd_buffer->state.num_workgroups_bo;
-      uint32_t bo_offset = cmd_buffer->state.num_workgroups_offset;
-
-      struct anv_state surface_state;
-      surface_state =
-         anv_cmd_buffer_alloc_surface_state(cmd_buffer);
-
-      const enum isl_format format =
-         anv_isl_format_for_descriptor_type(VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
-      anv_fill_buffer_surface_state(cmd_buffer->device, surface_state,
-                                    format, bo_offset, 12, 1);
-
-      bt_map[0] = surface_state.offset + state_offset;
-      add_surface_state_reloc(cmd_buffer, surface_state, bo, bo_offset);
-   }
-
-   if (map->surface_count == 0)
-      goto out;
-
-   if (map->image_count > 0) {
-      VkResult result =
-         anv_cmd_buffer_ensure_push_constant_field(cmd_buffer, stage, images);
-      if (result != VK_SUCCESS)
-         return result;
-
-      cmd_buffer->state.push_constants_dirty |= 1 << stage;
-   }
-
-   uint32_t image = 0;
-   for (uint32_t s = 0; s < map->surface_count; s++) {
-      struct anv_pipeline_binding *binding = &map->surface_to_descriptor[s];
-
-      struct anv_state surface_state;
-      struct anv_bo *bo;
-      uint32_t bo_offset;
-
-      if (binding->set == ANV_DESCRIPTOR_SET_COLOR_ATTACHMENTS) {
-         /* Color attachment binding */
-         assert(stage == MESA_SHADER_FRAGMENT);
-         assert(binding->binding == 0);
-         if (binding->index < subpass->color_count) {
-            const struct anv_image_view *iview =
-               fb->attachments[subpass->color_attachments[binding->index]];
-
-            assert(iview->color_rt_surface_state.alloc_size);
-            surface_state = iview->color_rt_surface_state;
-            add_surface_state_reloc(cmd_buffer, iview->color_rt_surface_state,
-                                    iview->bo, iview->offset);
-         } else {
-            /* Null render target */
-            struct anv_framebuffer *fb = cmd_buffer->state.framebuffer;
-            surface_state =
-               anv_cmd_buffer_alloc_null_surface_state(cmd_buffer, fb);
-         }
-
-         bt_map[bias + s] = surface_state.offset + state_offset;
-         continue;
-      }
-
-      struct anv_descriptor_set *set =
-         cmd_buffer->state.descriptors[binding->set];
-      uint32_t offset = set->layout->binding[binding->binding].descriptor_index;
-      struct anv_descriptor *desc = &set->descriptors[offset + binding->index];
-
-      switch (desc->type) {
-      case VK_DESCRIPTOR_TYPE_SAMPLER:
-         /* Nothing for us to do here */
-         continue;
-
-      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-         surface_state = desc->image_view->sampler_surface_state;
-         assert(surface_state.alloc_size);
-         bo = desc->image_view->bo;
-         bo_offset = desc->image_view->offset;
-         break;
-
-      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE: {
-         surface_state = desc->image_view->storage_surface_state;
-         assert(surface_state.alloc_size);
-         bo = desc->image_view->bo;
-         bo_offset = desc->image_view->offset;
-
-         struct brw_image_param *image_param =
-            &cmd_buffer->state.push_constants[stage]->images[image++];
-
-         *image_param = desc->image_view->storage_image_param;
-         image_param->surface_idx = bias + s;
-         break;
-      }
-
-      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-         surface_state = desc->buffer_view->surface_state;
-         assert(surface_state.alloc_size);
-         bo = desc->buffer_view->bo;
-         bo_offset = desc->buffer_view->offset;
-         break;
-
-      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-         surface_state = desc->buffer_view->storage_surface_state;
-         assert(surface_state.alloc_size);
-         bo = desc->buffer_view->bo;
-         bo_offset = desc->buffer_view->offset;
-
-         struct brw_image_param *image_param =
-            &cmd_buffer->state.push_constants[stage]->images[image++];
-
-         *image_param = desc->buffer_view->storage_image_param;
-         image_param->surface_idx = bias + s;
-         break;
-
-      default:
-         assert(!"Invalid descriptor type");
-         continue;
-      }
-
-      bt_map[bias + s] = surface_state.offset + state_offset;
-      add_surface_state_reloc(cmd_buffer, surface_state, bo, bo_offset);
-   }
-   assert(image == map->image_count);
-
- out:
-   if (!cmd_buffer->device->info.has_llc)
-      anv_state_clflush(*bt_state);
-
-   return VK_SUCCESS;
-}
-
-VkResult
-anv_cmd_buffer_emit_samplers(struct anv_cmd_buffer *cmd_buffer,
-                             gl_shader_stage stage, struct anv_state *state)
-{
-   struct anv_pipeline_bind_map *map;
-
-   if (stage == MESA_SHADER_COMPUTE)
-      map = &cmd_buffer->state.compute_pipeline->bindings[stage];
-   else
-      map = &cmd_buffer->state.pipeline->bindings[stage];
-
-   if (map->sampler_count == 0) {
-      *state = (struct anv_state) { 0, };
-      return VK_SUCCESS;
-   }
-
-   uint32_t size = map->sampler_count * 16;
-   *state = anv_cmd_buffer_alloc_dynamic_state(cmd_buffer, size, 32);
-
-   if (state->map == NULL)
-      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-
-   for (uint32_t s = 0; s < map->sampler_count; s++) {
-      struct anv_pipeline_binding *binding = &map->sampler_to_descriptor[s];
-      struct anv_descriptor_set *set =
-         cmd_buffer->state.descriptors[binding->set];
-      uint32_t offset = set->layout->binding[binding->binding].descriptor_index;
-      struct anv_descriptor *desc = &set->descriptors[offset + binding->index];
-
-      if (desc->type != VK_DESCRIPTOR_TYPE_SAMPLER &&
-          desc->type != VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-         continue;
-
-      struct anv_sampler *sampler = desc->sampler;
-
-      /* This can happen if we have an unfilled slot since TYPE_SAMPLER
-       * happens to be zero.
-       */
-      if (sampler == NULL)
-         continue;
-
-      memcpy(state->map + (s * 16),
-             sampler->state, sizeof(sampler->state));
-   }
-
-   if (!cmd_buffer->device->info.has_llc)
-      anv_state_clflush(*state);
-
-   return VK_SUCCESS;
-}
-
-uint32_t
-anv_cmd_buffer_flush_descriptor_sets(struct anv_cmd_buffer *cmd_buffer)
-{
-   VkShaderStageFlags dirty = cmd_buffer->state.descriptors_dirty &
-                              cmd_buffer->state.pipeline->active_stages;
-
-   VkResult result = VK_SUCCESS;
-   anv_foreach_stage(s, dirty) {
-      result = anv_cmd_buffer_emit_samplers(cmd_buffer, s,
-                                            &cmd_buffer->state.samplers[s]);
-      if (result != VK_SUCCESS)
-         break;
-      result = anv_cmd_buffer_emit_binding_table(cmd_buffer, s,
-                                                 &cmd_buffer->state.binding_tables[s]);
-      if (result != VK_SUCCESS)
-         break;
-   }
-
-   if (result != VK_SUCCESS) {
-      assert(result == VK_ERROR_OUT_OF_DEVICE_MEMORY);
-
-      result = anv_cmd_buffer_new_binding_table_block(cmd_buffer);
-      assert(result == VK_SUCCESS);
-
-      /* Re-emit state base addresses so we get the new surface state base
-       * address before we start emitting binding tables etc.
-       */
-      anv_cmd_buffer_emit_state_base_address(cmd_buffer);
-
-      /* Re-emit all active binding tables */
-      dirty |= cmd_buffer->state.pipeline->active_stages;
-      anv_foreach_stage(s, dirty) {
-         result = anv_cmd_buffer_emit_samplers(cmd_buffer, s,
-                                               &cmd_buffer->state.samplers[s]);
-         if (result != VK_SUCCESS)
-            return result;
-         result = anv_cmd_buffer_emit_binding_table(cmd_buffer, s,
-                                                    &cmd_buffer->state.binding_tables[s]);
-         if (result != VK_SUCCESS)
-            return result;
-      }
-   }
-
-   cmd_buffer->state.descriptors_dirty &= ~dirty;
-
-   return dirty;
 }
 
 struct anv_state
@@ -1038,49 +612,18 @@ anv_cmd_buffer_merge_dynamic(struct anv_cmd_buffer *cmd_buffer,
    return state;
 }
 
-/**
- * @brief Setup the command buffer for recording commands inside the given
- * subpass.
- *
- * This does not record all commands needed for starting the subpass.
- * Starting the subpass may require additional commands.
- *
- * Note that vkCmdBeginRenderPass, vkCmdNextSubpass, and vkBeginCommandBuffer
- * with VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT, all setup the
- * command buffer for recording commands for some subpass.  But only the first
- * two, vkCmdBeginRenderPass and vkCmdNextSubpass, can start a subpass.
- */
-void
-anv_cmd_buffer_set_subpass(struct anv_cmd_buffer *cmd_buffer,
-                           struct anv_subpass *subpass)
-{
-   switch (cmd_buffer->device->info.gen) {
-   case 7:
-      if (cmd_buffer->device->info.is_haswell) {
-         gen75_cmd_buffer_set_subpass(cmd_buffer, subpass);
-      } else {
-         gen7_cmd_buffer_set_subpass(cmd_buffer, subpass);
-      }
-      break;
-   case 8:
-      gen8_cmd_buffer_set_subpass(cmd_buffer, subpass);
-      break;
-   case 9:
-      gen9_cmd_buffer_set_subpass(cmd_buffer, subpass);
-      break;
-   default:
-      unreachable("unsupported gen\n");
-   }
-}
-
 struct anv_state
 anv_cmd_buffer_push_constants(struct anv_cmd_buffer *cmd_buffer,
                               gl_shader_stage stage)
 {
+   /* If we don't have this stage, bail. */
+   if (!anv_pipeline_has_stage(cmd_buffer->state.pipeline, stage))
+      return (struct anv_state) { .offset = 0 };
+
    struct anv_push_constants *data =
       cmd_buffer->state.push_constants[stage];
    const struct brw_stage_prog_data *prog_data =
-      cmd_buffer->state.pipeline->prog_data[stage];
+      cmd_buffer->state.pipeline->shaders[stage]->prog_data;
 
    /* If we don't actually have any push constants, bail. */
    if (data == NULL || prog_data == NULL || prog_data->nr_params == 0)
@@ -1184,24 +727,6 @@ void anv_CmdPushConstants(
    cmd_buffer->state.push_constants_dirty |= stageFlags;
 }
 
-void anv_CmdExecuteCommands(
-    VkCommandBuffer                             commandBuffer,
-    uint32_t                                    commandBufferCount,
-    const VkCommandBuffer*                      pCmdBuffers)
-{
-   ANV_FROM_HANDLE(anv_cmd_buffer, primary, commandBuffer);
-
-   assert(primary->level == VK_COMMAND_BUFFER_LEVEL_PRIMARY);
-
-   for (uint32_t i = 0; i < commandBufferCount; i++) {
-      ANV_FROM_HANDLE(anv_cmd_buffer, secondary, pCmdBuffers[i]);
-
-      assert(secondary->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY);
-
-      anv_cmd_buffer_add_secondary(primary, secondary);
-   }
-}
-
 VkResult anv_CreateCommandPool(
     VkDevice                                    _device,
     const VkCommandPoolCreateInfo*              pCreateInfo,
@@ -1211,7 +736,7 @@ VkResult anv_CreateCommandPool(
    ANV_FROM_HANDLE(anv_device, device, _device);
    struct anv_cmd_pool *pool;
 
-   pool = anv_alloc2(&device->alloc, pAllocator, sizeof(*pool), 8,
+   pool = vk_alloc2(&device->alloc, pAllocator, sizeof(*pool), 8,
                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (pool == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1236,12 +761,15 @@ void anv_DestroyCommandPool(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_cmd_pool, pool, commandPool);
 
+   if (!pool)
+      return;
+
    list_for_each_entry_safe(struct anv_cmd_buffer, cmd_buffer,
                             &pool->cmd_buffers, pool_link) {
       anv_cmd_buffer_destroy(cmd_buffer);
    }
 
-   anv_free2(&device->alloc, pAllocator, pool);
+   vk_free2(&device->alloc, pAllocator, pool);
 }
 
 VkResult anv_ResetCommandPool(

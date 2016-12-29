@@ -33,6 +33,60 @@
 #include "main/fbobject.h"
 #include "main/framebuffer.h"
 
+bool
+brw_is_drawing_points(const struct brw_context *brw)
+{
+   /* Determine if the primitives *reaching the SF* are points */
+   /* _NEW_POLYGON */
+   if (brw->ctx.Polygon.FrontMode == GL_POINT ||
+       brw->ctx.Polygon.BackMode == GL_POINT) {
+      return true;
+   }
+
+   if (brw->gs.base.prog_data) {
+      /* BRW_NEW_GS_PROG_DATA */
+      return brw_gs_prog_data(brw->gs.base.prog_data)->output_topology ==
+             _3DPRIM_POINTLIST;
+   } else if (brw->tes.base.prog_data) {
+      /* BRW_NEW_TES_PROG_DATA */
+      return brw_tes_prog_data(brw->tes.base.prog_data)->output_topology ==
+             BRW_TESS_OUTPUT_TOPOLOGY_POINT;
+   } else {
+      /* BRW_NEW_PRIMITIVE */
+      return brw->primitive == _3DPRIM_POINTLIST;
+   }
+}
+
+bool
+brw_is_drawing_lines(const struct brw_context *brw)
+{
+   /* Determine if the primitives *reaching the SF* are points */
+   /* _NEW_POLYGON */
+   if (brw->ctx.Polygon.FrontMode == GL_LINE ||
+       brw->ctx.Polygon.BackMode == GL_LINE) {
+      return true;
+   }
+
+   if (brw->gs.base.prog_data) {
+      /* BRW_NEW_GS_PROG_DATA */
+      return brw_gs_prog_data(brw->gs.base.prog_data)->output_topology ==
+             _3DPRIM_LINESTRIP;
+   } else if (brw->tes.base.prog_data) {
+      /* BRW_NEW_TES_PROG_DATA */
+      return brw_tes_prog_data(brw->tes.base.prog_data)->output_topology ==
+             BRW_TESS_OUTPUT_TOPOLOGY_LINE;
+   } else {
+      /* BRW_NEW_PRIMITIVE */
+      switch (brw->primitive) {
+      case _3DPRIM_LINELIST:
+      case _3DPRIM_LINESTRIP:
+      case _3DPRIM_LINELOOP:
+         return true;
+      }
+   }
+   return false;
+}
+
 static void
 upload_clip_state(struct brw_context *brw)
 {
@@ -45,12 +99,13 @@ upload_clip_state(struct brw_context *brw)
    struct gl_framebuffer *fb = ctx->DrawBuffer;
 
    /* BRW_NEW_FS_PROG_DATA */
-   if (brw->wm.prog_data->barycentric_interp_modes &
+   if (brw_wm_prog_data(brw->wm.base.prog_data)->barycentric_interp_modes &
        BRW_BARYCENTRIC_NONPERSPECTIVE_BITS) {
       dw2 |= GEN6_CLIP_NON_PERSPECTIVE_BARYCENTRIC_ENABLE;
    }
 
-   dw1 |= brw->vs.prog_data->base.cull_distance_mask;
+   /* BRW_NEW_VS_PROG_DATA */
+   dw1 |= brw_vue_prog_data(brw->vs.base.prog_data)->cull_distance_mask;
 
    if (brw->gen >= 7)
       dw1 |= GEN7_CLIP_EARLY_CULL;
@@ -98,12 +153,24 @@ upload_clip_state(struct brw_context *brw)
    /* _NEW_TRANSFORM */
    dw2 |= (ctx->Transform.ClipPlanesEnabled <<
            GEN6_USER_CLIP_CLIP_DISTANCES_SHIFT);
+
+   /* Have the hardware use the user clip distance clip test enable bitmask
+    * specified here in 3DSTATE_CLIP rather than the one in 3DSTATE_VS/DS/GS.
+    * We already listen to _NEW_TRANSFORM here, but the other atoms don't
+    * need to other than this.
+    */
+   if (brw->gen >= 8)
+      dw1 |= GEN8_CLIP_FORCE_USER_CLIP_DISTANCE_BITMASK;
+
    if (ctx->Transform.ClipDepthMode == GL_ZERO_TO_ONE)
       dw2 |= GEN6_CLIP_API_D3D;
    else
       dw2 |= GEN6_CLIP_API_OGL;
 
    dw2 |= GEN6_CLIP_GB_TEST;
+
+   /* BRW_NEW_VIEWPORT_COUNT */
+   const unsigned viewport_count = brw->clip.viewport_count;
 
    /* We need to disable guardband clipping if the guardband (which we always
     * program to the maximum screen-space bounding box of 8K x 8K) will be
@@ -128,7 +195,7 @@ upload_clip_state(struct brw_context *brw)
     * "objects must have a screenspace bounding box not exceeding 8K in the X
     * or Y direction" restriction.  Instead, they're clipped.
     */
-   for (unsigned i = 0; i < ctx->Const.MaxViewports; i++) {
+   for (unsigned i = 0; i < viewport_count; i++) {
       if (ctx->ViewportArray[i].Width > 8192 ||
           ctx->ViewportArray[i].Height > 8192) {
          dw2 &= ~GEN6_CLIP_GB_TEST;
@@ -151,7 +218,7 @@ upload_clip_state(struct brw_context *brw)
       const float fb_width = (float)_mesa_geometric_width(fb);
       const float fb_height = (float)_mesa_geometric_height(fb);
 
-      for (unsigned i = 0; i < ctx->Const.MaxViewports; i++) {
+      for (unsigned i = 0; i < viewport_count; i++) {
          if (ctx->ViewportArray[i].X != 0 ||
              ctx->ViewportArray[i].Y != 0 ||
              ctx->ViewportArray[i].Width != fb_width ||
@@ -178,13 +245,11 @@ upload_clip_state(struct brw_context *brw)
    else
       enable = GEN6_CLIP_ENABLE;
 
-   if (!is_drawing_points(brw) && !is_drawing_lines(brw))
+   /* _NEW_POLYGON,
+    * BRW_NEW_GEOMETRY_PROGRAM | BRW_NEW_TES_PROG_DATA | BRW_NEW_PRIMITIVE
+    */
+   if (!brw_is_drawing_points(brw) && !brw_is_drawing_lines(brw))
       dw2 |= GEN6_CLIP_XY_TEST;
-
-   /* BRW_NEW_VUE_MAP_GEOM_OUT */
-   const int max_vp_index =
-      (brw->vue_map_geom_out.slots_valid & VARYING_BIT_VIEWPORT) != 0 ?
-      ctx->Const.MaxViewports : 1;
 
    BEGIN_BATCH(4);
    OUT_BATCH(_3DSTATE_CLIP << 16 | (4 - 2));
@@ -195,28 +260,11 @@ upload_clip_state(struct brw_context *brw)
    OUT_BATCH(U_FIXED(0.125, 3) << GEN6_CLIP_MIN_POINT_WIDTH_SHIFT |
              U_FIXED(255.875, 3) << GEN6_CLIP_MAX_POINT_WIDTH_SHIFT |
              (_mesa_geometric_layers(fb) > 0 ? 0 : GEN6_CLIP_FORCE_ZERO_RTAINDEX) |
-             ((max_vp_index - 1) & GEN6_CLIP_MAX_VP_INDEX_MASK));
+             ((viewport_count - 1) & GEN6_CLIP_MAX_VP_INDEX_MASK));
    ADVANCE_BATCH();
 }
 
 const struct brw_tracked_state gen6_clip_state = {
-   .dirty = {
-      .mesa  = _NEW_BUFFERS |
-               _NEW_LIGHT |
-               _NEW_TRANSFORM,
-      .brw   = BRW_NEW_BLORP |
-               BRW_NEW_CONTEXT |
-               BRW_NEW_FS_PROG_DATA |
-               BRW_NEW_GEOMETRY_PROGRAM |
-               BRW_NEW_META_IN_PROGRESS |
-               BRW_NEW_PRIMITIVE |
-               BRW_NEW_RASTERIZER_DISCARD |
-               BRW_NEW_VUE_MAP_GEOM_OUT,
-   },
-   .emit = upload_clip_state,
-};
-
-const struct brw_tracked_state gen7_clip_state = {
    .dirty = {
       .mesa  = _NEW_BUFFERS |
                _NEW_LIGHT |
@@ -225,11 +273,13 @@ const struct brw_tracked_state gen7_clip_state = {
       .brw   = BRW_NEW_BLORP |
                BRW_NEW_CONTEXT |
                BRW_NEW_FS_PROG_DATA |
-               BRW_NEW_GEOMETRY_PROGRAM |
+               BRW_NEW_GS_PROG_DATA |
+               BRW_NEW_VS_PROG_DATA |
                BRW_NEW_META_IN_PROGRESS |
                BRW_NEW_PRIMITIVE |
                BRW_NEW_RASTERIZER_DISCARD |
-               BRW_NEW_VUE_MAP_GEOM_OUT,
+               BRW_NEW_TES_PROG_DATA |
+               BRW_NEW_VIEWPORT_COUNT,
    },
    .emit = upload_clip_state,
 };

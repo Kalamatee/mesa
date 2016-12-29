@@ -96,6 +96,7 @@ private:
    void emitDMUL(const Instruction *);
    void emitIMAD(const Instruction *);
    void emitISAD(const Instruction *);
+   void emitSHLADD(const Instruction *);
    void emitFMAD(const Instruction *);
    void emitDMAD(const Instruction *);
    void emitMADSP(const Instruction *i);
@@ -721,12 +722,11 @@ CodeEmitterGK110::emitUADD(const Instruction *i)
    }
 }
 
-// TODO: shl-add
 void
 CodeEmitterGK110::emitIMAD(const Instruction *i)
 {
    uint8_t addOp =
-      (i->src(2).mod.neg() << 1) | (i->src(0).mod.neg() ^ i->src(1).mod.neg());
+      i->src(2).mod.neg() | ((i->src(0).mod.neg() ^ i->src(1).mod.neg()) << 1);
 
    emitForm_21(i, 0x100, 0xa00);
 
@@ -757,6 +757,54 @@ CodeEmitterGK110::emitISAD(const Instruction *i)
 }
 
 void
+CodeEmitterGK110::emitSHLADD(const Instruction *i)
+{
+   uint8_t addOp = (i->src(0).mod.neg() << 1) | i->src(2).mod.neg();
+   const ImmediateValue *imm = i->src(1).get()->asImm();
+   assert(imm);
+
+   if (i->src(2).getFile() == FILE_IMMEDIATE) {
+      code[0] = 0x1;
+      code[1] = 0xc0c << 20;
+   } else {
+      code[0] = 0x2;
+      code[1] = 0x20c << 20;
+   }
+   code[1] |= addOp << 19;
+
+   emitPredicate(i);
+
+   defId(i->def(0), 2);
+   srcId(i->src(0), 10);
+
+   if (i->flagsDef >= 0)
+      code[1] |= 1 << 18;
+
+   assert(!(imm->reg.data.u32 & 0xffffffe0));
+   code[1] |= imm->reg.data.u32 << 10;
+
+   switch (i->src(2).getFile()) {
+   case FILE_GPR:
+      assert(code[0] & 0x2);
+      code[1] |= 0xc << 28;
+      srcId(i->src(2), 23);
+      break;
+   case FILE_MEMORY_CONST:
+      assert(code[0] & 0x2);
+      code[1] |= 0x4 << 28;
+      setCAddress14(i->src(2));
+      break;
+   case FILE_IMMEDIATE:
+      assert(code[0] & 0x1);
+      setShortImmediate(i, 2);
+      break;
+   default:
+      assert(!"bad src2 file");
+      break;
+   }
+}
+
+void
 CodeEmitterGK110::emitNOT(const Instruction *i)
 {
    code[0] = 0x0003fc02; // logop(mov2) dst, 0, not src
@@ -773,7 +821,7 @@ CodeEmitterGK110::emitNOT(const Instruction *i)
       break;
    case FILE_MEMORY_CONST:
       code[1] |= 0x4 << 28;
-      setCAddress14(i->src(1));
+      setCAddress14(i->src(0));
       break;
    default:
       assert(0);
@@ -1321,14 +1369,11 @@ void
 CodeEmitterGK110::emitQUADOP(const Instruction *i, uint8_t qOp, uint8_t laneMask)
 {
    code[0] = 0x00000002 | ((qOp & 1) << 31);
-   code[1] = 0x7fc00000 | (qOp >> 1) | (laneMask << 12);
+   code[1] = 0x7fc00200 | (qOp >> 1) | (laneMask << 12); // dall
 
    defId(i->def(0), 2);
    srcId(i->src(0), 10);
    srcId((i->srcExists(1) && i->predSrc != 1) ? i->src(1) : i->src(0), 23);
-
-   if (i->op == OP_QUADOP && progType != Program::TYPE_FRAGMENT)
-      code[1] |= 1 << 9; // dall
 
    emitPredicate(i);
 }
@@ -2405,6 +2450,9 @@ CodeEmitterGK110::emitInstruction(Instruction *insn)
       break;
    case OP_SAD:
       emitISAD(insn);
+      break;
+   case OP_SHLADD:
+      emitSHLADD(insn);
       break;
    case OP_NOT:
       emitNOT(insn);

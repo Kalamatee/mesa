@@ -38,7 +38,8 @@ upload_wm_state(struct brw_context *brw)
 {
    struct gl_context *ctx = &brw->ctx;
    /* BRW_NEW_FS_PROG_DATA */
-   const struct brw_wm_prog_data *prog_data = brw->wm.prog_data;
+   const struct brw_wm_prog_data *prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
    bool writes_depth = prog_data->computed_depth_mode != BRW_PSCDEPTH_OFF;
    uint32_t dw1, dw2;
 
@@ -68,11 +69,12 @@ upload_wm_state(struct brw_context *brw)
    dw1 |= prog_data->barycentric_interp_modes <<
       GEN7_WM_BARYCENTRIC_INTERPOLATION_MODE_SHIFT;
 
-   /* _NEW_COLOR, _NEW_MULTISAMPLE */
+   /* _NEW_COLOR, _NEW_MULTISAMPLE _NEW_BUFFERS */
    /* Enable if the pixel shader kernel generates and outputs oMask.
     */
-   if (prog_data->uses_kill || ctx->Color.AlphaEnabled ||
-       ctx->Multisample.SampleAlphaToCoverage ||
+   if (prog_data->uses_kill ||
+       _mesa_is_alpha_test_enabled(ctx) ||
+       _mesa_is_alpha_to_coverage_enabled(ctx) ||
        prog_data->uses_omask) {
       dw1 |= GEN7_WM_KILL_ENABLE;
    }
@@ -149,6 +151,7 @@ gen7_upload_ps_state(struct brw_context *brw,
                      bool enable_dual_src_blend, unsigned sample_mask,
                      unsigned fast_clear_op)
 {
+   const struct gen_device_info *devinfo = &brw->screen->devinfo;
    uint32_t dw2, dw4, dw5, ksp0, ksp2;
    const int max_threads_shift = brw->is_haswell ?
       HSW_PS_MAX_THREADS_SHIFT : IVB_PS_MAX_THREADS_SHIFT;
@@ -171,7 +174,7 @@ gen7_upload_ps_state(struct brw_context *brw,
    if (brw->is_haswell)
       dw4 |= SET_FIELD(sample_mask, HSW_PS_SAMPLE_MASK);
 
-   dw4 |= (brw->max_wm_threads - 1) << max_threads_shift;
+   dw4 |= (devinfo->max_wm_threads - 1) << max_threads_shift;
 
    if (prog_data->base.nr_params > 0)
       dw4 |= GEN7_PS_PUSH_CONSTANT_ENABLE;
@@ -250,7 +253,8 @@ static void
 upload_ps_state(struct brw_context *brw)
 {
    /* BRW_NEW_FS_PROG_DATA */
-   const struct brw_wm_prog_data *prog_data = brw->wm.prog_data;
+   const struct brw_wm_prog_data *prog_data =
+      brw_wm_prog_data(brw->wm.base.prog_data);
    const struct gl_context *ctx = &brw->ctx;
    /* BRW_NEW_FS_PROG_DATA | _NEW_COLOR */
    const bool enable_dual_src_blend = prog_data->dual_src_blend &&

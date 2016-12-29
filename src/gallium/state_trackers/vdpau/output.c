@@ -82,7 +82,7 @@ vlVdpOutputSurfaceCreate(VdpDevice device,
    res_tmpl.depth0 = 1;
    res_tmpl.array_size = 1;
    res_tmpl.bind = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET |
-                   PIPE_BIND_LINEAR | PIPE_BIND_SHARED;
+                   PIPE_BIND_SHARED;
    res_tmpl.usage = PIPE_USAGE_DEFAULT;
 
    pipe_mutex_lock(dev->mutex);
@@ -773,7 +773,7 @@ struct pipe_resource *vlVdpOutputSurfaceGallium(VdpOutputSurface surface)
    return vlsurface->surface->texture;
 }
 
-VdpStatus vlVdpOutputSurfaceDMABuf(VdpVideoSurface surface,
+VdpStatus vlVdpOutputSurfaceDMABuf(VdpOutputSurface surface,
                                    struct VdpSurfaceDMABufDesc *result)
 {
    vlVdpOutputSurface *vlsurface;
@@ -796,7 +796,8 @@ VdpStatus vlVdpOutputSurfaceDMABuf(VdpVideoSurface surface,
    whandle.type = DRM_API_HANDLE_TYPE_FD;
 
    pscreen = vlsurface->surface->texture->screen;
-   if (!pscreen->resource_get_handle(pscreen, vlsurface->surface->texture, &whandle,
+   if (!pscreen->resource_get_handle(pscreen, vlsurface->device->context,
+                                     vlsurface->surface->texture, &whandle,
 				     PIPE_HANDLE_USAGE_READ_WRITE))
       return VDP_STATUS_NO_IMPLEMENTATION;
 

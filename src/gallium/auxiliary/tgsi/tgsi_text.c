@@ -295,6 +295,42 @@ static boolean parse_double( const char **pcur, uint32_t *val0, uint32_t *val1)
    return TRUE;
 }
 
+static boolean parse_int64( const char **pcur, uint32_t *val0, uint32_t *val1)
+{
+   const char *cur = *pcur;
+   union {
+      int64_t i64val;
+      uint32_t uval[2];
+   } v;
+
+   v.i64val = strtoll(cur, (char**)pcur, 0);
+   if (*pcur == cur)
+      return FALSE;
+
+   *val0 = v.uval[0];
+   *val1 = v.uval[1];
+
+   return TRUE;
+}
+
+static boolean parse_uint64( const char **pcur, uint32_t *val0, uint32_t *val1)
+{
+   const char *cur = *pcur;
+   union {
+      uint64_t u64val;
+      uint32_t uval[2];
+   } v;
+
+   v.u64val = strtoull(cur, (char**)pcur, 0);
+   if (*pcur == cur)
+      return FALSE;
+
+   *val0 = v.uval[0];
+   *val1 = v.uval[1];
+
+   return TRUE;
+}
+
 struct translate_ctx
 {
    const char *text;
@@ -1228,6 +1264,14 @@ static boolean parse_immediate_data(struct translate_ctx *ctx, unsigned type,
          ret = parse_double(&ctx->cur, &values[i].Uint, &values[i+1].Uint);
          i++;
          break;
+      case TGSI_IMM_INT64:
+         ret = parse_int64(&ctx->cur, &values[i].Uint, &values[i+1].Uint);
+         i++;
+         break;
+      case TGSI_IMM_UINT64:
+         ret = parse_uint64(&ctx->cur, &values[i].Uint, &values[i+1].Uint);
+         i++;
+         break;
       case TGSI_IMM_FLOAT32:
          ret = parse_float(&ctx->cur, &values[i].Float);
          break;
@@ -1497,6 +1541,54 @@ static boolean parse_declaration( struct translate_ctx *ctx )
                }
             }
          }
+      }
+   }
+
+   cur = ctx->cur;
+   eat_opt_white( &cur );
+   if (*cur == ',' &&
+       file == TGSI_FILE_OUTPUT && ctx->processor == PIPE_SHADER_GEOMETRY) {
+      cur++;
+      eat_opt_white(&cur);
+      if (str_match_nocase_whole(&cur, "STREAM")) {
+         uint stream[4];
+
+         eat_opt_white(&cur);
+         if (*cur != '(') {
+            report_error(ctx, "Expected '('");
+            return FALSE;
+         }
+         cur++;
+
+         for (int i = 0; i < 4; ++i) {
+            eat_opt_white(&cur);
+            if (!parse_uint(&cur, &stream[i])) {
+               report_error(ctx, "Expected literal integer");
+               return FALSE;
+            }
+
+            eat_opt_white(&cur);
+            if (i < 3) {
+               if (*cur != ',') {
+                  report_error(ctx, "Expected ','");
+                  return FALSE;
+               }
+               cur++;
+            }
+         }
+
+         if (*cur != ')') {
+            report_error(ctx, "Expected ')'");
+            return FALSE;
+         }
+         cur++;
+
+         decl.Semantic.StreamX = stream[0];
+         decl.Semantic.StreamY = stream[1];
+         decl.Semantic.StreamZ = stream[2];
+         decl.Semantic.StreamW = stream[3];
+
+         ctx->cur = cur;
       }
    }
 

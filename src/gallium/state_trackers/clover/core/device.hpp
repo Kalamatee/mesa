@@ -51,8 +51,10 @@ namespace clover {
       cl_uint vendor_id() const;
       size_t max_images_read() const;
       size_t max_images_write() const;
+      size_t max_image_buffer_size() const;
       cl_uint max_image_levels_2d() const;
       cl_uint max_image_levels_3d() const;
+      size_t max_image_array_number() const;
       cl_uint max_samplers() const;
       cl_ulong max_mem_global() const;
       cl_ulong max_mem_local() const;
@@ -68,6 +70,7 @@ namespace clover {
 
       std::vector<size_t> max_block_size() const;
       cl_uint subgroup_size() const;
+      cl_uint address_bits() const;
       std::string device_name() const;
       std::string vendor_name() const;
       enum pipe_shader_ir ir_format() const;

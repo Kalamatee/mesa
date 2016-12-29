@@ -206,6 +206,12 @@ struct pipe_screen {
     * that the texture is created with a special usage flag like
     * DISPLAYTARGET or PRIMARY.
     *
+    * The context parameter can optionally be used to flush the resource and
+    * the context to make sure the resource is coherent with whatever user
+    * will use it. Some drivers may also use the context to convert
+    * the resource into a format compatible for sharing. The use case is
+    * OpenGL-OpenCL interop. The context parameter is allowed to be NULL.
+    *
     * NOTE: in the case of DRM_API_HANDLE_TYPE_FD handles, the caller
     * takes ownership of the FD.  (This is consistent with
     * EGL_MESA_image_dma_buf_export)
@@ -213,6 +219,7 @@ struct pipe_screen {
     * \param usage  A combination of PIPE_HANDLE_USAGE_* flags.
     */
    boolean (*resource_get_handle)(struct pipe_screen *,
+                                  struct pipe_context *context,
 				  struct pipe_resource *tex,
 				  struct winsys_handle *handle,
 				  unsigned usage);
@@ -242,11 +249,30 @@ struct pipe_screen {
 
    /**
     * Wait for the fence to finish.
+    *
+    * If the fence was created with PIPE_FLUSH_DEFERRED, and the context is
+    * still unflushed, and the ctx parameter of fence_finish is equal to
+    * the context where the fence was created, fence_finish will flush
+    * the context prior to waiting for the fence.
+    *
+    * In all other cases, the ctx parameter has no effect.
+    *
     * \param timeout  in nanoseconds (may be PIPE_TIMEOUT_INFINITE).
     */
-   boolean (*fence_finish)( struct pipe_screen *screen,
-                            struct pipe_fence_handle *fence,
-                            uint64_t timeout );
+   boolean (*fence_finish)(struct pipe_screen *screen,
+                           struct pipe_context *ctx,
+                           struct pipe_fence_handle *fence,
+                           uint64_t timeout);
+
+   /**
+    * For fences created with PIPE_FLUSH_FENCE_FD (exported fd) or
+    * by create_fence_fd() (imported fd), return the native fence fd
+    * associated with the fence.  This may return -1 for fences
+    * created with PIPE_FLUSH_DEFERRED if the fence command has not
+    * been flushed yet.
+    */
+   int (*fence_get_fd)(struct pipe_screen *screen,
+                       struct pipe_fence_handle *fence);
 
    /**
     * Returns a driver-specific query.

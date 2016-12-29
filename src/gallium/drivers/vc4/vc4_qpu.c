@@ -165,6 +165,20 @@ qpu_load_imm_ui(struct qpu_reg dst, uint32_t val)
 }
 
 uint64_t
+qpu_load_imm_u2(struct qpu_reg dst, uint32_t val)
+{
+        return qpu_load_imm_ui(dst, val) | QPU_SET_FIELD(QPU_LOAD_IMM_MODE_U2,
+                                                         QPU_LOAD_IMM_MODE);
+}
+
+uint64_t
+qpu_load_imm_i2(struct qpu_reg dst, uint32_t val)
+{
+        return qpu_load_imm_ui(dst, val) | QPU_SET_FIELD(QPU_LOAD_IMM_MODE_I2,
+                                                         QPU_LOAD_IMM_MODE);
+}
+
+uint64_t
 qpu_branch(uint32_t cond, uint32_t target)
 {
         uint64_t inst = 0;
@@ -218,6 +232,19 @@ qpu_m_alu2(enum qpu_op_mul op,
         inst |= QPU_SET_FIELD(QPU_W_NOP, QPU_WADDR_ADD);
 
         return inst;
+}
+
+uint64_t
+qpu_m_rot(struct qpu_reg dst, struct qpu_reg src0, int rot)
+{
+	uint64_t inst = 0;
+	inst = qpu_m_alu2(QPU_M_V8MIN, dst, src0, src0);
+
+	inst = QPU_UPDATE_FIELD(inst, QPU_SIG_SMALL_IMM, QPU_SIG);
+	inst = QPU_UPDATE_FIELD(inst, QPU_SMALL_IMM_MUL_ROT + rot,
+                                QPU_SMALL_IMM);
+
+	return inst;
 }
 
 static bool
@@ -296,6 +323,7 @@ qpu_waddr_ignores_ws(uint32_t waddr)
         case QPU_W_ACC1:
         case QPU_W_ACC2:
         case QPU_W_ACC3:
+        case QPU_W_NOP:
         case QPU_W_TLB_Z:
         case QPU_W_TLB_COLOR_MS:
         case QPU_W_TLB_COLOR_ALL:

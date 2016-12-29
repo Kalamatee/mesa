@@ -83,6 +83,7 @@
 #include "api_loopback.h"
 #include "arrayobj.h"
 #include "attrib.h"
+#include "bbox.h"
 #include "blend.h"
 #include "buffers.h"
 #include "bufferobj.h"
@@ -121,7 +122,6 @@
 #include "shaderobj.h"
 #include "shaderimage.h"
 #include "util/strtod.h"
-#include "state.h"
 #include "stencil.h"
 #include "texcompress_s3tc.h"
 #include "texstate.h"
@@ -130,18 +130,16 @@
 #include "varray.h"
 #include "version.h"
 #include "viewport.h"
-#include "vtxfmt.h"
 #include "program/program.h"
-#include "program/prog_print.h"
 #include "math/m_matrix.h"
 #include "main/dispatch.h" /* for _gloffset_COUNT */
-#include "uniforms.h"
 #include "macros.h"
 
 #ifdef USE_SPARC_ASM
 #include "sparc/sparc.h"
 #endif
 
+#include "compiler/glsl_types.h"
 #include "compiler/glsl/glsl_parser_extras.h"
 #include <stdbool.h>
 
@@ -680,6 +678,9 @@ _mesa_init_constants(struct gl_constants *consts, gl_api api)
    /* GL_ARB_robustness */
    consts->ResetStrategy = GL_NO_RESET_NOTIFICATION_ARB;
 
+   /* GL_KHR_robustness */
+   consts->RobustAccess = GL_FALSE;
+
    /* ES 3.0 or ARB_ES3_compatibility */
    consts->MaxElementIndex = 0xffffffffu;
 
@@ -723,6 +724,12 @@ _mesa_init_constants(struct gl_constants *consts, gl_api api)
    consts->MaxTessPatchComponents = MAX_TESS_PATCH_COMPONENTS;
    consts->MaxTessControlTotalOutputComponents = MAX_TESS_CONTROL_TOTAL_OUTPUT_COMPONENTS;
    consts->PrimitiveRestartForPatches = false;
+
+   /** GL_ARB_compute_variable_group_size */
+   consts->MaxComputeVariableGroupSize[0] = 512;
+   consts->MaxComputeVariableGroupSize[1] = 512;
+   consts->MaxComputeVariableGroupSize[2] = 64;
+   consts->MaxComputeVariableGroupInvocations = 512;
 }
 
 
@@ -737,9 +744,9 @@ check_context_limits(struct gl_context *ctx)
 
    /* check that we don't exceed the size of various bitfields */
    assert(VARYING_SLOT_MAX <=
-	  (8 * sizeof(ctx->VertexProgram._Current->Base.OutputsWritten)));
+	  (8 * sizeof(ctx->VertexProgram._Current->info.outputs_written)));
    assert(VARYING_SLOT_MAX <=
-	  (8 * sizeof(ctx->FragmentProgram._Current->Base.InputsRead)));
+	  (8 * sizeof(ctx->FragmentProgram._Current->info.inputs_read)));
 
    /* shader-related checks */
    assert(ctx->Const.Program[MESA_SHADER_FRAGMENT].MaxLocalParams <= MAX_PROGRAM_LOCAL_PARAMS);
@@ -809,6 +816,7 @@ init_attrib_groups(struct gl_context *ctx)
    /* Attribute Groups */
    _mesa_init_accum( ctx );
    _mesa_init_attrib( ctx );
+   _mesa_init_bbox( ctx );
    _mesa_init_buffer_objects( ctx );
    _mesa_init_color( ctx );
    _mesa_init_current( ctx );
@@ -1288,17 +1296,17 @@ _mesa_free_context_data( struct gl_context *ctx )
    _mesa_reference_framebuffer(&ctx->DrawBuffer, NULL);
    _mesa_reference_framebuffer(&ctx->ReadBuffer, NULL);
 
-   _mesa_reference_vertprog(ctx, &ctx->VertexProgram.Current, NULL);
-   _mesa_reference_vertprog(ctx, &ctx->VertexProgram._Current, NULL);
-   _mesa_reference_vertprog(ctx, &ctx->VertexProgram._TnlProgram, NULL);
+   _mesa_reference_program(ctx, &ctx->VertexProgram.Current, NULL);
+   _mesa_reference_program(ctx, &ctx->VertexProgram._Current, NULL);
+   _mesa_reference_program(ctx, &ctx->VertexProgram._TnlProgram, NULL);
 
-   _mesa_reference_tesscprog(ctx, &ctx->TessCtrlProgram._Current, NULL);
-   _mesa_reference_tesseprog(ctx, &ctx->TessEvalProgram._Current, NULL);
-   _mesa_reference_geomprog(ctx, &ctx->GeometryProgram._Current, NULL);
+   _mesa_reference_program(ctx, &ctx->TessCtrlProgram._Current, NULL);
+   _mesa_reference_program(ctx, &ctx->TessEvalProgram._Current, NULL);
+   _mesa_reference_program(ctx, &ctx->GeometryProgram._Current, NULL);
 
-   _mesa_reference_fragprog(ctx, &ctx->FragmentProgram.Current, NULL);
-   _mesa_reference_fragprog(ctx, &ctx->FragmentProgram._Current, NULL);
-   _mesa_reference_fragprog(ctx, &ctx->FragmentProgram._TexEnvProgram, NULL);
+   _mesa_reference_program(ctx, &ctx->FragmentProgram.Current, NULL);
+   _mesa_reference_program(ctx, &ctx->FragmentProgram._Current, NULL);
+   _mesa_reference_program(ctx, &ctx->FragmentProgram._TexEnvProgram, NULL);
 
    _mesa_reference_vao(ctx, &ctx->Array.VAO, NULL);
    _mesa_reference_vao(ctx, &ctx->Array.DefaultVAO, NULL);
@@ -1643,6 +1651,10 @@ _mesa_make_current( struct gl_context *newCtx,
 
    if (!newCtx) {
       _glapi_set_dispatch(NULL);  /* none current */
+      if (curCtx) {
+         _mesa_reference_framebuffer(&curCtx->WinSysDrawBuffer, NULL);
+         _mesa_reference_framebuffer(&curCtx->WinSysReadBuffer, NULL);
+      }
    }
    else {
       _glapi_set_dispatch(newCtx->CurrentDispatch);
@@ -1684,10 +1696,8 @@ _mesa_make_current( struct gl_context *newCtx,
           */
 	 newCtx->NewState |= _NEW_BUFFERS;
 
-         if (drawBuffer) {
-            _mesa_check_init_viewport(newCtx,
-                                      drawBuffer->Width, drawBuffer->Height);
-         }
+         _mesa_check_init_viewport(newCtx,
+                                   drawBuffer->Width, drawBuffer->Height);
       }
 
       if (newCtx->FirstTimeCurrent) {
@@ -1855,137 +1865,6 @@ _mesa_Flush(void)
 }
 
 
-/*
- * ARB_blend_func_extended - ERRORS section
- * "The error INVALID_OPERATION is generated by Begin or any procedure that
- *  implicitly calls Begin if any draw buffer has a blend function requiring the
- *  second color input (SRC1_COLOR, ONE_MINUS_SRC1_COLOR, SRC1_ALPHA or
- *  ONE_MINUS_SRC1_ALPHA), and a framebuffer is bound that has more than
- *  the value of MAX_DUAL_SOURCE_DRAW_BUFFERS-1 active color attachements."
- */
-static GLboolean
-_mesa_check_blend_func_error(struct gl_context *ctx)
-{
-   GLuint i;
-   for (i = ctx->Const.MaxDualSourceDrawBuffers;
-	i < ctx->DrawBuffer->_NumColorDrawBuffers;
-	i++) {
-      if (ctx->Color.Blend[i]._UsesDualSrc) {
-	 _mesa_error(ctx, GL_INVALID_OPERATION,
-		     "dual source blend on illegal attachment");
-	 return GL_FALSE;
-      }
-   }
-   return GL_TRUE;
-}
-
-
-/**
- * Prior to drawing anything with glBegin, glDrawArrays, etc. this function
- * is called to see if it's valid to render.  This involves checking that
- * the current shader is valid and the framebuffer is complete.
- * It also check the current pipeline object is valid if any.
- * If an error is detected it'll be recorded here.
- * \return GL_TRUE if OK to render, GL_FALSE if not
- */
-GLboolean
-_mesa_valid_to_render(struct gl_context *ctx, const char *where)
-{
-   /* This depends on having up to date derived state (shaders) */
-   if (ctx->NewState)
-      _mesa_update_state(ctx);
-
-   if (ctx->API == API_OPENGL_COMPAT) {
-      /* Any shader stages that are not supplied by the GLSL shader and have
-       * assembly shaders enabled must now be validated.
-       */
-      if (!ctx->_Shader->CurrentProgram[MESA_SHADER_VERTEX]
-          && ctx->VertexProgram.Enabled && !ctx->VertexProgram._Enabled) {
-         _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "%s(vertex program not valid)", where);
-         return GL_FALSE;
-      }
-
-      if (!ctx->_Shader->CurrentProgram[MESA_SHADER_FRAGMENT]) {
-         if (ctx->FragmentProgram.Enabled && !ctx->FragmentProgram._Enabled) {
-            _mesa_error(ctx, GL_INVALID_OPERATION,
-                        "%s(fragment program not valid)", where);
-            return GL_FALSE;
-         }
-
-         /* If drawing to integer-valued color buffers, there must be an
-          * active fragment shader (GL_EXT_texture_integer).
-          */
-         if (ctx->DrawBuffer && ctx->DrawBuffer->_IntegerColor) {
-            _mesa_error(ctx, GL_INVALID_OPERATION,
-                        "%s(integer format but no fragment shader)", where);
-            return GL_FALSE;
-         }
-      }
-   }
-
-   /* A pipeline object is bound */
-   if (ctx->_Shader->Name && !ctx->_Shader->Validated) {
-      if (!_mesa_validate_program_pipeline(ctx, ctx->_Shader)) {
-         _mesa_error(ctx, GL_INVALID_OPERATION,
-                     "glValidateProgramPipeline failed to validate the "
-                     "pipeline");
-         return GL_FALSE;
-      }
-   }
-
-   /* If a program is active and SSO not in use, check if validation of
-    * samplers succeeded for the active program. */
-   if (ctx->_Shader->ActiveProgram && ctx->_Shader != ctx->Pipeline.Current) {
-      char errMsg[100];
-      if (!_mesa_sampler_uniforms_are_valid(ctx->_Shader->ActiveProgram,
-                                            errMsg, 100)) {
-         _mesa_error(ctx, GL_INVALID_OPERATION, "%s", errMsg);
-         return GL_FALSE;
-      }
-   }
-
-   if (ctx->DrawBuffer->_Status != GL_FRAMEBUFFER_COMPLETE_EXT) {
-      _mesa_error(ctx, GL_INVALID_FRAMEBUFFER_OPERATION_EXT,
-                  "%s(incomplete framebuffer)", where);
-      return GL_FALSE;
-   }
-
-   if (_mesa_check_blend_func_error(ctx) == GL_FALSE) {
-      return GL_FALSE;
-   }
-
-#ifdef DEBUG
-   if (ctx->_Shader->Flags & GLSL_LOG) {
-      struct gl_shader_program **shProg = ctx->_Shader->CurrentProgram;
-      gl_shader_stage i;
-
-      for (i = 0; i < MESA_SHADER_STAGES; i++) {
-	 if (shProg[i] == NULL || shProg[i]->_Used
-	     || shProg[i]->_LinkedShaders[i] == NULL)
-	    continue;
-
-	 /* This is the first time this shader is being used.
-	  * Append shader's constants/uniforms to log file.
-	  *
-	  * Only log data for the program target that matches the shader
-	  * target.  It's possible to have a program bound to the vertex
-	  * shader target that also supplied a fragment shader.  If that
-	  * program isn't also bound to the fragment shader target we don't
-	  * want to log its fragment data.
-	  */
-	 _mesa_append_uniforms_to_file(shProg[i]->_LinkedShaders[i]);
-      }
-
-      for (i = 0; i < MESA_SHADER_STAGES; i++) {
-	 if (shProg[i] != NULL)
-	    shProg[i]->_Used = GL_TRUE;
-      }
-   }
-#endif
-
-   return GL_TRUE;
-}
 
 
 /*@}*/

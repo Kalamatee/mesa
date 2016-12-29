@@ -61,17 +61,12 @@ static void compile_clip_prog( struct brw_context *brw,
 
    /* Begin the compilation:
     */
-   brw_init_codegen(brw->intelScreen->devinfo, &c.func, mem_ctx);
+   brw_init_codegen(&brw->screen->devinfo, &c.func, mem_ctx);
 
    c.func.single_program_flow = 1;
 
    c.key = *key;
    c.vue_map = brw->vue_map_geom_out;
-
-   c.has_flat_shading =
-      brw_any_flat_varyings(&key->interpolation_mode);
-   c.has_noperspective_shading =
-      brw_any_noperspective_varyings(&key->interpolation_mode);
 
    /* nr_regs is the number of registers filled by reading data from the VUE.
     * This program accesses the entire VUE, so nr_regs needs to be the size of
@@ -116,7 +111,7 @@ static void compile_clip_prog( struct brw_context *brw,
 
    if (unlikely(INTEL_DEBUG & DEBUG_CLIP)) {
       fprintf(stderr, "clip:\n");
-      brw_disassemble(brw->intelScreen->devinfo, c.func.store,
+      brw_disassemble(&brw->screen->devinfo, c.func.store,
                       0, program_size, stderr);
       fprintf(stderr, "\n");
    }
@@ -144,7 +139,7 @@ brw_upload_clip_prog(struct brw_context *brw)
                         _NEW_POLYGON |
                         _NEW_TRANSFORM,
                         BRW_NEW_BLORP |
-                        BRW_NEW_INTERPOLATION_MAP |
+                        BRW_NEW_FRAGMENT_PROGRAM |
                         BRW_NEW_REDUCED_PRIMITIVE |
                         BRW_NEW_VUE_MAP_GEOM_OUT))
       return;
@@ -154,8 +149,16 @@ brw_upload_clip_prog(struct brw_context *brw)
    /* Populate the key:
     */
 
-   /* BRW_NEW_INTERPOLATION_MAP */
-   key.interpolation_mode = brw->interpolation_mode;
+   const struct gl_program *fprog = brw->fragment_program;
+   if (fprog) {
+      assert(brw->gen < 6);
+      struct gen4_fragment_program *p = (struct gen4_fragment_program *) fprog;
+
+      /* BRW_NEW_FRAGMENT_PROGRAM */
+      key.contains_flat_varying = p->contains_flat_varying;
+      key.contains_noperspective_varying = p->contains_noperspective_varying;
+      key.interp_mode = p->interp_mode;
+   }
 
    /* BRW_NEW_REDUCED_PRIMITIVE */
    key.primitive = brw->reduced_primitive;

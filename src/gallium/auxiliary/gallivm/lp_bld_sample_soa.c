@@ -60,6 +60,7 @@
 #include "lp_bld_struct.h"
 #include "lp_bld_quad.h"
 #include "lp_bld_pack.h"
+#include "lp_bld_intr.h"
 
 
 /**
@@ -158,7 +159,7 @@ lp_build_sample_texel_soa(struct lp_build_sample_context *bld,
 
    lp_build_fetch_rgba_soa(bld->gallivm,
                            bld->format_desc,
-                           bld->texel_type,
+                           bld->texel_type, TRUE,
                            data_ptr, offset,
                            i, j,
                            bld->cache,
@@ -2405,7 +2406,7 @@ lp_build_fetch_texel(struct lp_build_sample_context *bld,
 
    lp_build_fetch_rgba_soa(bld->gallivm,
                            bld->format_desc,
-                           bld->texel_type,
+                           bld->texel_type, TRUE,
                            bld->base_ptr, offset,
                            i, j,
                            bld->cache,
@@ -2860,12 +2861,13 @@ lp_build_sample_soa_code(struct gallivm_state *gallivm,
       }
 
       /*
-       * we only try 8-wide sampling with soa as it appears to
-       * be a loss with aos with AVX (but it should work, except
-       * for conformance if min_filter != mag_filter if num_lods > 1).
-       * (It should be faster if we'd support avx2)
+       * we only try 8-wide sampling with soa or if we have AVX2
+       * as it appears to be a loss with just AVX)
        */
-      if (num_quads == 1 || !use_aos) {
+      if (num_quads == 1 || !use_aos ||
+          (util_cpu_caps.has_avx2 &&
+           (bld.num_lods == 1 ||
+            derived_sampler_state.min_img_filter == derived_sampler_state.mag_img_filter))) {
          if (use_aos) {
             /* do sampling/filtering with fixed pt arithmetic */
             lp_build_sample_aos(&bld, sampler_index,
@@ -3315,7 +3317,8 @@ lp_build_sample_soa_func(struct gallivm_state *gallivm,
 
       for (i = 0; i < num_param; ++i) {
          if(LLVMGetTypeKind(arg_types[i]) == LLVMPointerTypeKind) {
-            LLVMAddAttribute(LLVMGetParam(function, i), LLVMNoAliasAttribute);
+
+            lp_add_function_attr(function, i + 1, LP_FUNC_ATTR_NOALIAS);
          }
       }
 

@@ -21,7 +21,8 @@
  * IN THE SOFTWARE.
  */
 
-#pragma once
+#ifndef ANV_NIR_H
+#define ANV_NIR_H
 
 #include "nir/nir.h"
 #include "anv_private.h"
@@ -29,6 +30,8 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+void anv_nir_lower_input_attachments(nir_shader *shader);
 
 void anv_nir_lower_push_constants(nir_shader *shader);
 
@@ -43,3 +46,5 @@ void anv_nir_apply_pipeline_layout(struct anv_pipeline *pipeline,
 #ifdef __cplusplus
 }
 #endif
+
+#endif /* ANV_NIR_H */

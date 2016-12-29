@@ -132,6 +132,9 @@ struct asm_parser_state {
    struct gl_context *ctx;
    struct gl_program *prog;
 
+   /** Memory context to attach instructions to. */
+   void *mem_ctx;
+
    /**
     * Per-program target limits
     */
@@ -213,7 +216,6 @@ struct asm_parser_state {
 
    struct {
       unsigned UsesKill:1;
-      unsigned UsesDFdy:1;
    } fragment;
 };
 

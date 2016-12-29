@@ -130,14 +130,14 @@ ir_print_visitor::unique_name(ir_variable *var)
 
    /* If there's no conflict, just use the original name */
    const char* name = NULL;
-   if (_mesa_symbol_table_find_symbol(this->symbols, -1, var->name) == NULL) {
+   if (_mesa_symbol_table_find_symbol(this->symbols, var->name) == NULL) {
       name = var->name;
    } else {
       static unsigned i = 1;
       name = ralloc_asprintf(this->mem_ctx, "%s@%u", var->name, ++i);
    }
    _mesa_hash_table_insert(this->printable_names, var, (void *) name);
-   _mesa_symbol_table_add_symbol(this->symbols, -1, name, var);
+   _mesa_symbol_table_add_symbol(this->symbols, name, var);
    return name;
 }
 
@@ -165,9 +165,28 @@ void ir_print_visitor::visit(ir_variable *ir)
 {
    fprintf(f, "(declare ");
 
-   char loc[256] = {0};
+   char binding[32] = {0};
+   if (ir->data.binding)
+      snprintf(binding, sizeof(binding), "binding=%i ", ir->data.binding);
+
+   char loc[32] = {0};
    if (ir->data.location != -1)
       snprintf(loc, sizeof(loc), "location=%i ", ir->data.location);
+
+   char component[32] = {0};
+   if (ir->data.explicit_component)
+      snprintf(component, sizeof(component), "component=%i ", ir->data.location_frac);
+
+   char stream[32] = {0};
+   if (ir->data.stream & (1u << 31)) {
+      if (ir->data.stream & ~(1u << 31)) {
+         snprintf(stream, sizeof(stream), "stream(%u,%u,%u,%u) ",
+                  ir->data.stream & 3, (ir->data.stream >> 2) & 3,
+                  (ir->data.stream >> 4) & 3, (ir->data.stream >> 6) & 3);
+      }
+   } else if (ir->data.stream) {
+      snprintf(stream, sizeof(stream), "stream%u ", ir->data.stream);
+   }
 
    const char *const cent = (ir->data.centroid) ? "centroid " : "";
    const char *const samp = (ir->data.sample) ? "sample " : "";
@@ -179,13 +198,12 @@ void ir_print_visitor::visit(ir_variable *ir)
                                 "in ", "out ", "inout ",
 			        "const_in ", "sys ", "temporary " };
    STATIC_ASSERT(ARRAY_SIZE(mode) == ir_var_mode_count);
-   const char *const stream [] = {"", "stream1 ", "stream2 ", "stream3 "};
    const char *const interp[] = { "", "smooth", "flat", "noperspective" };
    STATIC_ASSERT(ARRAY_SIZE(interp) == INTERP_MODE_COUNT);
 
-   fprintf(f, "(%s%s%s%s%s%s%s%s%s) ",
-           loc, cent, samp, patc, inv, prec, mode[ir->data.mode],
-           stream[ir->data.stream],
+   fprintf(f, "(%s%s%s%s%s%s%s%s%s%s%s) ",
+           binding, loc, component, cent, samp, patc, inv, prec, mode[ir->data.mode],
+           stream,
            interp[ir->data.interpolation]);
 
    print_type(f, ir->type);
@@ -255,7 +273,7 @@ void ir_print_visitor::visit(ir_expression *ir)
 
    print_type(f, ir->type);
 
-   fprintf(f, " %s ", ir->operator_string());
+   fprintf(f, " %s ", ir_expression_operation_strings[ir->operation]);
 
    for (unsigned i = 0; i < ir->get_num_operands(); i++) {
       ir->operands[i]->accept(this);
@@ -306,9 +324,9 @@ void ir_print_visitor::visit(ir_texture *ir)
       else
 	 fprintf(f, "1");
 
-      if (ir->shadow_comparitor) {
+      if (ir->shadow_comparator) {
 	 fprintf(f, " ");
-	 ir->shadow_comparitor->accept(this);
+	 ir->shadow_comparator->accept(this);
       } else {
 	 fprintf(f, " ()");
       }
@@ -344,7 +362,7 @@ void ir_print_visitor::visit(ir_texture *ir)
       ir->lod_info.component->accept(this);
       break;
    case ir_samples_identical:
-      unreachable(!"ir_samples_identical was already handled");
+      unreachable("ir_samples_identical was already handled");
    };
    fprintf(f, ")");
 }
@@ -470,7 +488,8 @@ void ir_print_visitor::visit(ir_constant *ir)
             else
                fprintf(f, "%f", ir->value.d[i]);
             break;
-	 default: assert(0);
+	 default:
+            unreachable("Invalid constant type");
 	 }
       }
    }

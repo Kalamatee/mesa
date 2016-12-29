@@ -69,6 +69,9 @@ _mesa_count_active_attribs(struct gl_shader_program *shProg);
 extern size_t
 _mesa_longest_attribute_name_length(struct gl_shader_program *shProg);
 
+extern void
+_mesa_shader_write_subroutine_indices(struct gl_context *ctx,
+                                      gl_shader_stage stage);
 extern void GLAPIENTRY
 _mesa_AttachObjectARB(GLhandleARB, GLhandleARB);
 
@@ -215,9 +218,8 @@ _mesa_use_shader_program(struct gl_context *ctx, GLenum type,
                          struct gl_pipeline_object *shTarget);
 
 extern void
-_mesa_copy_linked_program_data(gl_shader_stage type,
-                               const struct gl_shader_program *src,
-                               struct gl_program *dst);
+_mesa_copy_linked_program_data(const struct gl_shader_program *src,
+                               struct gl_linked_shader *dst_sh);
 
 extern bool
 _mesa_validate_shader_target(const struct gl_context *ctx, GLenum type);
@@ -286,7 +288,8 @@ _mesa_PatchParameterfv(GLenum pname, const GLfloat *values);
 
 /* GL_ARB_shader_subroutine */
 void
-_mesa_shader_program_init_subroutine_defaults(struct gl_shader_program *shProg);
+_mesa_shader_program_init_subroutine_defaults(struct gl_context *ctx,
+                                              struct gl_shader_program *shProg);
 
 extern GLint GLAPIENTRY
 _mesa_GetSubroutineUniformLocation(GLuint program, GLenum shadertype,

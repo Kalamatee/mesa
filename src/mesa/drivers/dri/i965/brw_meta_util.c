@@ -22,6 +22,7 @@
  */
 
 #include "brw_context.h"
+#include "brw_defines.h"
 #include "intel_fbo.h"
 #include "brw_meta_util.h"
 #include "brw_state.h"
@@ -371,13 +372,11 @@ brw_is_color_fast_clear_compatible(struct brw_context *brw,
 /**
  * Convert the given color to a bitfield suitable for ORing into DWORD 7 of
  * SURFACE_STATE (DWORD 12-15 on SKL+).
- *
- * Returned boolean tells if the given color differs from the stored.
  */
-bool
-brw_meta_set_fast_clear_color(struct brw_context *brw,
-                              struct intel_mipmap_tree *mt,
-                              const union gl_color_union *color)
+union gl_color_union
+brw_meta_convert_fast_clear_color(const struct brw_context *brw,
+                                  const struct intel_mipmap_tree *mt,
+                                  const union gl_color_union *color)
 {
    union gl_color_union override_color = *color;
 
@@ -409,7 +408,7 @@ brw_meta_set_fast_clear_color(struct brw_context *brw,
          override_color.f[3] = 1.0f;
    }
 
-   /* Handle linear→SRGB conversion */
+   /* Handle linear to SRGB conversion */
    if (brw->ctx.Color.sRGBEnabled &&
        _mesa_get_srgb_format_linear(mt->format) != mt->format) {
       for (int i = 0; i < 3; i++) {
@@ -418,205 +417,34 @@ brw_meta_set_fast_clear_color(struct brw_context *brw,
       }
    }
 
-   bool updated;
-   if (brw->gen >= 9) {
-      updated = memcmp(&mt->gen9_fast_clear_color, &override_color,
-                       sizeof(mt->gen9_fast_clear_color));
-      mt->gen9_fast_clear_color = override_color;
-   } else {
-      const uint32_t old_color_value = mt->fast_clear_color_value;
+   return override_color;
+}
 
-      mt->fast_clear_color_value = 0;
+/* Returned boolean tells if the given color differs from the current. */
+bool
+brw_meta_set_fast_clear_color(struct brw_context *brw,
+                              union gl_color_union *curr_color,
+                              const union gl_color_union *new_color)
+{
+   bool updated;
+
+   if (brw->gen >= 9) {
+      updated = memcmp(curr_color, new_color, sizeof(*curr_color));
+      *curr_color = *new_color;
+   } else {
+      const uint32_t old_color_value = *(uint32_t *)curr_color;
+      uint32_t adjusted = 0;
+
       for (int i = 0; i < 4; i++) {
          /* Testing for non-0 works for integer and float colors */
-         if (override_color.f[i] != 0.0f) {
-             mt->fast_clear_color_value |=
-                1 << (GEN7_SURFACE_CLEAR_COLOR_SHIFT + (3 - i));
+         if (new_color->f[i] != 0.0f) {
+            adjusted |= 1 << (GEN7_SURFACE_CLEAR_COLOR_SHIFT + (3 - i));
          }
       }
 
-      updated = (old_color_value != mt->fast_clear_color_value);
+      updated = (old_color_value != adjusted);
+      *(uint32_t *)curr_color = adjusted;
    }
 
    return updated;
-}
-
-void
-brw_get_fast_clear_rect(const struct brw_context *brw,
-                        const struct gl_framebuffer *fb,
-                        const struct intel_mipmap_tree* mt,
-                        unsigned *x0, unsigned *y0,
-                        unsigned *x1, unsigned *y1)
-{
-   unsigned int x_align, y_align;
-   unsigned int x_scaledown, y_scaledown;
-
-   /* Only single sampled surfaces need to (and actually can) be resolved. */
-   if (mt->msaa_layout == INTEL_MSAA_LAYOUT_NONE ||
-       intel_miptree_is_lossless_compressed(brw, mt)) {
-      /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
-       * Target(s)", beneath the "Fast Color Clear" bullet (p327):
-       *
-       *     Clear pass must have a clear rectangle that must follow
-       *     alignment rules in terms of pixels and lines as shown in the
-       *     table below. Further, the clear-rectangle height and width
-       *     must be multiple of the following dimensions. If the height
-       *     and width of the render target being cleared do not meet these
-       *     requirements, an MCS buffer can be created such that it
-       *     follows the requirement and covers the RT.
-       *
-       * The alignment size in the table that follows is related to the
-       * alignment size returned by intel_get_non_msrt_mcs_alignment(), but
-       * with X alignment multiplied by 16 and Y alignment multiplied by 32.
-       */
-      intel_get_non_msrt_mcs_alignment(mt, &x_align, &y_align);
-      x_align *= 16;
-
-      /* SKL+ line alignment requirement for Y-tiled are half those of the prior
-       * generations.
-       */
-      if (brw->gen >= 9)
-         y_align *= 16;
-      else
-         y_align *= 32;
-
-      /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
-       * Target(s)", beneath the "Fast Color Clear" bullet (p327):
-       *
-       *     In order to optimize the performance MCS buffer (when bound to
-       *     1X RT) clear similarly to MCS buffer clear for MSRT case,
-       *     clear rect is required to be scaled by the following factors
-       *     in the horizontal and vertical directions:
-       *
-       * The X and Y scale down factors in the table that follows are each
-       * equal to half the alignment value computed above.
-       */
-      x_scaledown = x_align / 2;
-      y_scaledown = y_align / 2;
-
-      /* From BSpec: 3D-Media-GPGPU Engine > 3D Pipeline > Pixel > Pixel
-       * Backend > MCS Buffer for Render Target(s) [DevIVB+] > Table "Color
-       * Clear of Non-MultiSampled Render Target Restrictions":
-       *
-       *   Clear rectangle must be aligned to two times the number of
-       *   pixels in the table shown below due to 16x16 hashing across the
-       *   slice.
-       */
-      x_align *= 2;
-      y_align *= 2;
-   } else {
-      /* From the Ivy Bridge PRM, Vol2 Part1 11.7 "MCS Buffer for Render
-       * Target(s)", beneath the "MSAA Compression" bullet (p326):
-       *
-       *     Clear pass for this case requires that scaled down primitive
-       *     is sent down with upper left co-ordinate to coincide with
-       *     actual rectangle being cleared. For MSAA, clear rectangle’s
-       *     height and width need to as show in the following table in
-       *     terms of (width,height) of the RT.
-       *
-       *     MSAA  Width of Clear Rect  Height of Clear Rect
-       *      2X     Ceil(1/8*width)      Ceil(1/2*height)
-       *      4X     Ceil(1/8*width)      Ceil(1/2*height)
-       *      8X     Ceil(1/2*width)      Ceil(1/2*height)
-       *     16X         width            Ceil(1/2*height)
-       *
-       * The text "with upper left co-ordinate to coincide with actual
-       * rectangle being cleared" is a little confusing--it seems to imply
-       * that to clear a rectangle from (x,y) to (x+w,y+h), one needs to
-       * feed the pipeline using the rectangle (x,y) to
-       * (x+Ceil(w/N),y+Ceil(h/2)), where N is either 2 or 8 depending on
-       * the number of samples.  Experiments indicate that this is not
-       * quite correct; actually, what the hardware appears to do is to
-       * align whatever rectangle is sent down the pipeline to the nearest
-       * multiple of 2x2 blocks, and then scale it up by a factor of N
-       * horizontally and 2 vertically.  So the resulting alignment is 4
-       * vertically and either 4 or 16 horizontally, and the scaledown
-       * factor is 2 vertically and either 2 or 8 horizontally.
-       */
-      switch (mt->num_samples) {
-      case 2:
-      case 4:
-         x_scaledown = 8;
-         break;
-      case 8:
-         x_scaledown = 2;
-         break;
-      case 16:
-         x_scaledown = 1;
-         break;
-      default:
-         unreachable("Unexpected sample count for fast clear");
-      }
-      y_scaledown = 2;
-      x_align = x_scaledown * 2;
-      y_align = y_scaledown * 2;
-   }
-
-   *x0 = fb->_Xmin;
-   *x1 = fb->_Xmax;
-   if (fb->Name != 0) {
-      *y0 = fb->_Ymin;
-      *y1 = fb->_Ymax;
-   } else {
-      *y0 = fb->Height - fb->_Ymax;
-      *y1 = fb->Height - fb->_Ymin;
-   }
-
-   *x0 = ROUND_DOWN_TO(*x0,  x_align) / x_scaledown;
-   *y0 = ROUND_DOWN_TO(*y0, y_align) / y_scaledown;
-   *x1 = ALIGN(*x1, x_align) / x_scaledown;
-   *y1 = ALIGN(*y1, y_align) / y_scaledown;
-}
-
-void
-brw_meta_get_buffer_rect(const struct gl_framebuffer *fb,
-                         unsigned *x0, unsigned *y0,
-                         unsigned *x1, unsigned *y1)
-{
-   *x0 = fb->_Xmin;
-   *x1 = fb->_Xmax;
-   if (fb->Name != 0) {
-      *y0 = fb->_Ymin;
-      *y1 = fb->_Ymax;
-   } else {
-      *y0 = fb->Height - fb->_Ymax;
-      *y1 = fb->Height - fb->_Ymin;
-   }
-}
-
-void
-brw_get_resolve_rect(const struct brw_context *brw,
-                     const struct intel_mipmap_tree *mt,
-                     unsigned *x0, unsigned *y0,
-                     unsigned *x1, unsigned *y1)
-{
-   unsigned x_align, y_align;
-   unsigned x_scaledown, y_scaledown;
-
-   /* From the Ivy Bridge PRM, Vol2 Part1 11.9 "Render Target Resolve":
-    *
-    *     A rectangle primitive must be scaled down by the following factors
-    *     with respect to render target being resolved.
-    *
-    * The scaledown factors in the table that follows are related to the
-    * alignment size returned by intel_get_non_msrt_mcs_alignment() by a
-    * multiplier. For IVB and HSW, we divide by two, for BDW we multiply
-    * by 8 and 16. Similar to the fast clear, SKL eases the BDW vertical scaling
-    * by a factor of 2.
-    */
-
-   intel_get_non_msrt_mcs_alignment(mt, &x_align, &y_align);
-   if (brw->gen >= 9) {
-      x_scaledown = x_align * 8;
-      y_scaledown = y_align * 8;
-   } else if (brw->gen >= 8) {
-      x_scaledown = x_align * 8;
-      y_scaledown = y_align * 16;
-   } else {
-      x_scaledown = x_align / 2;
-      y_scaledown = y_align / 2;
-   }
-   *x0 = *y0 = 0;
-   *x1 = ALIGN(mt->logical_width0, x_scaledown) / x_scaledown;
-   *y1 = ALIGN(mt->logical_height0, y_scaledown) / y_scaledown;
 }

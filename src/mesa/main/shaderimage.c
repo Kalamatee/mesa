@@ -401,7 +401,7 @@ _mesa_is_shader_image_format_supported(const struct gl_context *ctx,
 
    /* Formats supported on unextended desktop GL and the original
     * ARB_shader_image_load_store extension, c.f. table 3.21 of the OpenGL 4.2
-    * specification.
+    * specification or by GLES 3.1 with GL_NV_image_formats extension.
     */
    case GL_RG32F:
    case GL_RG16F:
@@ -418,17 +418,27 @@ _mesa_is_shader_image_format_supported(const struct gl_context *ctx,
    case GL_RG8I:
    case GL_R16I:
    case GL_R8I:
-   case GL_RGBA16:
    case GL_RGB10_A2:
-   case GL_RG16:
    case GL_RG8:
-   case GL_R16:
    case GL_R8:
-   case GL_RGBA16_SNORM:
-   case GL_RG16_SNORM:
    case GL_RG8_SNORM:
-   case GL_R16_SNORM:
    case GL_R8_SNORM:
+      return true;
+
+   /* Formats supported on unextended desktop GL and the original
+    * ARB_shader_image_load_store extension, c.f. table 3.21 of the OpenGL 4.2
+    * specification.
+    *
+    * These can be supported by GLES 3.1 with GL_NV_image_formats &
+    * GL_EXT_texture_norm16 extensions but we don't have support for the
+    * latter in Mesa yet.
+    */
+   case GL_RGBA16:
+   case GL_RGBA16_SNORM:
+   case GL_RG16:
+   case GL_RG16_SNORM:
+   case GL_R16:
+   case GL_R16_SNORM:
       return _mesa_is_desktop_gl(ctx);
 
    default:
@@ -752,55 +762,4 @@ _mesa_BindImageTextures(GLuint first, GLsizei count, const GLuint *textures)
    }
 
    _mesa_end_texture_lookups(ctx);
-}
-
-void GLAPIENTRY
-_mesa_MemoryBarrier(GLbitfield barriers)
-{
-   GET_CURRENT_CONTEXT(ctx);
-
-   if (ctx->Driver.MemoryBarrier)
-      ctx->Driver.MemoryBarrier(ctx, barriers);
-}
-
-void GLAPIENTRY
-_mesa_MemoryBarrierByRegion(GLbitfield barriers)
-{
-   GET_CURRENT_CONTEXT(ctx);
-
-   GLbitfield all_allowed_bits = GL_ATOMIC_COUNTER_BARRIER_BIT |
-                                 GL_FRAMEBUFFER_BARRIER_BIT |
-                                 GL_SHADER_IMAGE_ACCESS_BARRIER_BIT |
-                                 GL_SHADER_STORAGE_BARRIER_BIT |
-                                 GL_TEXTURE_FETCH_BARRIER_BIT |
-                                 GL_UNIFORM_BARRIER_BIT;
-
-   if (ctx->Driver.MemoryBarrier) {
-      /* From section 7.11.2 of the OpenGL ES 3.1 specification:
-       *
-       *    "When barriers is ALL_BARRIER_BITS, shader memory accesses will be
-       *     synchronized relative to all these barrier bits, but not to other
-       *     barrier bits specific to MemoryBarrier."
-       *
-       * That is, if barriers is the special value GL_ALL_BARRIER_BITS, then all
-       * barriers allowed by glMemoryBarrierByRegion should be activated."
-       */
-      if (barriers == GL_ALL_BARRIER_BITS) {
-         ctx->Driver.MemoryBarrier(ctx, all_allowed_bits);
-         return;
-      }
-
-      /* From section 7.11.2 of the OpenGL ES 3.1 specification:
-       *
-       *    "An INVALID_VALUE error is generated if barriers is not the special
-       *     value ALL_BARRIER_BITS, and has any bits set other than those
-       *     described above."
-       */
-      if ((barriers & ~all_allowed_bits) != 0) {
-         _mesa_error(ctx, GL_INVALID_VALUE,
-                     "glMemoryBarrierByRegion(unsupported barrier bit");
-      }
-
-      ctx->Driver.MemoryBarrier(ctx, barriers);
-   }
 }

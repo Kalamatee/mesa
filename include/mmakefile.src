@@ -1,16 +1,4 @@
 #   $Id$
 include $(TOP)/config/make.cfg
 
-GL_INCLUDE_FILES := gl.h glext.h
 
-%copy_includes path=GL dir=GL includes=$(GL_INCLUDE_FILES)
-
-KHR_INCLUDE_FILES := khrplatform.h
-
-%copy_includes path=KHR dir=KHR includes=$(KHR_INCLUDE_FILES)
-
-GL_INCLUDE_FILES := egl.h eglext.h eglplatform.h eglmesaext.h eglextchromium.h
-
-%copy_includes path=EGL dir=EGL includes=$(GL_INCLUDE_FILES)
-
-%common

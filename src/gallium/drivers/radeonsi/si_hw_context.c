@@ -100,17 +100,13 @@ void si_context_gfx_flush(void *context, unsigned flags,
 	if (ctx->gfx_flush_in_progress)
 		return;
 
-	ctx->gfx_flush_in_progress = true;
-
-	if (!radeon_emitted(cs, ctx->b.initial_gfx_cs_size) &&
-	    (!fence || ctx->b.last_gfx_fence)) {
-		if (fence)
-			ws->fence_reference(fence, ctx->b.last_gfx_fence);
-		if (!(flags & RADEON_FLUSH_ASYNC))
-			ws->cs_sync_flush(cs);
-		ctx->gfx_flush_in_progress = false;
+	if (!radeon_emitted(cs, ctx->b.initial_gfx_cs_size))
 		return;
-	}
+
+	if (r600_check_device_reset(&ctx->b))
+		return;
+
+	ctx->gfx_flush_in_progress = true;
 
 	r600_preflush_suspend_features(&ctx->b);
 
@@ -122,7 +118,7 @@ void si_context_gfx_flush(void *context, unsigned flags,
 		ctx->b.flags |= SI_CONTEXT_INV_GLOBAL_L2 |
 				SI_CONTEXT_INV_VMEM_L1;
 
-	si_emit_cache_flush(ctx, NULL);
+	si_emit_cache_flush(ctx);
 
 	if (ctx->trace_buf)
 		si_trace_emit(ctx);
@@ -163,7 +159,7 @@ void si_begin_new_cs(struct si_context *ctx)
 		/* Create a buffer used for writing trace IDs and initialize it to 0. */
 		assert(!ctx->trace_buf);
 		ctx->trace_buf = (struct r600_resource*)
-				 pipe_buffer_create(ctx->b.b.screen, PIPE_BIND_CUSTOM,
+				 pipe_buffer_create(ctx->b.b.screen, 0,
 						    PIPE_USAGE_STAGING, 4);
 		if (ctx->trace_buf)
 			pipe_buffer_write_nooverlap(&ctx->b.b, &ctx->trace_buf->b.b,
@@ -220,6 +216,7 @@ void si_begin_new_cs(struct si_context *ctx)
 
 	ctx->b.scissors.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
 	ctx->b.viewports.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
+	ctx->b.viewports.depth_range_dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
 	si_mark_atom_dirty(ctx, &ctx->b.scissors.atom);
 	si_mark_atom_dirty(ctx, &ctx->b.viewports.atom);
 
@@ -231,12 +228,12 @@ void si_begin_new_cs(struct si_context *ctx)
 	/* Invalidate various draw states so that they are emitted before
 	 * the first draw call. */
 	si_invalidate_draw_sh_constants(ctx);
+	ctx->last_index_size = -1;
 	ctx->last_primitive_restart_en = -1;
 	ctx->last_restart_index = SI_RESTART_INDEX_UNKNOWN;
 	ctx->last_gs_out_prim = -1;
 	ctx->last_prim = -1;
 	ctx->last_multi_vgt_param = -1;
-	ctx->last_ls_hs_config = -1;
 	ctx->last_rast_prim = -1;
 	ctx->last_sc_line_stipple = ~0;
 	ctx->last_vtx_reuse_depth = -1;

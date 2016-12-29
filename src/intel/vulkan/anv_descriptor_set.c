@@ -27,6 +27,8 @@
 #include <unistd.h>
 #include <fcntl.h>
 
+#include "util/mesa-sha1.h"
+
 #include "anv_private.h"
 
 /*
@@ -56,7 +58,7 @@ VkResult anv_CreateDescriptorSetLayout(
                  (max_binding + 1) * sizeof(set_layout->binding[0]) +
                  immutable_sampler_count * sizeof(struct anv_sampler *);
 
-   set_layout = anv_alloc2(&device->alloc, pAllocator, size, 8,
+   set_layout = vk_alloc2(&device->alloc, pAllocator, size, 8,
                            VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!set_layout)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -65,9 +67,8 @@ VkResult anv_CreateDescriptorSetLayout(
    struct anv_sampler **samplers =
       (struct anv_sampler **)&set_layout->binding[max_binding + 1];
 
+   memset(set_layout, 0, sizeof(*set_layout));
    set_layout->binding_count = max_binding + 1;
-   set_layout->shader_stages = 0;
-   set_layout->size = 0;
 
    for (uint32_t b = 0; b <= max_binding; b++) {
       /* Initialize all binding_layout entries to -1 */
@@ -199,7 +200,19 @@ void anv_DestroyDescriptorSetLayout(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_descriptor_set_layout, set_layout, _set_layout);
 
-   anv_free2(&device->alloc, pAllocator, set_layout);
+   if (!set_layout)
+      return;
+
+   vk_free2(&device->alloc, pAllocator, set_layout);
+}
+
+static void
+sha1_update_descriptor_set_layout(struct mesa_sha1 *ctx,
+                                  const struct anv_descriptor_set_layout *layout)
+{
+   size_t size = sizeof(*layout) +
+                 sizeof(layout->binding[0]) * layout->binding_count;
+   _mesa_sha1_update(ctx, layout, size);
 }
 
 /*
@@ -218,7 +231,7 @@ VkResult anv_CreatePipelineLayout(
 
    assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO);
 
-   layout = anv_alloc2(&device->alloc, pAllocator, sizeof(*layout), 8,
+   layout = vk_alloc2(&device->alloc, pAllocator, sizeof(*layout), 8,
                        VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (layout == NULL)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -246,6 +259,19 @@ VkResult anv_CreatePipelineLayout(
       }
    }
 
+   struct mesa_sha1 *ctx = _mesa_sha1_init();
+   for (unsigned s = 0; s < layout->num_sets; s++) {
+      sha1_update_descriptor_set_layout(ctx, layout->set[s].layout);
+      _mesa_sha1_update(ctx, &layout->set[s].dynamic_offset_start,
+                        sizeof(layout->set[s].dynamic_offset_start));
+   }
+   _mesa_sha1_update(ctx, &layout->num_sets, sizeof(layout->num_sets));
+   for (unsigned s = 0; s < MESA_SHADER_STAGES; s++) {
+      _mesa_sha1_update(ctx, &layout->stage[s].has_dynamic_offsets,
+                        sizeof(layout->stage[s].has_dynamic_offsets));
+   }
+   _mesa_sha1_final(ctx, layout->sha1);
+
    *pPipelineLayout = anv_pipeline_layout_to_handle(layout);
 
    return VK_SUCCESS;
@@ -259,7 +285,10 @@ void anv_DestroyPipelineLayout(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_pipeline_layout, pipeline_layout, _pipelineLayout);
 
-   anv_free2(&device->alloc, pAllocator, pipeline_layout);
+   if (!pipeline_layout)
+      return;
+
+   vk_free2(&device->alloc, pAllocator, pipeline_layout);
 }
 
 /*
@@ -306,7 +335,7 @@ VkResult anv_CreateDescriptorPool(
       descriptor_count * sizeof(struct anv_descriptor) +
       buffer_count * sizeof(struct anv_buffer_view);
 
-   pool = anv_alloc2(&device->alloc, pAllocator, size, 8,
+   pool = vk_alloc2(&device->alloc, pAllocator, size, 8,
                      VK_SYSTEM_ALLOCATION_SCOPE_OBJECT);
    if (!pool)
       return vk_error(VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -332,8 +361,11 @@ void anv_DestroyDescriptorPool(
    ANV_FROM_HANDLE(anv_device, device, _device);
    ANV_FROM_HANDLE(anv_descriptor_pool, pool, _pool);
 
+   if (!pool)
+      return;
+
    anv_state_stream_finish(&pool->surface_state_stream);
-   anv_free2(&device->alloc, pAllocator, pool);
+   vk_free2(&device->alloc, pAllocator, pool);
 }
 
 VkResult anv_ResetDescriptorPool(
@@ -370,7 +402,7 @@ layout_size(const struct anv_descriptor_set_layout *layout)
 
 struct surface_state_free_list_entry {
    void *next;
-   uint32_t offset;
+   struct anv_state state;
 };
 
 VkResult
@@ -440,10 +472,9 @@ anv_descriptor_set_create(struct anv_device *device,
       struct anv_state state;
 
       if (entry) {
-         state.map = entry;
-         state.offset = entry->offset;
-         state.alloc_size = 64;
+         state = entry->state;
          pool->surface_state_free_list = entry->next;
+         assert(state.alloc_size == 64);
       } else {
          state = anv_state_stream_alloc(&pool->surface_state_stream, 64, 64);
       }
@@ -466,6 +497,7 @@ anv_descriptor_set_destroy(struct anv_device *device,
       struct surface_state_free_list_entry *entry =
          set->buffer_views[b].surface_state.map;
       entry->next = pool->surface_state_free_list;
+      entry->state = set->buffer_views[b].surface_state;
       pool->surface_state_free_list = entry;
    }
 
@@ -522,6 +554,9 @@ VkResult anv_FreeDescriptorSets(
 
    for (uint32_t i = 0; i < count; i++) {
       ANV_FROM_HANDLE(anv_descriptor_set, set, pDescriptorSets[i]);
+
+      if (!set)
+         continue;
 
       anv_descriptor_set_destroy(device, pool, set);
    }
@@ -582,6 +617,7 @@ void anv_UpdateDescriptorSets(
 
       case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
       case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
+      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
          for (uint32_t j = 0; j < write->descriptorCount; j++) {
             ANV_FROM_HANDLE(anv_image_view, iview,
                             write->pImageInfo[j].imageView);
@@ -604,10 +640,6 @@ void anv_UpdateDescriptorSets(
                .buffer_view = bview,
             };
          }
-         break;
-
-      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-         anv_finishme("input attachments not implemented");
          break;
 
       case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:

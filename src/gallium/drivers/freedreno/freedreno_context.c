@@ -43,21 +43,26 @@ fd_context_flush(struct pipe_context *pctx, struct pipe_fence_handle **fence,
 		unsigned flags)
 {
 	struct fd_context *ctx = fd_context(pctx);
-	uint32_t timestamp;
+
+	if (flags & PIPE_FLUSH_FENCE_FD)
+		ctx->batch->needs_out_fence_fd = true;
 
 	if (!ctx->screen->reorder) {
-		struct fd_batch *batch = NULL;
-		fd_batch_reference(&batch, ctx->batch);
-		fd_batch_flush(batch, true);
-		timestamp = fd_ringbuffer_timestamp(batch->gmem);
-		fd_batch_reference(&batch, NULL);
+		fd_batch_flush(ctx->batch, true);
 	} else {
-		timestamp = fd_bc_flush(&ctx->screen->batch_cache, ctx);
+		fd_bc_flush(&ctx->screen->batch_cache, ctx);
 	}
 
 	if (fence) {
-		fd_screen_fence_ref(pctx->screen, fence, NULL);
-		*fence = fd_fence_create(pctx, timestamp);
+		/* if there hasn't been any rendering submitted yet, we might not
+		 * have actually created a fence
+		 */
+		if (!ctx->last_fence || ctx->batch->needs_out_fence_fd) {
+			ctx->batch->needs_flush = true;
+			fd_gmem_render_noop(ctx->batch);
+			fd_batch_reset(ctx->batch);
+		}
+		fd_fence_ref(pctx->screen, fence, ctx->last_fence);
 	}
 }
 
@@ -80,7 +85,10 @@ fd_emit_string_marker(struct pipe_context *pctx, const char *string, int len)
 	/* max packet size is 0x3fff dwords: */
 	len = MIN2(len, 0x3fff * 4);
 
-	OUT_PKT3(ring, CP_NOP, align(len, 4) / 4);
+	if (ctx->screen->gpu_id >= 500)
+		OUT_PKT7(ring, CP_NOP, align(len, 4) / 4);
+	else
+		OUT_PKT3(ring, CP_NOP, align(len, 4) / 4);
 	while (len >= 4) {
 		OUT_RING(ring, *buf);
 		buf++;
@@ -109,16 +117,21 @@ fd_context_destroy(struct pipe_context *pctx)
 	fd_batch_reference(&ctx->batch, NULL);  /* unref current batch */
 	fd_bc_invalidate_context(ctx);
 
+	fd_fence_ref(pctx->screen, &ctx->last_fence, NULL);
+
 	fd_prog_fini(pctx);
 	fd_hw_query_fini(pctx);
 
 	if (ctx->blitter)
 		util_blitter_destroy(ctx->blitter);
 
+	if (ctx->clear_rs_state)
+		pctx->delete_rasterizer_state(pctx, ctx->clear_rs_state);
+
 	if (ctx->primconvert)
 		util_primconvert_destroy(ctx->primconvert);
 
-	util_slab_destroy(&ctx->transfer_pool);
+	slab_destroy_child(&ctx->transfer_pool);
 
 	for (i = 0; i < ARRAY_SIZE(ctx->pipe); i++) {
 		struct fd_vsc_pipe *pipe = &ctx->pipe[i];
@@ -150,6 +163,82 @@ fd_set_debug_callback(struct pipe_context *pctx,
 		memset(&ctx->debug, 0, sizeof(ctx->debug));
 }
 
+/* TODO we could combine a few of these small buffers (solid_vbuf,
+ * blit_texcoord_vbuf, and vsc_size_mem, into a single buffer and
+ * save a tiny bit of memory
+ */
+
+static struct pipe_resource *
+create_solid_vertexbuf(struct pipe_context *pctx)
+{
+	static const float init_shader_const[] = {
+			-1.000000, +1.000000, +1.000000,
+			+1.000000, -1.000000, +1.000000,
+	};
+	struct pipe_resource *prsc = pipe_buffer_create(pctx->screen,
+			PIPE_BIND_CUSTOM, PIPE_USAGE_IMMUTABLE, sizeof(init_shader_const));
+	pipe_buffer_write(pctx, prsc, 0,
+			sizeof(init_shader_const), init_shader_const);
+	return prsc;
+}
+
+static struct pipe_resource *
+create_blit_texcoord_vertexbuf(struct pipe_context *pctx)
+{
+	struct pipe_resource *prsc = pipe_buffer_create(pctx->screen,
+			PIPE_BIND_CUSTOM, PIPE_USAGE_DYNAMIC, 16);
+	return prsc;
+}
+
+void
+fd_context_setup_common_vbos(struct fd_context *ctx)
+{
+	struct pipe_context *pctx = &ctx->base;
+
+	ctx->solid_vbuf = create_solid_vertexbuf(pctx);
+	ctx->blit_texcoord_vbuf = create_blit_texcoord_vertexbuf(pctx);
+
+	/* setup solid_vbuf_state: */
+	ctx->solid_vbuf_state.vtx = pctx->create_vertex_elements_state(
+			pctx, 1, (struct pipe_vertex_element[]){{
+				.vertex_buffer_index = 0,
+				.src_offset = 0,
+				.src_format = PIPE_FORMAT_R32G32B32_FLOAT,
+			}});
+	ctx->solid_vbuf_state.vertexbuf.count = 1;
+	ctx->solid_vbuf_state.vertexbuf.vb[0].stride = 12;
+	ctx->solid_vbuf_state.vertexbuf.vb[0].buffer = ctx->solid_vbuf;
+
+	/* setup blit_vbuf_state: */
+	ctx->blit_vbuf_state.vtx = pctx->create_vertex_elements_state(
+			pctx, 2, (struct pipe_vertex_element[]){{
+				.vertex_buffer_index = 0,
+				.src_offset = 0,
+				.src_format = PIPE_FORMAT_R32G32_FLOAT,
+			}, {
+				.vertex_buffer_index = 1,
+				.src_offset = 0,
+				.src_format = PIPE_FORMAT_R32G32B32_FLOAT,
+			}});
+	ctx->blit_vbuf_state.vertexbuf.count = 2;
+	ctx->blit_vbuf_state.vertexbuf.vb[0].stride = 8;
+	ctx->blit_vbuf_state.vertexbuf.vb[0].buffer = ctx->blit_texcoord_vbuf;
+	ctx->blit_vbuf_state.vertexbuf.vb[1].stride = 12;
+	ctx->blit_vbuf_state.vertexbuf.vb[1].buffer = ctx->solid_vbuf;
+}
+
+void
+fd_context_cleanup_common_vbos(struct fd_context *ctx)
+{
+	struct pipe_context *pctx = &ctx->base;
+
+	pctx->delete_vertex_elements_state(pctx, ctx->solid_vbuf_state.vtx);
+	pctx->delete_vertex_elements_state(pctx, ctx->blit_vbuf_state.vtx);
+
+	pipe_resource_reference(&ctx->solid_vbuf, NULL);
+	pipe_resource_reference(&ctx->blit_texcoord_vbuf, NULL);
+}
+
 struct pipe_context *
 fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 		const uint8_t *primtypes, void *priv)
@@ -177,6 +266,8 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 	pctx->flush = fd_context_flush;
 	pctx->emit_string_marker = fd_emit_string_marker;
 	pctx->set_debug_callback = fd_set_debug_callback;
+	pctx->create_fence_fd = fd_create_fence_fd;
+	pctx->fence_server_sync = fd_fence_server_sync;
 
 	/* TODO what about compute?  Ideally it creates it's own independent
 	 * batches per compute job (since it isn't using tiling, so no point
@@ -186,8 +277,7 @@ fd_context_init(struct fd_context *ctx, struct pipe_screen *pscreen,
 		ctx->batch = fd_bc_alloc_batch(&screen->batch_cache, ctx);
 	}
 
-	util_slab_create(&ctx->transfer_pool, sizeof(struct fd_transfer),
-			16, UTIL_SLAB_SINGLETHREADED);
+	slab_create_child(&ctx->transfer_pool, &screen->transfer_pool);
 
 	fd_draw_init(pctx);
 	fd_resource_context_init(pctx);

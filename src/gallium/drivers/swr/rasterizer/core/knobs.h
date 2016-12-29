@@ -39,7 +39,7 @@
 ///////////////////////////////////////////////////////////////////////////////
 
 #define ENABLE_AVX512_SIMD16    0
-#define ENABLE_AVX512_EMULATION 0
+#define USE_8x2_TILE_BACKEND    0
 
 ///////////////////////////////////////////////////////////////////////////////
 // Architecture validation
@@ -76,8 +76,16 @@
 #endif
 
 #if ENABLE_AVX512_SIMD16
+
 #define KNOB_SIMD16_WIDTH 16
 #define KNOB_SIMD16_BYTES 64
+
+#if (KNOB_ARCH == KNOB_ARCH_AVX512)
+#define ENABLE_AVX512_EMULATION 0
+#else
+#define ENABLE_AVX512_EMULATION 1
+#endif
+
 #endif
 
 #define MAX_KNOB_ARCH_STR_LEN sizeof("AVX512_PLUS_PADDING")
@@ -85,8 +93,6 @@
 ///////////////////////////////////////////////////////////////////////////////
 // Configuration knobs
 ///////////////////////////////////////////////////////////////////////////////
-#define KNOB_MAX_NUM_THREADS                256 // Supports up to dual-HSW-Xeon.
-
 // Maximum supported number of active vertex buffer streams
 #define KNOB_NUM_STREAMS                    32
 
@@ -135,12 +141,10 @@
 
 #if KNOB_SIMD_WIDTH==8 && KNOB_TILE_X_DIM < 4
 #error "incompatible width/tile dimensions"
-#elif KNOB_SIMD_WIDTH==16 && KNOB_TILE_X_DIM < 4
-#error "incompatible width/tile dimensions"
 #endif
 
 #if ENABLE_AVX512_SIMD16
-#if KNOB_SIMD16_WIDTH==16 && KNOB_TILE_X_DIM < 4
+#if KNOB_SIMD16_WIDTH == 16 && KNOB_TILE_X_DIM < 8
 #error "incompatible width/tile dimensions"
 #endif
 #endif
@@ -148,17 +152,14 @@
 #if KNOB_SIMD_WIDTH == 8
 #define SIMD_TILE_X_DIM 4
 #define SIMD_TILE_Y_DIM 2
-#elif KNOB_SIMD_WIDTH == 16
-#define SIMD_TILE_X_DIM 4
-#define SIMD_TILE_Y_DIM 4
 #else
 #error "Invalid simd width"
 #endif
 
 #if ENABLE_AVX512_SIMD16
 #if KNOB_SIMD16_WIDTH == 16
-#define SIMD16_TILE_X_DIM 4
-#define SIMD16_TILE_Y_DIM 4
+#define SIMD16_TILE_X_DIM 8
+#define SIMD16_TILE_Y_DIM 2
 #else
 #error "Invalid simd width"
 #endif

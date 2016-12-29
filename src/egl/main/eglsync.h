@@ -48,12 +48,13 @@ struct _egl_sync
    EGLenum SyncStatus;
    EGLenum SyncCondition;
    EGLAttrib CLEvent;
+   EGLint SyncFd;
 };
 
 
 extern EGLBoolean
 _eglInitSync(_EGLSync *sync, _EGLDisplay *dpy, EGLenum type,
-             const EGLint *attrib_list, const EGLAttrib *attrib_list64);
+             const EGLAttrib *attrib_list);
 
 
 extern EGLBoolean

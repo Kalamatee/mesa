@@ -32,7 +32,7 @@
 #include "util/u_format.h"
 #include "util/u_transfer.h"
 #include "util/u_helpers.h"
-#include "util/u_slab.h"
+#include "util/slab.h"
 #include "util/u_upload_mgr.h"
 #include "util/u_blitter.h"
 #include "tgsi/tgsi_text.h"
@@ -690,7 +690,7 @@ static struct pipe_sampler_view *virgl_create_sampler_view(struct pipe_context *
 }
 
 static void virgl_set_sampler_views(struct pipe_context *ctx,
-                                   unsigned shader_type,
+                                   enum pipe_shader_type shader_type,
                                    unsigned start_slot,
                                    unsigned num_views,
                                    struct pipe_sampler_view **views)
@@ -765,7 +765,8 @@ static void virgl_delete_sampler_state(struct pipe_context *ctx,
 }
 
 static void virgl_bind_sampler_states(struct pipe_context *ctx,
-                                     unsigned shader, unsigned start_slot,
+                                     enum pipe_shader_type shader,
+                                     unsigned start_slot,
                                      unsigned num_samplers,
                                      void **samplers)
 {
@@ -861,7 +862,7 @@ virgl_context_destroy( struct pipe_context *ctx )
       u_upload_destroy(vctx->uploader);
    util_primconvert_destroy(vctx->primconvert);
 
-   util_slab_destroy(&vctx->texture_transfer_pool);
+   slab_destroy_child(&vctx->texture_transfer_pool);
    FREE(vctx);
 }
 
@@ -942,8 +943,7 @@ struct pipe_context *virgl_context_create(struct pipe_screen *pscreen,
    virgl_init_so_functions(vctx);
 
    list_inithead(&vctx->to_flush_bufs);
-   util_slab_create(&vctx->texture_transfer_pool, sizeof(struct virgl_transfer),
-                    16, UTIL_SLAB_SINGLETHREADED);
+   slab_create_child(&vctx->texture_transfer_pool, &rs->texture_transfer_pool);
 
    vctx->primconvert = util_primconvert_create(&vctx->base, rs->caps.caps.v1.prim_mask);
    vctx->uploader = u_upload_create(&vctx->base, 1024 * 1024,

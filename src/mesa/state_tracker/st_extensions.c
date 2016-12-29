@@ -263,8 +263,6 @@ void st_init_limits(struct pipe_screen *screen,
          pc->MediumInt = pc->HighInt = pc->LowInt;
       }
 
-      options->EmitNoNoise = TRUE;
-
       /* TODO: make these more fine-grained if anyone needs it */
       options->MaxIfDepth =
          screen->get_shader_param(screen, sh,
@@ -272,8 +270,7 @@ void st_init_limits(struct pipe_screen *screen,
       options->EmitNoLoops =
          !screen->get_shader_param(screen, sh,
                                    PIPE_SHADER_CAP_MAX_CONTROL_FLOW_DEPTH);
-      options->EmitNoFunctions =
-         !screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_SUBROUTINES);
+      options->EmitNoFunctions = true;
       options->EmitNoMainReturn =
          !screen->get_shader_param(screen, sh, PIPE_SHADER_CAP_SUBROUTINES);
 
@@ -311,9 +308,6 @@ void st_init_limits(struct pipe_screen *screen,
 
       options->LowerCombinedClipCullDistance = true;
       options->LowerBufferInterfaceBlocks = true;
-
-      if (sh == PIPE_SHADER_COMPUTE)
-         options->LowerShaderSharedVariables = true;
    }
 
    c->LowerTessLevel = true;
@@ -582,6 +576,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_color_buffer_float),           PIPE_CAP_VERTEX_COLOR_UNCLAMPED           },
       { o(ARB_conditional_render_inverted),  PIPE_CAP_CONDITIONAL_RENDER_INVERTED      },
       { o(ARB_copy_image),                   PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS },
+      { o(OES_copy_image),                   PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS },
       { o(ARB_cull_distance),                PIPE_CAP_CULL_DISTANCE                    },
       { o(ARB_depth_clamp),                  PIPE_CAP_DEPTH_CLIP_DISABLE               },
       { o(ARB_depth_texture),                PIPE_CAP_TEXTURE_SHADOW_MAP               },
@@ -617,7 +612,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_texture_view),                 PIPE_CAP_SAMPLER_VIEW_TARGET              },
       { o(ARB_timer_query),                  PIPE_CAP_QUERY_TIMESTAMP                  },
       { o(ARB_transform_feedback2),          PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME       },
-      { o(ARB_transform_feedback3),          PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME       },
+      { o(ARB_transform_feedback3),          PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS },
 
       { o(EXT_blend_equation_separate),      PIPE_CAP_BLEND_EQUATION_SEPARATE          },
       { o(EXT_depth_bounds_test),            PIPE_CAP_DEPTH_BOUNDS_TEST                },
@@ -891,6 +886,13 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->AMD_vertex_shader_layer = GL_TRUE;
    }
 
+   if (consts->GLSLVersion >= 140) {
+      if (screen->get_param(screen, PIPE_CAP_TGSI_ARRAY_COMPONENTS) &&
+         screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT,
+                                   PIPE_SHADER_CAP_PREFERRED_IR) == PIPE_SHADER_IR_TGSI)
+         extensions->ARB_enhanced_layouts = GL_TRUE;
+   }
+
    if (consts->GLSLVersion >= 130) {
       consts->NativeIntegers = GL_TRUE;
       consts->MaxClipPlanes = 8;
@@ -945,6 +947,16 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->ARB_tessellation_shader = GL_TRUE;
    }
 
+   /* What this is really checking for is the ability to support multiple
+    * invocations of a geometry shader. There is no separate cap for that, so
+    * we check the GLSLVersion.
+    */
+   if (consts->GLSLVersion >= 400 &&
+       screen->get_shader_param(screen, PIPE_SHADER_GEOMETRY,
+                                PIPE_SHADER_CAP_MAX_INSTRUCTIONS) > 0) {
+      extensions->OES_geometry_shader = GL_TRUE;
+   }
+
    if (screen->fence_finish) {
       extensions->ARB_sync = GL_TRUE;
    }
@@ -954,17 +966,6 @@ void st_init_extensions(struct pipe_screen *screen,
     */
    extensions->OES_sample_variables = extensions->ARB_sample_shading &&
       extensions->ARB_gpu_shader5;
-
-   /* If we don't have native ETC2 support, we don't keep track of the
-    * original ETC2 data. This is necessary to be able to copy images between
-    * compatible view classes.
-    */
-   if (extensions->ARB_copy_image && screen->is_format_supported(
-             screen, PIPE_FORMAT_ETC2_RGB8,
-             PIPE_TEXTURE_2D, 0,
-             PIPE_BIND_SAMPLER_VIEW)) {
-      extensions->OES_copy_image = GL_TRUE;
-   }
 
    /* Maximum sample count. */
    {
@@ -1196,8 +1197,32 @@ void st_init_extensions(struct pipe_screen *screen,
          extensions->ARB_compute_shader =
                                       extensions->ARB_shader_image_load_store &&
                                       extensions->ARB_shader_atomic_counters;
+
+         if (extensions->ARB_compute_shader) {
+            uint64_t max_variable_threads_per_block = 0;
+
+            screen->get_compute_param(screen, PIPE_SHADER_IR_TGSI,
+                                      PIPE_COMPUTE_CAP_MAX_VARIABLE_THREADS_PER_BLOCK,
+                                      &max_variable_threads_per_block);
+
+            for (i = 0; i < 3; i++) {
+               /* Clamp the values to avoid having a local work group size
+                * greater than the maximum number of invocations.
+                */
+               consts->MaxComputeVariableGroupSize[i] =
+                  MIN2(consts->MaxComputeWorkGroupSize[i],
+                       max_variable_threads_per_block);
+            }
+            consts->MaxComputeVariableGroupInvocations =
+               max_variable_threads_per_block;
+
+            extensions->ARB_compute_variable_group_size =
+               max_variable_threads_per_block > 0;
+         }
       }
    }
+
+   extensions->KHR_robustness = extensions->ARB_robust_buffer_access_behavior;
 
    /* If we support ES 3.1, we support the ES3_1_compatibility ext. However
     * there's no clean way of telling whether we would support ES 3.1 from
@@ -1221,9 +1246,54 @@ void st_init_extensions(struct pipe_screen *screen,
       extensions->ARB_gpu_shader5 &&
       extensions->EXT_shader_integer_mix;
 
-   /* And if we have enough for ES 3.1, we can also expose
-    * OES_shader_io_blocks, which is only hidden due to the compiler not being
-    * able to version-restrict things.
+   extensions->OES_texture_cube_map_array =
+      extensions->ARB_ES3_1_compatibility &&
+      extensions->OES_geometry_shader &&
+      extensions->ARB_texture_cube_map_array;
+
+   extensions->OES_viewport_array =
+      extensions->ARB_ES3_1_compatibility &&
+      extensions->OES_geometry_shader &&
+      extensions->ARB_viewport_array;
+
+   extensions->OES_primitive_bounding_box = extensions->ARB_ES3_1_compatibility;
+   consts->NoPrimitiveBoundingBoxOutput = true;
+
+   extensions->ANDROID_extension_pack_es31a =
+      extensions->KHR_texture_compression_astc_ldr &&
+      extensions->KHR_blend_equation_advanced &&
+      extensions->OES_sample_variables &&
+      extensions->ARB_shader_image_load_store &&
+      extensions->ARB_texture_stencil8 &&
+      extensions->ARB_texture_multisample &&
+      extensions->OES_copy_image &&
+      extensions->ARB_draw_buffers_blend &&
+      extensions->OES_geometry_shader &&
+      extensions->ARB_gpu_shader5 &&
+      extensions->OES_primitive_bounding_box &&
+      extensions->ARB_tessellation_shader &&
+      extensions->ARB_texture_border_clamp &&
+      extensions->OES_texture_buffer &&
+      extensions->OES_texture_cube_map_array &&
+      extensions->EXT_texture_sRGB_decode;
+
+   /* Same deal as for ARB_ES3_1_compatibility - this has to be computed
+    * before overall versions are selected. Also it's actually a subset of ES
+    * 3.2, since it doesn't require ASTC or advanced blending.
     */
-   extensions->OES_shader_io_blocks = extensions->ARB_ES3_1_compatibility;
+   extensions->ARB_ES3_2_compatibility =
+      extensions->ARB_ES3_1_compatibility &&
+      extensions->KHR_robustness &&
+      extensions->ARB_copy_image &&
+      extensions->ARB_draw_buffers_blend &&
+      extensions->ARB_draw_elements_base_vertex &&
+      extensions->OES_geometry_shader &&
+      extensions->ARB_gpu_shader5 &&
+      extensions->ARB_sample_shading &&
+      extensions->ARB_tessellation_shader &&
+      extensions->ARB_texture_border_clamp &&
+      extensions->OES_texture_buffer &&
+      extensions->ARB_texture_cube_map_array &&
+      extensions->ARB_texture_stencil8 &&
+      extensions->ARB_texture_multisample;
 }

@@ -22,9 +22,9 @@
  */
 
 #include "brw_context.h"
+#include "brw_defines.h"
 #include "intel_batchbuffer.h"
 #include "intel_fbo.h"
-#include "intel_reg.h"
 
 /**
  * According to the latest documentation, any PIPE_CONTROL with the
@@ -234,7 +234,7 @@ brw_emit_pipe_control_write(struct brw_context *brw, uint32_t flags,
 void
 brw_emit_depth_stall_flushes(struct brw_context *brw)
 {
-   assert(brw->gen >= 6 && brw->gen <= 9);
+   assert(brw->gen >= 6);
 
    /* Starting on BDW, these pipe controls are unnecessary.
     *
@@ -351,6 +351,7 @@ brw_emit_mi_flush(struct brw_context *brw)
       int flags = PIPE_CONTROL_NO_WRITE | PIPE_CONTROL_RENDER_TARGET_FLUSH;
       if (brw->gen >= 6) {
          flags |= PIPE_CONTROL_INSTRUCTION_INVALIDATE |
+                  PIPE_CONTROL_CONST_CACHE_INVALIDATE |
                   PIPE_CONTROL_DEPTH_CACHE_FLUSH |
                   PIPE_CONTROL_VF_CACHE_INVALIDATE |
                   PIPE_CONTROL_TEXTURE_CACHE_INVALIDATE |
@@ -362,7 +363,7 @@ brw_emit_mi_flush(struct brw_context *brw)
 
 int
 brw_init_pipe_control(struct brw_context *brw,
-                      const struct brw_device_info *devinfo)
+                      const struct gen_device_info *devinfo)
 {
    if (devinfo->gen < 6)
       return 0;

@@ -32,9 +32,10 @@
 nir_shader *
 nir_shader_create(void *mem_ctx,
                   gl_shader_stage stage,
-                  const nir_shader_compiler_options *options)
+                  const nir_shader_compiler_options *options,
+                  shader_info *si)
 {
-   nir_shader *shader = ralloc(mem_ctx, nir_shader);
+   nir_shader *shader = rzalloc(mem_ctx, nir_shader);
 
    exec_list_make_empty(&shader->uniforms);
    exec_list_make_empty(&shader->inputs);
@@ -42,7 +43,8 @@ nir_shader_create(void *mem_ctx,
    exec_list_make_empty(&shader->shared);
 
    shader->options = options;
-   memset(&shader->info, 0, sizeof(shader->info));
+
+   shader->info = si ? si : rzalloc(shader, shader_info);
 
    exec_list_make_empty(&shader->functions);
    exec_list_make_empty(&shader->registers);
@@ -334,7 +336,7 @@ nir_function_impl_create(nir_function *function)
 nir_block *
 nir_block_create(nir_shader *shader)
 {
-   nir_block *block = ralloc(shader, nir_block);
+   nir_block *block = rzalloc(shader, nir_block);
 
    cf_init(&block->cf_node, nir_cf_node_block);
 
@@ -391,7 +393,7 @@ nir_if_create(nir_shader *shader)
 nir_loop *
 nir_loop_create(nir_shader *shader)
 {
-   nir_loop *loop = ralloc(shader, nir_loop);
+   nir_loop *loop = rzalloc(shader, nir_loop);
 
    cf_init(&loop->cf_node, nir_cf_node_loop);
 
@@ -446,9 +448,10 @@ nir_alu_instr *
 nir_alu_instr_create(nir_shader *shader, nir_op op)
 {
    unsigned num_srcs = nir_op_infos[op].num_inputs;
+   /* TODO: don't use rzalloc */
    nir_alu_instr *instr =
-      ralloc_size(shader,
-                  sizeof(nir_alu_instr) + num_srcs * sizeof(nir_alu_src));
+      rzalloc_size(shader,
+                   sizeof(nir_alu_instr) + num_srcs * sizeof(nir_alu_src));
 
    instr_init(&instr->instr, nir_instr_type_alu);
    instr->op = op;
@@ -484,8 +487,9 @@ nir_intrinsic_instr *
 nir_intrinsic_instr_create(nir_shader *shader, nir_intrinsic_op op)
 {
    unsigned num_srcs = nir_intrinsic_infos[op].num_srcs;
+   /* TODO: don't use rzalloc */
    nir_intrinsic_instr *instr =
-      ralloc_size(shader,
+      rzalloc_size(shader,
                   sizeof(nir_intrinsic_instr) + num_srcs * sizeof(nir_src));
 
    instr_init(&instr->instr, nir_instr_type_intrinsic);
@@ -534,6 +538,22 @@ nir_tex_instr_create(nir_shader *shader, unsigned num_srcs)
    instr->sampler = NULL;
 
    return instr;
+}
+
+void
+nir_tex_instr_remove_src(nir_tex_instr *tex, unsigned src_idx)
+{
+   assert(src_idx < tex->num_srcs);
+
+   /* First rewrite the source to NIR_SRC_INIT */
+   nir_instr_rewrite_src(&tex->instr, &tex->src[src_idx].src, NIR_SRC_INIT);
+
+   /* Now, move all of the other sources down */
+   for (unsigned i = src_idx + 1; i < tex->num_srcs; i++) {
+      tex->src[i-1].src_type = tex->src[i].src_type;
+      nir_instr_move_src(&tex->instr, &tex->src[i-1].src, &tex->src[i].src);
+   }
+   tex->num_srcs--;
 }
 
 nir_phi_instr *
@@ -786,7 +806,7 @@ nir_deref_get_const_initializer_load(nir_shader *shader, nir_deref_var *deref)
    assert(constant);
 
    const nir_deref *tail = &deref->deref;
-   unsigned matrix_offset = 0;
+   unsigned matrix_col = 0;
    while (tail->child) {
       switch (tail->child->deref_type) {
       case nir_deref_type_array: {
@@ -794,7 +814,7 @@ nir_deref_get_const_initializer_load(nir_shader *shader, nir_deref_var *deref)
          assert(arr->deref_array_type == nir_deref_array_type_direct);
          if (glsl_type_is_matrix(tail->type)) {
             assert(arr->deref.child == NULL);
-            matrix_offset = arr->base_offset;
+            matrix_col = arr->base_offset;
          } else {
             constant = constant->elements[arr->base_offset];
          }
@@ -818,24 +838,16 @@ nir_deref_get_const_initializer_load(nir_shader *shader, nir_deref_var *deref)
       nir_load_const_instr_create(shader, glsl_get_vector_elements(tail->type),
                                   bit_size);
 
-   matrix_offset *= load->def.num_components;
-   for (unsigned i = 0; i < load->def.num_components; i++) {
-      switch (glsl_get_base_type(tail->type)) {
-      case GLSL_TYPE_FLOAT:
-      case GLSL_TYPE_INT:
-      case GLSL_TYPE_UINT:
-         load->value.u32[i] = constant->value.u[matrix_offset + i];
-         break;
-      case GLSL_TYPE_DOUBLE:
-         load->value.f64[i] = constant->value.d[matrix_offset + i];
-         break;
-      case GLSL_TYPE_BOOL:
-         load->value.u32[i] = constant->value.b[matrix_offset + i] ?
-                             NIR_TRUE : NIR_FALSE;
-         break;
-      default:
-         unreachable("Invalid immediate type");
-      }
+   switch (glsl_get_base_type(tail->type)) {
+   case GLSL_TYPE_FLOAT:
+   case GLSL_TYPE_INT:
+   case GLSL_TYPE_UINT:
+   case GLSL_TYPE_DOUBLE:
+   case GLSL_TYPE_BOOL:
+      load->value = constant->values[matrix_col];
+      break;
+   default:
+      unreachable("Invalid immediate type");
    }
 
    return load;
@@ -1630,10 +1642,10 @@ nir_block_cf_tree_next(nir_block *block)
    case nir_cf_node_if: {
       /* Are we at the end of the if? Go to the beginning of the else */
       nir_if *if_stmt = nir_cf_node_as_if(parent);
-      if (&block->cf_node == nir_if_last_then_node(if_stmt))
-         return nir_cf_node_as_block(nir_if_first_else_node(if_stmt));
+      if (block == nir_if_last_then_block(if_stmt))
+         return nir_if_first_else_block(if_stmt);
 
-      assert(&block->cf_node == nir_if_last_else_node(if_stmt));
+      assert(block == nir_if_last_else_block(if_stmt));
       /* fall through */
    }
 
@@ -1666,10 +1678,10 @@ nir_block_cf_tree_prev(nir_block *block)
    case nir_cf_node_if: {
       /* Are we at the beginning of the else? Go to the end of the if */
       nir_if *if_stmt = nir_cf_node_as_if(parent);
-      if (&block->cf_node == nir_if_first_else_node(if_stmt))
-         return nir_cf_node_as_block(nir_if_last_then_node(if_stmt));
+      if (block == nir_if_first_else_block(if_stmt))
+         return nir_if_last_then_block(if_stmt);
 
-      assert(&block->cf_node == nir_if_first_then_node(if_stmt));
+      assert(block == nir_if_first_then_block(if_stmt));
       /* fall through */
    }
 
@@ -1694,12 +1706,12 @@ nir_block *nir_cf_node_cf_tree_first(nir_cf_node *node)
 
    case nir_cf_node_if: {
       nir_if *if_stmt = nir_cf_node_as_if(node);
-      return nir_cf_node_as_block(nir_if_first_then_node(if_stmt));
+      return nir_if_first_then_block(if_stmt);
    }
 
    case nir_cf_node_loop: {
       nir_loop *loop = nir_cf_node_as_loop(node);
-      return nir_cf_node_as_block(nir_loop_first_cf_node(loop));
+      return nir_loop_first_block(loop);
    }
 
    case nir_cf_node_block: {
@@ -1721,12 +1733,12 @@ nir_block *nir_cf_node_cf_tree_last(nir_cf_node *node)
 
    case nir_cf_node_if: {
       nir_if *if_stmt = nir_cf_node_as_if(node);
-      return nir_cf_node_as_block(nir_if_last_else_node(if_stmt));
+      return nir_if_last_else_block(if_stmt);
    }
 
    case nir_cf_node_loop: {
       nir_loop *loop = nir_cf_node_as_loop(node);
-      return nir_cf_node_as_block(nir_loop_last_cf_node(loop));
+      return nir_loop_last_block(loop);
    }
 
    case nir_cf_node_block: {
@@ -1741,7 +1753,7 @@ nir_block *nir_cf_node_cf_tree_last(nir_cf_node *node)
 nir_block *nir_cf_node_cf_tree_next(nir_cf_node *node)
 {
    if (node->type == nir_cf_node_block)
-      return nir_cf_node_cf_tree_first(nir_cf_node_next(node));
+      return nir_block_cf_tree_next(nir_cf_node_as_block(node));
    else if (node->type == nir_cf_node_function)
       return NULL;
    else

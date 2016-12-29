@@ -254,6 +254,20 @@ dump_imm_data(struct tgsi_iterate_context *iter,
          i++;
          break;
       }
+      case TGSI_IMM_INT64: {
+         union di d;
+         d.i = data[i].Uint | (uint64_t)data[i+1].Uint << 32;
+         UID( d.i );
+         i++;
+         break;
+      }
+      case TGSI_IMM_UINT64: {
+         union di d;
+         d.ui = data[i].Uint | (uint64_t)data[i+1].Uint << 32;
+         UID( d.ui );
+         i++;
+         break;
+      }
       case TGSI_IMM_FLOAT32:
          if (ctx->dump_float_as_hex)
             HFLT( data[i].Float );
@@ -345,6 +359,19 @@ iter_declaration(
          CHR( '[' );
          UID( decl->Semantic.Index );
          CHR( ']' );
+      }
+
+      if (decl->Semantic.StreamX != 0 || decl->Semantic.StreamY != 0 ||
+          decl->Semantic.StreamZ != 0 || decl->Semantic.StreamW != 0) {
+         TXT(", STREAM(");
+         UID(decl->Semantic.StreamX);
+         TXT(", ");
+         UID(decl->Semantic.StreamY);
+         TXT(", ");
+         UID(decl->Semantic.StreamZ);
+         TXT(", ");
+         UID(decl->Semantic.StreamW);
+         CHR(')');
       }
    }
 

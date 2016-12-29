@@ -1583,48 +1583,43 @@ These opcodes are used for bit-level manipulation of integers.
 
 .. opcode:: IBFE - Signed Bitfield Extract
 
-  See SM5 instruction of the same name. Extracts a set of bits from the input,
-  and sign-extends them if the high bit of the extracted window is set.
+  Like GLSL bitfieldExtract. Extracts a set of bits from the input, and
+  sign-extends them if the high bit of the extracted window is set.
 
   Pseudocode::
 
     def ibfe(value, offset, bits):
-      offset = offset & 0x1f
-      bits = bits & 0x1f
+      if offset < 0 or bits < 0 or offset + bits > 32:
+        return undefined
       if bits == 0: return 0
       # Note: >> sign-extends
-      if width + offset < 32:
-        return (value << (32 - offset - bits)) >> (32 - bits)
-      else:
-        return value >> offset
+      return (value << (32 - offset - bits)) >> (32 - bits)
 
 .. opcode:: UBFE - Unsigned Bitfield Extract
 
-  See SM5 instruction of the same name. Extracts a set of bits from the input,
-  without any sign-extension.
+  Like GLSL bitfieldExtract. Extracts a set of bits from the input, without
+  any sign-extension.
 
   Pseudocode::
 
     def ubfe(value, offset, bits):
-      offset = offset & 0x1f
-      bits = bits & 0x1f
+      if offset < 0 or bits < 0 or offset + bits > 32:
+        return undefined
       if bits == 0: return 0
       # Note: >> does not sign-extend
-      if width + offset < 32:
-        return (value << (32 - offset - bits)) >> (32 - bits)
-      else:
-        return value >> offset
+      return (value << (32 - offset - bits)) >> (32 - bits)
 
 .. opcode:: BFI - Bitfield Insert
 
-  See SM5 instruction of the same name. Replaces a bit region of 'base' with
-  the low bits of 'insert'.
+  Like GLSL bitfieldInsert. Replaces a bit region of 'base' with the low bits
+  of 'insert'.
 
   Pseudocode::
 
     def bfi(base, insert, offset, bits):
-      offset = offset & 0x1f
-      bits = bits & 0x1f
+      if offset < 0 or bits < 0 or offset + bits > 32:
+        return undefined
+      # << defined such that mask == ~0 when bits == 32, offset == 0
       mask = ((1 << bits) - 1) << offset
       return ((insert << offset) & mask) | (base & ~mask)
 
@@ -2081,6 +2076,246 @@ Perform a * b + c with no intermediate rounding step.
    dst.x = unsigned(src0.xy)
 
    dst.y = unsigned(src0.zw)
+
+64-bit Integer ISA
+^^^^^^^^^^^^^^^^^^
+
+The 64-bit integer opcodes reinterpret four-component vectors into
+two-component vectors with 64-bits in each component.
+
+.. opcode:: I64ABS - 64-bit Integer Absolute Value
+
+  dst.xy = |src0.xy|
+  dst.zw = |src0.zw|
+
+.. opcode:: I64NEG - 64-bit Integer Negate
+
+  Two's complement.
+
+.. math::
+
+  dst.xy = -src.xy
+  dst.zw = -src.zw
+
+.. opcode:: I64SSG - 64-bit Integer Set Sign
+
+.. math::
+
+  dst.xy = (src0.xy < 0) ? -1 : (src0.xy > 0) ? 1 : 0
+  dst.zw = (src0.zw < 0) ? -1 : (src0.zw > 0) ? 1 : 0
+
+.. opcode:: U64ADD - 64-bit Integer Add
+
+.. math::
+
+  dst.xy = src0.xy + src1.xy
+  dst.zw = src0.zw + src1.zw
+
+.. opcode:: U64MUL - 64-bit Integer Multiply
+
+.. math::
+
+  dst.xy = src0.xy * src1.xy
+  dst.zw = src0.zw * src1.zw
+
+.. opcode:: U64SEQ - 64-bit Integer Set on Equal
+
+.. math::
+
+  dst.x = src0.xy == src1.xy ? \sim 0 : 0
+  dst.z = src0.zw == src1.zw ? \sim 0 : 0
+
+.. opcode:: U64SNE - 64-bit Integer Set on Not Equal
+
+.. math::
+
+  dst.x = src0.xy != src1.xy ? \sim 0 : 0
+  dst.z = src0.zw != src1.zw ? \sim 0 : 0
+
+.. opcode:: U64SLT - 64-bit Unsigned Integer Set on Less Than
+
+.. math::
+
+  dst.x = src0.xy < src1.xy ? \sim 0 : 0
+  dst.z = src0.zw < src1.zw ? \sim 0 : 0
+
+.. opcode:: U64SGE - 64-bit Unsigned Integer Set on Greater Equal
+
+.. math::
+
+  dst.x = src0.xy >= src1.xy ? \sim 0 : 0
+  dst.z = src0.zw >= src1.zw ? \sim 0 : 0
+
+.. opcode:: I64SLT - 64-bit Signed Integer Set on Less Than
+
+.. math::
+
+  dst.x = src0.xy < src1.xy ? \sim 0 : 0
+  dst.z = src0.zw < src1.zw ? \sim 0 : 0
+
+.. opcode:: I64SGE - 64-bit Signed Integer Set on Greater Equal
+
+.. math::
+
+  dst.x = src0.xy >= src1.xy ? \sim 0 : 0
+  dst.z = src0.zw >= src1.zw ? \sim 0 : 0
+
+.. opcode:: I64MIN - Minimum of 64-bit Signed Integers
+
+.. math::
+
+  dst.xy = min(src0.xy, src1.xy)
+  dst.zw = min(src0.zw, src1.zw)
+
+.. opcode:: U64MIN - Minimum of 64-bit Unsigned Integers
+
+.. math::
+
+  dst.xy = min(src0.xy, src1.xy)
+  dst.zw = min(src0.zw, src1.zw)
+
+.. opcode:: I64MAX - Maximum of 64-bit Signed Integers
+
+.. math::
+
+  dst.xy = max(src0.xy, src1.xy)
+  dst.zw = max(src0.zw, src1.zw)
+
+.. opcode:: U64MAX - Maximum of 64-bit Unsigned Integers
+
+.. math::
+
+  dst.xy = max(src0.xy, src1.xy)
+  dst.zw = max(src0.zw, src1.zw)
+
+.. opcode:: U64SHL - Shift Left 64-bit Unsigned Integer
+
+   The shift count is masked with 0x3f before the shift is applied.
+
+.. math::
+
+  dst.xy = src0.xy << (0x3f \& src1.x)
+  dst.zw = src0.zw << (0x3f \& src1.y)
+
+.. opcode:: I64SHR - Arithmetic Shift Right (of 64-bit Signed Integer)
+
+   The shift count is masked with 0x3f before the shift is applied.
+
+.. math::
+
+  dst.xy = src0.xy >> (0x3f \& src1.x)
+  dst.zw = src0.zw >> (0x3f \& src1.y)
+
+.. opcode:: U64SHR - Logical Shift Right (of 64-bit Unsigned Integer)
+
+   The shift count is masked with 0x3f before the shift is applied.
+
+.. math::
+
+  dst.xy = src0.xy >> (unsigned) (0x3f \& src1.x)
+  dst.zw = src0.zw >> (unsigned) (0x3f \& src1.y)
+
+.. opcode:: I64DIV - 64-bit Signed Integer Division
+
+.. math::
+
+  dst.xy = src0.xy \ src1.xy
+  dst.zw = src0.zw \ src1.zw
+
+.. opcode:: U64DIV - 64-bit Unsigned Integer Division
+
+.. math::
+
+  dst.xy = src0.xy \ src1.xy
+  dst.zw = src0.zw \ src1.zw
+
+.. opcode:: U64MOD - 64-bit Unsigned Integer Remainder
+
+.. math::
+
+  dst.xy = src0.xy \bmod src1.xy
+  dst.zw = src0.zw \bmod src1.zw
+
+.. opcode:: I64MOD - 64-bit Signed Integer Remainder
+
+.. math::
+
+  dst.xy = src0.xy \bmod src1.xy
+  dst.zw = src0.zw \bmod src1.zw
+
+.. opcode:: F2U64 - Float to 64-bit Unsigned Int
+
+.. math::
+
+   dst.xy = (uint64_t) src0.x
+   dst.zw = (uint64_t) src0.y
+
+.. opcode:: F2I64 - Float to 64-bit Int
+
+.. math::
+
+   dst.xy = (int64_t) src0.x
+   dst.zw = (int64_t) src0.y
+
+.. opcode:: U2I64 - Unsigned Integer to 64-bit Integer
+
+   This is a zero extension.
+
+.. math::
+
+   dst.xy = (uint64_t) src0.x
+   dst.zw = (uint64_t) src0.y
+
+.. opcode:: I2I64 - Signed Integer to 64-bit Integer
+
+   This is a sign extension.
+
+.. math::
+
+   dst.xy = (int64_t) src0.x
+   dst.zw = (int64_t) src0.y
+
+.. opcode:: D2U64 - Double to 64-bit Unsigned Int
+
+.. math::
+
+   dst.xy = (uint64_t) src0.xy
+   dst.zw = (uint64_t) src0.zw
+
+.. opcode:: D2I64 - Double to 64-bit Int
+
+.. math::
+
+   dst.xy = (int64_t) src0.xy
+   dst.zw = (int64_t) src0.zw
+
+.. opcode:: U642F - 64-bit unsigned integer to float
+
+.. math::
+
+   dst.x = (float) src0.xy
+   dst.y = (float) src0.zw
+
+.. opcode:: I642F - 64-bit Int to Float
+
+.. math::
+
+   dst.x = (float) src0.xy
+   dst.y = (float) src0.zw
+
+.. opcode:: U642D - 64-bit unsigned integer to double
+
+.. math::
+
+   dst.xy = (double) src0.xy
+   dst.zw = (double) src0.zw
+
+.. opcode:: I642D - 64-bit Int to double
+
+.. math::
+
+   dst.xy = (double) src0.xy
+   dst.zw = (double) src0.zw
 
 .. _samplingopcodes:
 
@@ -3052,6 +3287,34 @@ TGSI_SEMANTIC_WORK_DIM
 For compute shaders started via opencl this retrieves the work_dim
 parameter to the clEnqueueNDRangeKernel call with which the shader
 was started.
+
+
+TGSI_SEMANTIC_GRID_SIZE
+"""""""""""""""""""""""
+
+For compute shaders, this semantic indicates the maximum (x, y, z) dimensions
+of a grid of thread blocks.
+
+
+TGSI_SEMANTIC_BLOCK_ID
+""""""""""""""""""""""
+
+For compute shaders, this semantic indicates the (x, y, z) coordinates of the
+current block inside of the grid.
+
+
+TGSI_SEMANTIC_BLOCK_SIZE
+""""""""""""""""""""""""
+
+For compute shaders, this semantic indicates the maximum (x, y, z) dimensions
+of a block in threads.
+
+
+TGSI_SEMANTIC_THREAD_ID
+"""""""""""""""""""""""
+
+For compute shaders, this semantic indicates the (x, y, z) coordinates of the
+current thread inside of the block.
 
 
 Declaration Interpolate

@@ -313,8 +313,19 @@ dd_dump_draw_vbo(struct dd_draw_state *dstate, struct pipe_draw_info *info, FILE
             DUMP_M(resource, dstate->sampler_views[sh][i], texture);
          }
 
-      /* TODO: print shader images */
-      /* TODO: print shader buffers */
+      for (i = 0; i < PIPE_MAX_SHADER_IMAGES; i++)
+         if (dstate->shader_images[sh][i].resource) {
+            DUMP_I(image_view, &dstate->shader_images[sh][i], i);
+            if (dstate->shader_images[sh][i].resource)
+               DUMP_M(resource, &dstate->shader_images[sh][i], resource);
+         }
+
+      for (i = 0; i < PIPE_MAX_SHADER_BUFFERS; i++)
+         if (dstate->shader_buffers[sh][i].buffer) {
+            DUMP_I(shader_buffer, &dstate->shader_buffers[sh][i], i);
+            if (dstate->shader_buffers[sh][i].buffer)
+               DUMP_M(resource, &dstate->shader_buffers[sh][i], buffer);
+         }
 
       fprintf(f, COLOR_SHADER "end shader: %s" COLOR_RESET "\n\n", shader_str[sh]);
    }
@@ -548,7 +559,7 @@ dd_flush_and_check_hang(struct dd_context *dctx,
    if (!fence)
       return false;
 
-   idle = screen->fence_finish(screen, fence, timeout_ms * 1000000);
+   idle = screen->fence_finish(screen, pipe, fence, timeout_ms * 1000000);
    screen->fence_reference(screen, &fence, NULL);
    if (!idle)
       fprintf(stderr, "dd: GPU hang detected!\n");
@@ -804,7 +815,20 @@ dd_copy_draw_state(struct dd_draw_state *dst, struct dd_draw_state *src)
          else
             dst->sampler_states[i][j] = NULL;
       }
-      /* TODO: shader buffers & images */
+
+      for (j = 0; j < PIPE_MAX_SHADER_IMAGES; j++) {
+         pipe_resource_reference(&dst->shader_images[i][j].resource,
+                                 src->shader_images[i][j].resource);
+         memcpy(&dst->shader_images[i][j], &src->shader_images[i][j],
+                sizeof(src->shader_images[i][j]));
+      }
+
+      for (j = 0; j < PIPE_MAX_SHADER_BUFFERS; j++) {
+         pipe_resource_reference(&dst->shader_buffers[i][j].buffer,
+                                 src->shader_buffers[i][j].buffer);
+         memcpy(&dst->shader_buffers[i][j], &src->shader_buffers[i][j],
+                sizeof(src->shader_buffers[i][j]));
+      }
    }
 
    if (src->velems)
@@ -1086,7 +1110,11 @@ dd_after_draw(struct dd_context *dctx, struct dd_call *call)
       case DD_DUMP_ALL_CALLS:
          if (!dscreen->no_flush)
             pipe->flush(pipe, NULL, 0);
-         dd_write_report(dctx, call, 0, false);
+         dd_write_report(dctx, call,
+                         PIPE_DUMP_CURRENT_STATES |
+                         PIPE_DUMP_CURRENT_SHADERS |
+                         PIPE_DUMP_LAST_COMMAND_BUFFER,
+                         false);
          break;
       case DD_DUMP_APITRACE_CALL:
          if (dscreen->apitrace_dump_call ==
@@ -1255,7 +1283,8 @@ dd_context_clear_render_target(struct pipe_context *_pipe,
                                struct pipe_surface *dst,
                                const union pipe_color_union *color,
                                unsigned dstx, unsigned dsty,
-                               unsigned width, unsigned height)
+                               unsigned width, unsigned height,
+                               bool render_condition_enabled)
 {
    struct dd_context *dctx = dd_context(_pipe);
    struct pipe_context *pipe = dctx->pipe;
@@ -1264,7 +1293,8 @@ dd_context_clear_render_target(struct pipe_context *_pipe,
    call.type = CALL_CLEAR_RENDER_TARGET;
 
    dd_before_draw(dctx);
-   pipe->clear_render_target(pipe, dst, color, dstx, dsty, width, height);
+   pipe->clear_render_target(pipe, dst, color, dstx, dsty, width, height,
+                             render_condition_enabled);
    dd_after_draw(dctx, &call);
 }
 
@@ -1272,7 +1302,8 @@ static void
 dd_context_clear_depth_stencil(struct pipe_context *_pipe,
                                struct pipe_surface *dst, unsigned clear_flags,
                                double depth, unsigned stencil, unsigned dstx,
-                               unsigned dsty, unsigned width, unsigned height)
+                               unsigned dsty, unsigned width, unsigned height,
+                               bool render_condition_enabled)
 {
    struct dd_context *dctx = dd_context(_pipe);
    struct pipe_context *pipe = dctx->pipe;
@@ -1282,7 +1313,8 @@ dd_context_clear_depth_stencil(struct pipe_context *_pipe,
 
    dd_before_draw(dctx);
    pipe->clear_depth_stencil(pipe, dst, clear_flags, depth, stencil,
-                             dstx, dsty, width, height);
+                             dstx, dsty, width, height,
+                             render_condition_enabled);
    dd_after_draw(dctx, &call);
 }
 

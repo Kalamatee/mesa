@@ -135,8 +135,7 @@ struct _egl_api
                                  _EGLImage *image);
 
    _EGLSync *(*CreateSyncKHR)(_EGLDriver *drv, _EGLDisplay *dpy, EGLenum type,
-                              const EGLint *attrib_list,
-                              const EGLAttrib *attrib_list64);
+                              const EGLAttrib *attrib_list);
    EGLBoolean (*DestroySyncKHR)(_EGLDriver *drv, _EGLDisplay *dpy,
                                 _EGLSync *sync);
    EGLint (*ClientWaitSyncKHR)(_EGLDriver *drv, _EGLDisplay *dpy,
@@ -147,6 +146,8 @@ struct _egl_api
    EGLBoolean (*GetSyncAttrib)(_EGLDriver *drv, _EGLDisplay *dpy,
                                _EGLSync *sync, EGLint attribute,
                                EGLAttrib *value);
+   EGLint (*DupNativeFenceFDANDROID)(_EGLDriver *drv, _EGLDisplay *dpy,
+                                     _EGLSync *sync);
 
    EGLBoolean (*SwapBuffersRegionNOK)(_EGLDriver *drv, _EGLDisplay *disp,
                                       _EGLSurface *surf, EGLint numRects,
@@ -198,7 +199,6 @@ struct _egl_api
                                 struct mesa_glinterop_export_in *in,
                                 struct mesa_glinterop_export_out *out);
 };
-
 
 #ifdef __cplusplus
 }

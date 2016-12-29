@@ -25,7 +25,6 @@
 
 #include "nir.h"
 #include "nir_builder.h"
-#include "program/hash_table.h"
 #include "compiler/glsl/ir_uniform.h"
 
 #include "main/compiler.h"
@@ -141,14 +140,14 @@ lower_sampler(nir_tex_instr *instr, const struct gl_shader_program *shader_progr
       instr->texture_array_size = array_elements;
    }
 
-   if (location > shader_program->NumUniformStorage - 1 ||
-       !shader_program->UniformStorage[location].opaque[stage].active) {
+   if (location > shader_program->data->NumUniformStorage - 1 ||
+       !shader_program->data->UniformStorage[location].opaque[stage].active) {
       assert(!"cannot return a sampler");
       return;
    }
 
    instr->texture_index +=
-      shader_program->UniformStorage[location].opaque[stage].index;
+      shader_program->data->UniformStorage[location].opaque[stage].index;
 
    instr->sampler_index = instr->texture_index;
 

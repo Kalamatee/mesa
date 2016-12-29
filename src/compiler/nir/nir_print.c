@@ -295,30 +295,38 @@ static void
 print_constant(nir_constant *c, const struct glsl_type *type, print_state *state)
 {
    FILE *fp = state->fp;
-   unsigned total_elems = glsl_get_components(type);
-   unsigned i;
+   const unsigned rows = glsl_get_vector_elements(type);
+   const unsigned cols = glsl_get_matrix_columns(type);
+   unsigned i, j;
 
    switch (glsl_get_base_type(type)) {
    case GLSL_TYPE_UINT:
    case GLSL_TYPE_INT:
    case GLSL_TYPE_BOOL:
-      for (i = 0; i < total_elems; i++) {
+      /* Only float base types can be matrices. */
+      assert(cols == 1);
+
+      for (i = 0; i < rows; i++) {
          if (i > 0) fprintf(fp, ", ");
-         fprintf(fp, "0x%08x", c->value.u[i]);
+         fprintf(fp, "0x%08x", c->values[0].u32[i]);
       }
       break;
 
    case GLSL_TYPE_FLOAT:
-      for (i = 0; i < total_elems; i++) {
-         if (i > 0) fprintf(fp, ", ");
-         fprintf(fp, "%f", c->value.f[i]);
+      for (i = 0; i < cols; i++) {
+         for (j = 0; j < rows; j++) {
+            if (i + j > 0) fprintf(fp, ", ");
+            fprintf(fp, "%f", c->values[i].f32[j]);
+         }
       }
       break;
 
    case GLSL_TYPE_DOUBLE:
-      for (i = 0; i < total_elems; i++) {
-         if (i > 0) fprintf(fp, ", ");
-         fprintf(fp, "%f", c->value.d[i]);
+      for (i = 0; i < cols; i++) {
+         for (j = 0; j < rows; j++) {
+            if (i + j > 0) fprintf(fp, ", ");
+            fprintf(fp, "%f", c->values[i].f64[j]);
+         }
       }
       break;
 
@@ -391,9 +399,8 @@ print_var_decl(nir_variable *var, print_state *state)
    const char *const wonly = (var->data.image.write_only) ? "writeonly " : "";
    fprintf(fp, "%s%s%s%s%s", coher, volat, restr, ronly, wonly);
 
-   glsl_print_type(var->type, fp);
-
-   fprintf(fp, " %s", get_var_name(var, state));
+   fprintf(fp, "%s %s", glsl_get_type_name(var->type),
+           get_var_name(var, state));
 
    if (var->data.mode == nir_var_shader_in ||
        var->data.mode == nir_var_shader_out ||
@@ -433,7 +440,8 @@ print_var_decl(nir_variable *var, print_state *state)
          loc = buf;
       }
 
-      fprintf(fp, " (%s, %u)", loc, var->data.driver_location);
+      fprintf(fp, " (%s, %u, %u)%s", loc, var->data.driver_location, var->data.binding,
+              var->data.compact ? " compact" : "");
    }
 
    if (var->constant_initializer) {
@@ -457,8 +465,8 @@ static void
 print_arg(nir_variable *var, print_state *state)
 {
    FILE *fp = state->fp;
-   glsl_print_type(var->type, fp);
-   fprintf(fp, " %s", get_var_name(var, state));
+   fprintf(fp, "%s %s", glsl_get_type_name(var->type),
+           get_var_name(var, state));
 }
 
 static void
@@ -699,8 +707,8 @@ print_tex_instr(nir_tex_instr *instr, print_state *state)
       case nir_tex_src_projector:
          fprintf(fp, "(projector)");
          break;
-      case nir_tex_src_comparitor:
-         fprintf(fp, "(comparitor)");
+      case nir_tex_src_comparator:
+         fprintf(fp, "(comparator)");
          break;
       case nir_tex_src_offset:
          fprintf(fp, "(offset)");
@@ -1097,14 +1105,13 @@ print_function(nir_function *function, print_state *state)
          unreachable("Invalid parameter type");
       }
 
-      glsl_print_type(function->params[i].type, fp);
+      fprintf(fp, "%s", glsl_get_type_name(function->params[i].type));
    }
 
    if (function->return_type != NULL) {
       if (function->num_params != 0)
          fprintf(fp, ", ");
-      fprintf(fp, "returning ");
-      glsl_print_type(function->return_type, fp);
+      fprintf(fp, "returning %s", glsl_get_type_name(function->return_type));
    }
 
    fprintf(fp, "\n");
@@ -1145,11 +1152,11 @@ nir_print_shader_annotated(nir_shader *shader, FILE *fp,
 
    fprintf(fp, "shader: %s\n", gl_shader_stage_name(shader->stage));
 
-   if (shader->info.name)
-      fprintf(fp, "name: %s\n", shader->info.name);
+   if (shader->info->name)
+      fprintf(fp, "name: %s\n", shader->info->name);
 
-   if (shader->info.label)
-      fprintf(fp, "label: %s\n", shader->info.label);
+   if (shader->info->label)
+      fprintf(fp, "label: %s\n", shader->info->label);
 
    fprintf(fp, "inputs: %u\n", shader->num_inputs);
    fprintf(fp, "outputs: %u\n", shader->num_outputs);

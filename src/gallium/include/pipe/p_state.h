@@ -195,6 +195,18 @@ struct pipe_clip_state
    float ucp[PIPE_MAX_CLIP_PLANES][4];
 };
 
+/**
+ * A single output for vertex transform feedback.
+ */
+struct pipe_stream_output
+{
+   unsigned register_index:8;  /**< 0 to PIPE_MAX_SHADER_OUTPUTS */
+   unsigned start_component:2; /** 0 to 3 */
+   unsigned num_components:3;  /** 1 to 4 */
+   unsigned output_buffer:3;   /**< 0 to PIPE_MAX_SO_BUFFERS */
+   unsigned dst_offset:16;     /**< offset into the buffer in dwords */
+   unsigned stream:2;          /**< 0 to 3 */
+};
 
 /**
  * Stream output for vertex transform feedback.
@@ -209,14 +221,7 @@ struct pipe_stream_output_info
     * Array of stream outputs, in the order they are to be written in.
     * Selected components are tightly packed into the output buffer.
     */
-   struct {
-      unsigned register_index:8;  /**< 0 to PIPE_MAX_SHADER_OUTPUTS */
-      unsigned start_component:2; /** 0 to 3 */
-      unsigned num_components:3;  /** 1 to 4 */
-      unsigned output_buffer:3;   /**< 0 to PIPE_MAX_SO_BUFFERS */
-      unsigned dst_offset:16;     /**< offset into the buffer in dwords */
-      unsigned stream:2;          /**< 0 to 3 */
-   } output[PIPE_MAX_SO_OUTPUTS];
+   struct pipe_stream_output output[PIPE_MAX_SO_OUTPUTS];
 };
 
 /**
@@ -364,13 +369,13 @@ struct pipe_sampler_state
    unsigned wrap_s:3;            /**< PIPE_TEX_WRAP_x */
    unsigned wrap_t:3;            /**< PIPE_TEX_WRAP_x */
    unsigned wrap_r:3;            /**< PIPE_TEX_WRAP_x */
-   unsigned min_img_filter:2;    /**< PIPE_TEX_FILTER_x */
+   unsigned min_img_filter:1;    /**< PIPE_TEX_FILTER_x */
    unsigned min_mip_filter:2;    /**< PIPE_TEX_MIPFILTER_x */
-   unsigned mag_img_filter:2;    /**< PIPE_TEX_FILTER_x */
+   unsigned mag_img_filter:1;    /**< PIPE_TEX_FILTER_x */
    unsigned compare_mode:1;      /**< PIPE_TEX_COMPARE_x */
    unsigned compare_func:3;      /**< PIPE_FUNC_x */
    unsigned normalized_coords:1; /**< Are coords normalized to [0,1]? */
-   unsigned max_anisotropy:6;
+   unsigned max_anisotropy:5;
    unsigned seamless_cube_map:1;
    float lod_bias;               /**< LOD/lambda bias */
    float min_lod, max_lod;       /**< LOD clamp range, after bias */
@@ -428,8 +433,8 @@ struct pipe_sampler_view
          unsigned last_level:8;    /**< last mipmap level to use */
       } tex;
       struct {
-         unsigned first_element;
-         unsigned last_element;
+         unsigned offset;   /**< offset in bytes */
+         unsigned size;     /**< size of the readable sub-range in bytes */
       } buf;
    } u;
    unsigned swizzle_r:3;         /**< PIPE_SWIZZLE_x for red component */
@@ -456,8 +461,8 @@ struct pipe_image_view
          unsigned level:8;            /**< mipmap level to use */
       } tex;
       struct {
-         unsigned first_element;
-         unsigned last_element;
+         unsigned offset;   /**< offset in bytes */
+         unsigned size;     /**< size of the accessible sub-range in bytes */
       } buf;
    } u;
 };
@@ -498,6 +503,12 @@ struct pipe_resource
 
    unsigned bind;            /**< bitmask of PIPE_BIND_x */
    unsigned flags;           /**< bitmask of PIPE_RESOURCE_FLAG_x */
+
+   /**
+    * For planar images, ie. YUV EGLImage external, etc, pointer to the
+    * next plane.
+    */
+   struct pipe_resource *next;
 };
 
 
@@ -821,6 +832,25 @@ struct pipe_debug_callback
                          enum pipe_debug_type type,
                          const char *fmt,
                          va_list args);
+   void *data;
+};
+
+/**
+ * Structure that contains a callback for device reset messages from the driver
+ * back to the state tracker.
+ *
+ * The callback must not be called from driver-created threads.
+ */
+struct pipe_device_reset_callback
+{
+   /**
+    * Callback for the driver to report when a device reset is detected.
+    *
+    * \param data   user-supplied data pointer
+    * \param status PIPE_*_RESET
+    */
+   void (*reset)(void *data, enum pipe_reset_status status);
+
    void *data;
 };
 

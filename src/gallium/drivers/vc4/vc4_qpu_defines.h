@@ -246,6 +246,12 @@ enum qpu_unpack {
 #define QPU_UNPACK_SHIFT                57
 #define QPU_UNPACK_MASK                 QPU_MASK(59, 57)
 
+#define QPU_LOAD_IMM_MODE_SHIFT         57
+#define QPU_LOAD_IMM_MODE_MASK          QPU_MASK(59, 57)
+# define QPU_LOAD_IMM_MODE_U32          0
+# define QPU_LOAD_IMM_MODE_I2           1
+# define QPU_LOAD_IMM_MODE_U2           3
+
 /**
  * If set, the pack field means PACK_MUL or R4 packing, instead of normal
  * regfile a packing.
@@ -286,6 +292,10 @@ enum qpu_unpack {
 #define QPU_RADDR_B_MASK                QPU_MASK(17, 12)
 #define QPU_SMALL_IMM_SHIFT             12
 #define QPU_SMALL_IMM_MASK              QPU_MASK(17, 12)
+/* Small immediate value for rotate-by-r5, and 49-63 are "rotate by n
+ * channels"
+ */
+#define QPU_SMALL_IMM_MUL_ROT		48
 
 #define QPU_ADD_A_SHIFT                 9
 #define QPU_ADD_A_MASK                  QPU_MASK(11, 9)

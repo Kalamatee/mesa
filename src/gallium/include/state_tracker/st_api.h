@@ -200,6 +200,9 @@ struct st_egl_image
    /* this is owned by the caller */
    struct pipe_resource *texture;
 
+   /* format only differs from texture->format for multi-planar (YUV): */
+   enum pipe_format format;
+
    unsigned level;
    unsigned layer;
 };
@@ -210,7 +213,7 @@ struct st_egl_image
 struct st_visual
 {
    /**
-    * Available buffers.  Tested with ST_FRAMEBUFFER_*_MASK.
+    * Available buffers.  Bitfield of ST_ATTACHMENT_*_MASK bits.
     */
    unsigned buffer_mask;
 

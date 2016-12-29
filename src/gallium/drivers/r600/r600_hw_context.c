@@ -255,14 +255,11 @@ void r600_context_gfx_flush(void *context, unsigned flags,
 	struct radeon_winsys_cs *cs = ctx->b.gfx.cs;
 	struct radeon_winsys *ws = ctx->b.ws;
 
-	if (!radeon_emitted(cs, ctx->b.initial_gfx_cs_size) &&
-	    (!fence || ctx->b.last_gfx_fence)) {
-		if (fence)
-			ws->fence_reference(fence, ctx->b.last_gfx_fence);
-		if (!(flags & RADEON_FLUSH_ASYNC))
-			ws->cs_sync_flush(cs);
+	if (!radeon_emitted(cs, ctx->b.initial_gfx_cs_size))
 		return;
-	}
+
+	if (r600_check_device_reset(&ctx->b))
+		return;
 
 	r600_preflush_suspend_features(&ctx->b);
 
@@ -318,6 +315,7 @@ void r600_begin_new_cs(struct r600_context *ctx)
 	ctx->b.scissors.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
 	r600_mark_atom_dirty(ctx, &ctx->b.scissors.atom);
 	ctx->b.viewports.dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
+	ctx->b.viewports.depth_range_dirty_mask = (1 << R600_MAX_VIEWPORTS) - 1;
 	r600_mark_atom_dirty(ctx, &ctx->b.viewports.atom);
 	if (ctx->b.chip_class <= EVERGREEN) {
 		r600_mark_atom_dirty(ctx, &ctx->config_state.atom);

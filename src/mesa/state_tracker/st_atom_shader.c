@@ -51,6 +51,7 @@
 #include "st_context.h"
 #include "st_atom.h"
 #include "st_program.h"
+#include "st_texture.h"
 
 
 /** Compress the fog function enums into a 2-bit value */
@@ -113,7 +114,7 @@ update_fp( struct st_context *st )
 
    assert(st->ctx->FragmentProgram._Current);
    stfp = st_fragment_program(st->ctx->FragmentProgram._Current);
-   assert(stfp->Base.Base.Target == GL_FRAGMENT_PROGRAM_ARB);
+   assert(stfp->Base.Target == GL_FRAGMENT_PROGRAM_ARB);
 
    memset(&key, 0, sizeof(key));
    key.st = st->has_shareable_shaders ? NULL : st;
@@ -141,6 +142,8 @@ update_fp( struct st_context *st )
          key.texture_targets[u] = get_texture_target(st->ctx, u);
       }
    }
+
+   key.external = st_get_external_sampler_key(st, &stfp->Base);
 
    st->fp_variant = st_get_fp_variant(st, stfp, &key);
 
@@ -172,7 +175,7 @@ update_vp( struct st_context *st )
     */
    assert(st->ctx->VertexProgram._Current);
    stvp = st_vertex_program(st->ctx->VertexProgram._Current);
-   assert(stvp->Base.Base.Target == GL_VERTEX_PROGRAM_ARB);
+   assert(stvp->Base.Target == GL_VERTEX_PROGRAM_ARB);
 
    memset(&key, 0, sizeof key);
    key.st = st->has_shareable_shaders ? NULL : st;
@@ -187,7 +190,7 @@ update_vp( struct st_context *st )
 
    key.clamp_color = st->clamp_vert_color_in_shader &&
                      st->ctx->Light._ClampVertexColor &&
-                     (stvp->Base.Base.OutputsWritten &
+                     (stvp->Base.info.outputs_written &
                       (VARYING_SLOT_COL0 |
                        VARYING_SLOT_COL1 |
                        VARYING_SLOT_BFC0 |
@@ -222,7 +225,7 @@ update_gp( struct st_context *st )
    }
 
    stgp = st_geometry_program(st->ctx->GeometryProgram._Current);
-   assert(stgp->Base.Base.Target == GL_GEOMETRY_PROGRAM_NV);
+   assert(stgp->Base.Target == GL_GEOMETRY_PROGRAM_NV);
 
    st->gp_variant = st_get_basic_variant(st, PIPE_SHADER_GEOMETRY,
                                          &stgp->tgsi, &stgp->variants);
@@ -251,7 +254,7 @@ update_tcp( struct st_context *st )
    }
 
    sttcp = st_tessctrl_program(st->ctx->TessCtrlProgram._Current);
-   assert(sttcp->Base.Base.Target == GL_TESS_CONTROL_PROGRAM_NV);
+   assert(sttcp->Base.Target == GL_TESS_CONTROL_PROGRAM_NV);
 
    st->tcp_variant = st_get_basic_variant(st, PIPE_SHADER_TESS_CTRL,
                                           &sttcp->tgsi, &sttcp->variants);
@@ -280,7 +283,7 @@ update_tep( struct st_context *st )
    }
 
    sttep = st_tesseval_program(st->ctx->TessEvalProgram._Current);
-   assert(sttep->Base.Base.Target == GL_TESS_EVALUATION_PROGRAM_NV);
+   assert(sttep->Base.Target == GL_TESS_EVALUATION_PROGRAM_NV);
 
    st->tep_variant = st_get_basic_variant(st, PIPE_SHADER_TESS_EVAL,
                                           &sttep->tgsi, &sttep->variants);
@@ -309,7 +312,7 @@ update_cp( struct st_context *st )
    }
 
    stcp = st_compute_program(st->ctx->ComputeProgram._Current);
-   assert(stcp->Base.Base.Target == GL_COMPUTE_PROGRAM_NV);
+   assert(stcp->Base.Target == GL_COMPUTE_PROGRAM_NV);
 
    st->cp_variant = st_get_cp_variant(st, &stcp->tgsi, &stcp->variants);
 

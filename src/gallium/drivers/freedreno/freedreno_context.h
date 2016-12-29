@@ -33,7 +33,7 @@
 #include "indices/u_primconvert.h"
 #include "util/u_blitter.h"
 #include "util/list.h"
-#include "util/u_slab.h"
+#include "util/slab.h"
 #include "util/u_string.h"
 
 #include "freedreno_batch.h"
@@ -117,14 +117,15 @@ struct fd_context {
 	struct util_queue flush_queue;
 
 	struct blitter_context *blitter;
+	void *clear_rs_state;
 	struct primconvert_context *primconvert;
 
 	/* slab for pipe_transfer allocations: */
-	struct util_slab_mempool transfer_pool;
+	struct slab_child_pool transfer_pool;
 
 	/* slabs for fd_hw_sample and fd_hw_sample_period allocations: */
-	struct util_slab_mempool sample_pool;
-	struct util_slab_mempool sample_period_pool;
+	struct slab_mempool sample_pool;
+	struct slab_mempool sample_period_pool;
 
 	/* sample-providers for hw queries: */
 	const struct fd_hw_sample_provider *sample_providers[MAX_HW_SAMPLE_PROVIDERS];
@@ -163,7 +164,7 @@ struct fd_context {
 	 */
 	struct fd_batch *batch;
 
-	uint32_t last_fence;
+	struct pipe_fence_handle *last_fence;
 
 	/* Are we in process of shadowing a resource? Used to detect recursion
 	 * in transfer_map, and skip unneeded synchronization.
@@ -256,9 +257,11 @@ struct fd_context {
 	void (*emit_tile_mem2gmem)(struct fd_batch *batch, struct fd_tile *tile);
 	void (*emit_tile_renderprep)(struct fd_batch *batch, struct fd_tile *tile);
 	void (*emit_tile_gmem2mem)(struct fd_batch *batch, struct fd_tile *tile);
+	void (*emit_tile_fini)(struct fd_batch *batch);   /* optional */
 
 	/* optional, for GMEM bypass: */
 	void (*emit_sysmem_prep)(struct fd_batch *batch);
+	void (*emit_sysmem_fini)(struct fd_batch *batch);
 
 	/* draw: */
 	bool (*draw_vbo)(struct fd_context *ctx, const struct pipe_draw_info *info);
@@ -275,6 +278,27 @@ struct fd_context {
 
 	/* indirect-branch emit: */
 	void (*emit_ib)(struct fd_ringbuffer *ring, struct fd_ringbuffer *target);
+
+	/*
+	 * Common pre-cooked VBO state (used for a3xx and later):
+	 */
+
+	/* for clear/gmem->mem vertices, and mem->gmem */
+	struct pipe_resource *solid_vbuf;
+
+	/* for mem->gmem tex coords: */
+	struct pipe_resource *blit_texcoord_vbuf;
+
+	/* vertex state for solid_vbuf:
+	 *    - solid_vbuf / 12 / R32G32B32_FLOAT
+	 */
+	struct fd_vertex_state solid_vbuf_state;
+
+	/* vertex state for blit_prog:
+	 *    - blit_texcoord_vbuf / 8 / R32G32_FLOAT
+	 *    - solid_vbuf / 12 / R32G32B32_FLOAT
+	 */
+	struct fd_vertex_state blit_vbuf_state;
 };
 
 static inline struct fd_context *
@@ -314,6 +338,9 @@ fd_supported_prim(struct fd_context *ctx, unsigned prim)
 {
 	return (1 << prim) & ctx->primtype_mask;
 }
+
+void fd_context_setup_common_vbos(struct fd_context *ctx);
+void fd_context_cleanup_common_vbos(struct fd_context *ctx);
 
 struct pipe_context * fd_context_init(struct fd_context *ctx,
 		struct pipe_screen *pscreen, const uint8_t *primtypes,

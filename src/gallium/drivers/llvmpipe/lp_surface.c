@@ -190,11 +190,12 @@ llvmpipe_clear_render_target(struct pipe_context *pipe,
                              struct pipe_surface *dst,
                              const union pipe_color_union *color,
                              unsigned dstx, unsigned dsty,
-                             unsigned width, unsigned height)
+                             unsigned width, unsigned height,
+                             bool render_condition_enabled)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
 
-   if (!llvmpipe_check_render_cond(llvmpipe))
+   if (render_condition_enabled && !llvmpipe_check_render_cond(llvmpipe))
       return;
 
    util_clear_render_target(pipe, dst, color,
@@ -209,11 +210,12 @@ llvmpipe_clear_depth_stencil(struct pipe_context *pipe,
                              double depth,
                              unsigned stencil,
                              unsigned dstx, unsigned dsty,
-                             unsigned width, unsigned height)
+                             unsigned width, unsigned height,
+                             bool render_condition_enabled)
 {
    struct llvmpipe_context *llvmpipe = llvmpipe_context(pipe);
 
-   if (!llvmpipe_check_render_cond(llvmpipe))
+   if (render_condition_enabled && !llvmpipe_check_render_cond(llvmpipe))
       return;
 
    util_clear_depth_stencil(pipe, dst, clear_flags,

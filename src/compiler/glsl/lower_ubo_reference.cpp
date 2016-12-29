@@ -107,7 +107,6 @@ public:
 
    struct gl_linked_shader *shader;
    bool clamp_block_indices;
-   struct gl_uniform_buffer_variable *ubo_var;
    const struct glsl_struct_field *struct_field;
    ir_variable *variable;
    ir_rvalue *uniform_block;
@@ -308,8 +307,11 @@ lower_ubo_reference_visitor::setup_for_load_or_store(void *mem_ctx,
             this->uniform_block = index;
          }
 
-         this->ubo_var = var->is_interface_instance()
-            ? &blocks[i]->Uniforms[0] : &blocks[i]->Uniforms[var->data.location];
+         if (var->is_interface_instance()) {
+            *const_offset = 0;
+         } else {
+            *const_offset = blocks[i]->Uniforms[var->data.location].Offset;
+         }
 
          break;
       }
@@ -317,10 +319,8 @@ lower_ubo_reference_visitor::setup_for_load_or_store(void *mem_ctx,
 
    assert(this->uniform_block);
 
-   *const_offset = ubo_var->Offset;
-
    this->struct_field = NULL;
-   setup_buffer_access(mem_ctx, var, deref, offset, const_offset, row_major,
+   setup_buffer_access(mem_ctx, deref, offset, const_offset, row_major,
                        matrix_columns, &this->struct_field, packing);
 }
 
@@ -453,7 +453,7 @@ lower_ubo_reference_visitor::ssbo_store(void *mem_ctx,
       ir_function_signature(glsl_type::void_type, shader_storage_buffer_object);
    assert(sig);
    sig->replace_parameters(&sig_params);
-   sig->is_intrinsic = true;
+   sig->intrinsic_id = ir_intrinsic_ssbo_store;
 
    ir_function *f = new(mem_ctx) ir_function("__intrinsic_store_ssbo");
    f->add_signature(sig);
@@ -490,7 +490,7 @@ lower_ubo_reference_visitor::ssbo_load(void *mem_ctx,
       new(mem_ctx) ir_function_signature(type, shader_storage_buffer_object);
    assert(sig);
    sig->replace_parameters(&sig_params);
-   sig->is_intrinsic = true;
+   sig->intrinsic_id = ir_intrinsic_ssbo_load;
 
    ir_function *f = new(mem_ctx) ir_function("__intrinsic_load_ssbo");
    f->add_signature(sig);
@@ -1016,7 +1016,10 @@ lower_ubo_reference_visitor::lower_ssbo_atomic_intrinsic(ir_call *ir)
                                          shader_storage_buffer_object);
    assert(sig);
    sig->replace_parameters(&sig_params);
-   sig->is_intrinsic = true;
+
+   assert(ir->callee->intrinsic_id >= ir_intrinsic_generic_load);
+   assert(ir->callee->intrinsic_id <= ir_intrinsic_generic_atomic_comp_swap);
+   sig->intrinsic_id = MAP_INTRINSIC_TO_TYPE(ir->callee->intrinsic_id, ssbo);
 
    char func_name[64];
    sprintf(func_name, "%s_ssbo", ir->callee_name());
@@ -1057,15 +1060,15 @@ lower_ubo_reference_visitor::check_for_ssbo_atomic_intrinsic(ir_call *ir)
    if (!var || !var->is_in_shader_storage_block())
       return ir;
 
-   const char *callee = ir->callee_name();
-   if (!strcmp("__intrinsic_atomic_add", callee) ||
-       !strcmp("__intrinsic_atomic_min", callee) ||
-       !strcmp("__intrinsic_atomic_max", callee) ||
-       !strcmp("__intrinsic_atomic_and", callee) ||
-       !strcmp("__intrinsic_atomic_or", callee) ||
-       !strcmp("__intrinsic_atomic_xor", callee) ||
-       !strcmp("__intrinsic_atomic_exchange", callee) ||
-       !strcmp("__intrinsic_atomic_comp_swap", callee)) {
+   const enum ir_intrinsic_id id = ir->callee->intrinsic_id;
+   if (id == ir_intrinsic_generic_atomic_add ||
+       id == ir_intrinsic_generic_atomic_min ||
+       id == ir_intrinsic_generic_atomic_max ||
+       id == ir_intrinsic_generic_atomic_and ||
+       id == ir_intrinsic_generic_atomic_or ||
+       id == ir_intrinsic_generic_atomic_xor ||
+       id == ir_intrinsic_generic_atomic_exchange ||
+       id == ir_intrinsic_generic_atomic_comp_swap) {
       return lower_ssbo_atomic_intrinsic(ir);
    }
 

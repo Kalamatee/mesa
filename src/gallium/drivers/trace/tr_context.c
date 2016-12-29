@@ -377,7 +377,7 @@ trace_context_create_sampler_state(struct pipe_context *_pipe,
 
 static void
 trace_context_bind_sampler_states(struct pipe_context *_pipe,
-                                  unsigned shader,
+                                  enum pipe_shader_type shader,
                                   unsigned start,
                                   unsigned num_states,
                                   void **states)
@@ -1016,7 +1016,7 @@ trace_context_surface_destroy(struct pipe_context *_pipe,
 
 static void
 trace_context_set_sampler_views(struct pipe_context *_pipe,
-                                unsigned shader,
+                                enum pipe_shader_type shader,
                                 unsigned start,
                                 unsigned num,
                                 struct pipe_sampler_view **views)
@@ -1291,7 +1291,8 @@ trace_context_clear_render_target(struct pipe_context *_pipe,
                                   struct pipe_surface *dst,
                                   const union pipe_color_union *color,
                                   unsigned dstx, unsigned dsty,
-                                  unsigned width, unsigned height)
+                                  unsigned width, unsigned height,
+                                  bool render_condition_enabled)
 {
    struct trace_context *tr_ctx = trace_context(_pipe);
    struct pipe_context *pipe = tr_ctx->pipe;
@@ -1307,8 +1308,10 @@ trace_context_clear_render_target(struct pipe_context *_pipe,
    trace_dump_arg(uint, dsty);
    trace_dump_arg(uint, width);
    trace_dump_arg(uint, height);
+   trace_dump_arg(bool, render_condition_enabled);
 
-   pipe->clear_render_target(pipe, dst, color, dstx, dsty, width, height);
+   pipe->clear_render_target(pipe, dst, color, dstx, dsty, width, height,
+                             render_condition_enabled);
 
    trace_dump_call_end();
 }
@@ -1320,7 +1323,8 @@ trace_context_clear_depth_stencil(struct pipe_context *_pipe,
                                   double depth,
                                   unsigned stencil,
                                   unsigned dstx, unsigned dsty,
-                                  unsigned width, unsigned height)
+                                  unsigned width, unsigned height,
+                                  bool render_condition_enabled)
 {
    struct trace_context *tr_ctx = trace_context(_pipe);
    struct pipe_context *pipe = tr_ctx->pipe;
@@ -1338,9 +1342,11 @@ trace_context_clear_depth_stencil(struct pipe_context *_pipe,
    trace_dump_arg(uint, dsty);
    trace_dump_arg(uint, width);
    trace_dump_arg(uint, height);
+   trace_dump_arg(bool, render_condition_enabled);
 
    pipe->clear_depth_stencil(pipe, dst, clear_flags, depth, stencil,
-                             dstx, dsty, width, height);
+                             dstx, dsty, width, height,
+                             render_condition_enabled);
 
    trace_dump_call_end();
 }
@@ -1629,6 +1635,26 @@ trace_context_texture_subdata(struct pipe_context *_context,
                             data, stride, layer_stride);
 }
 
+static void
+trace_context_invalidate_resource(struct pipe_context *_context,
+                                  struct pipe_resource *_resource)
+{
+   struct trace_context *tr_context = trace_context(_context);
+   struct trace_resource *tr_res = trace_resource(_resource);
+   struct pipe_context *context = tr_context->pipe;
+   struct pipe_resource *resource = tr_res->resource;
+
+   assert(resource->screen == context->screen);
+
+   trace_dump_call_begin("pipe_context", "invalidate_resource");
+
+   trace_dump_arg(ptr, context);
+   trace_dump_arg(ptr, resource);
+
+   trace_dump_call_end();
+
+   context->invalidate_resource(context, resource);
+}
 
 static void
 trace_context_render_condition(struct pipe_context *_context,
@@ -1705,7 +1731,7 @@ trace_context_set_tess_state(struct pipe_context *_context,
 
 
 static void trace_context_set_shader_buffers(struct pipe_context *_context,
-                                             unsigned shader,
+                                             enum pipe_shader_type shader,
                                              unsigned start, unsigned nr,
                                              const struct pipe_shader_buffer *buffers)
 {
@@ -1743,7 +1769,7 @@ static void trace_context_set_shader_buffers(struct pipe_context *_context,
 }
 
 static void trace_context_set_shader_images(struct pipe_context *_context,
-                                            unsigned shader,
+                                            enum pipe_shader_type shader,
                                             unsigned start, unsigned nr,
                                             const struct pipe_image_view *images)
 {
@@ -1911,6 +1937,7 @@ trace_context_create(struct trace_screen *tr_scr,
    TR_CTX_INIT(transfer_flush_region);
    TR_CTX_INIT(buffer_subdata);
    TR_CTX_INIT(texture_subdata);
+   TR_CTX_INIT(invalidate_resource);
 
 #undef TR_CTX_INIT
 

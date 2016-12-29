@@ -119,6 +119,7 @@ nv50_blend_state_create(struct pipe_context *pipe,
    struct nv50_blend_stateobj *so = CALLOC_STRUCT(nv50_blend_stateobj);
    int i;
    bool emit_common_func = cso->rt[0].blend_enable;
+   uint32_t ms;
 
    if (nv50_context(pipe)->screen->tesla->oclass >= NVA3_3D_CLASS) {
       SB_BEGIN_3D(so, BLEND_INDEPENDENT, 1);
@@ -189,6 +190,15 @@ nv50_blend_state_create(struct pipe_context *pipe,
       SB_BEGIN_3D(so, COLOR_MASK(0), 1);
       SB_DATA    (so, nv50_colormask(cso->rt[0].colormask));
    }
+
+   ms = 0;
+   if (cso->alpha_to_coverage)
+      ms |= NV50_3D_MULTISAMPLE_CTRL_ALPHA_TO_COVERAGE;
+   if (cso->alpha_to_one)
+      ms |= NV50_3D_MULTISAMPLE_CTRL_ALPHA_TO_ONE;
+
+   SB_BEGIN_3D(so, MULTISAMPLE_CTRL, 1);
+   SB_DATA    (so, ms);
 
    assert(so->size <= ARRAY_SIZE(so->state));
    return so;
@@ -633,7 +643,7 @@ nv50_gp_sampler_states_bind(struct pipe_context *pipe, unsigned nr, void **s)
 
 static void
 nv50_bind_sampler_states(struct pipe_context *pipe,
-                         unsigned shader, unsigned start,
+                         enum pipe_shader_type shader, unsigned start,
                          unsigned num_samplers, void **samplers)
 {
    assert(start == 0);
@@ -646,6 +656,9 @@ nv50_bind_sampler_states(struct pipe_context *pipe,
       break;
    case PIPE_SHADER_FRAGMENT:
       nv50_fp_sampler_states_bind(pipe, num_samplers, samplers);
+      break;
+   default:
+      assert(!"unexpected shader type");
       break;
    }
 }
@@ -709,7 +722,7 @@ nv50_stage_set_sampler_views(struct nv50_context *nv50, int s,
 }
 
 static void
-nv50_set_sampler_views(struct pipe_context *pipe, unsigned shader,
+nv50_set_sampler_views(struct pipe_context *pipe, enum pipe_shader_type shader,
                        unsigned start, unsigned nr,
                        struct pipe_sampler_view **views)
 {

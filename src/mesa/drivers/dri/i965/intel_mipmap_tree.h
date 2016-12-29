@@ -201,70 +201,6 @@ enum intel_msaa_layout
    INTEL_MSAA_LAYOUT_CMS,
 };
 
-
-/**
- * Enum for keeping track of the fast clear state of a buffer associated with
- * a miptree.
- *
- * Fast clear works by deferring the memory writes that would be used to clear
- * the buffer, so that instead of performing them at the time of the clear
- * operation, the hardware automatically performs them at the time that the
- * buffer is later accessed for rendering.  The MCS buffer keeps track of
- * which regions of the buffer still have pending clear writes.
- *
- * This enum keeps track of the driver's knowledge of pending fast clears in
- * the MCS buffer.
- *
- * MCS buffers only exist on Gen7+.
- */
-enum intel_fast_clear_state
-{
-   /**
-    * There is no MCS buffer for this miptree, and one should never be
-    * allocated.
-    */
-   INTEL_FAST_CLEAR_STATE_NO_MCS,
-
-   /**
-    * No deferred clears are pending for this miptree, and the contents of the
-    * color buffer are entirely correct.  An MCS buffer may or may not exist
-    * for this miptree.  If it does exist, it is entirely in the "no deferred
-    * clears pending" state.  If it does not exist, it will be created the
-    * first time a fast color clear is executed.
-    *
-    * In this state, the color buffer can be used for purposes other than
-    * rendering without needing a render target resolve.
-    *
-    * Since there is no such thing as a "fast color clear resolve" for MSAA
-    * buffers, an MSAA buffer will never be in this state.
-    */
-   INTEL_FAST_CLEAR_STATE_RESOLVED,
-
-   /**
-    * An MCS buffer exists for this miptree, and deferred clears are pending
-    * for some regions of the color buffer, as indicated by the MCS buffer.
-    * The contents of the color buffer are only correct for the regions where
-    * the MCS buffer doesn't indicate a deferred clear.
-    *
-    * If a single-sample buffer is in this state, a render target resolve must
-    * be performed before it can be used for purposes other than rendering.
-    */
-   INTEL_FAST_CLEAR_STATE_UNRESOLVED,
-
-   /**
-    * An MCS buffer exists for this miptree, and deferred clears are pending
-    * for the entire color buffer, and the contents of the MCS buffer reflect
-    * this.  The contents of the color buffer are undefined.
-    *
-    * If a single-sample buffer is in this state, a render target resolve must
-    * be performed before it can be used for purposes other than rendering.
-    *
-    * If the client attempts to clear a buffer which is already in this state,
-    * the clear can be safely skipped, since the buffer is already clear.
-    */
-   INTEL_FAST_CLEAR_STATE_CLEAR,
-};
-
 enum miptree_array_layout {
    /* Each array slice contains all miplevels packed together.
     *
@@ -324,9 +260,6 @@ enum miptree_array_layout {
  * For Gen7+, we always give the hardware the start of the buffer, and let it
  * handle all accesses to the buffer. Therefore we don't need the full miptree
  * layout structure for this buffer.
- *
- * For Gen6, we need a hiz miptree structure for this buffer so we can program
- * offsets to slices & miplevels.
  */
 struct intel_miptree_aux_buffer
 {
@@ -337,6 +270,27 @@ struct intel_miptree_aux_buffer
     * @see 3DSTATE_HIER_DEPTH_BUFFER.AuxiliarySurfaceBaseAddress
     */
    drm_intel_bo *bo;
+
+   /**
+    * Offset into bo where the surface starts.
+    *
+    * @see intel_mipmap_aux_buffer::bo
+    *
+    * @see RENDER_SURFACE_STATE.AuxiliarySurfaceBaseAddress
+    * @see 3DSTATE_DEPTH_BUFFER.SurfaceBaseAddress
+    * @see 3DSTATE_HIER_DEPTH_BUFFER.SurfaceBaseAddress
+    * @see 3DSTATE_STENCIL_BUFFER.SurfaceBaseAddress
+    */
+   uint32_t offset;
+
+   /*
+    * Size of the MCS surface.
+    *
+    * This is needed when doing any gtt mapped operations on the buffer (which
+    * will be Y-tiled). It is possible that it will not be the same as bo->size
+    * when the drm allocator rounds up the requested size.
+    */
+   size_t size;
 
    /**
     * Pitch in bytes.
@@ -353,6 +307,15 @@ struct intel_miptree_aux_buffer
     * @see 3DSTATE_HIER_DEPTH_BUFFER.SurfaceQPitch
     */
    uint32_t qpitch;
+};
+/**
+ * The HiZ buffer requires extra attributes on earlier GENs. This is easily
+ * contained within an intel_mipmap_tree. To make sure we do not abuse this, we
+ * keep the hiz datastructure separate.
+ */
+struct intel_miptree_hiz_buffer
+{
+   struct intel_miptree_aux_buffer aux_base;
 
    /**
     * Hiz miptree. Used only by Gen6.
@@ -588,18 +551,25 @@ struct intel_mipmap_tree
     * To determine if hiz is enabled, do not check this pointer. Instead, use
     * intel_miptree_slice_has_hiz().
     */
-   struct intel_miptree_aux_buffer *hiz_buf;
+   struct intel_miptree_hiz_buffer *hiz_buf;
 
    /**
-    * \brief Map of miptree slices to needed resolves.
+    * \brief Maps of miptree slices to needed resolves.
     *
-    * This is used only when the miptree has a child HiZ miptree.
+    * hiz_map is used only when the miptree has a child HiZ miptree.
     *
     * Let \c mt be a depth miptree with HiZ enabled. Then the resolve map is
     * \c mt->hiz_map. The resolve map of the child HiZ miptree, \c
     * mt->hiz_mt->hiz_map, is unused.
+    *
+    *
+    * color_resolve_map is used only when the miptree uses fast clear (Gen7+)
+    * lossless compression (Gen9+). It should be noted that absence in the
+    * map means implicitly RESOLVED state. If item is found it always
+    * indicates state other than RESOLVED.
     */
    struct exec_list hiz_map; /* List of intel_resolve_map. */
+   struct exec_list color_resolve_map; /* List of intel_resolve_map. */
 
    /**
     * \brief Stencil miptree for depthstencil textures.
@@ -615,25 +585,32 @@ struct intel_mipmap_tree
    struct intel_mipmap_tree *stencil_mt;
 
    /**
-    * \brief MCS miptree.
+    * \brief Stencil texturing miptree for sampling from a stencil texture
     *
-    * This miptree contains the "multisample control surface", which stores
+    * Some hardware doesn't support sampling from the stencil texture as
+    * required by the GL_ARB_stencil_texturing extenion. To workaround this we
+    * blit the texture into a new texture that can be sampled.
+    *
+    * \see intel_update_r8stencil()
+    */
+   struct intel_mipmap_tree *r8stencil_mt;
+   bool r8stencil_needs_update;
+
+   /**
+    * \brief MCS auxiliary buffer.
+    *
+    * This buffer contains the "multisample control surface", which stores
     * the necessary information to implement compressed MSAA
     * (INTEL_MSAA_FORMAT_CMS) and "fast color clear" behaviour on Gen7+.
     *
-    * NULL if no MCS miptree is in use for this surface.
+    * NULL if no MCS buffer is in use for this surface.
     */
-   struct intel_mipmap_tree *mcs_mt;
+   struct intel_miptree_aux_buffer *mcs_buf;
 
    /**
     * Planes 1 and 2 in case this is a planar surface.
     */
    struct intel_mipmap_tree *plane[2];
-
-   /**
-    * Fast clear state for this buffer.
-    */
-   enum intel_fast_clear_state fast_clear_state;
 
    /**
     * The SURFACE_STATE bits associated with the last fast color clear to this
@@ -664,6 +641,12 @@ struct intel_mipmap_tree
    bool disable_aux_buffers;
 
    /**
+    * Fast clear and lossless compression are always disabled for this
+    * miptree.
+    */
+   bool no_ccs;
+
+   /**
     * Tells if the underlying buffer is to be also consumed by entities other
     * than the driver. This allows logic to turn off features such as lossless
     * compression which is not currently understood by client applications.
@@ -674,10 +657,6 @@ struct intel_mipmap_tree
     */
    GLuint refcount;
 };
-
-void
-intel_get_non_msrt_mcs_alignment(const struct intel_mipmap_tree *mt,
-                                 unsigned *width_px, unsigned *height);
 
 bool
 intel_miptree_is_lossless_compressed(const struct brw_context *brw,
@@ -697,11 +676,8 @@ intel_miptree_supports_lossless_compressed(struct brw_context *brw,
 
 bool
 intel_miptree_alloc_non_msrt_mcs(struct brw_context *brw,
-                                 struct intel_mipmap_tree *mt);
-
-void
-intel_miptree_prepare_mcs(struct brw_context *brw,
-                          struct intel_mipmap_tree *mt);
+                                 struct intel_mipmap_tree *mt,
+                                 bool is_lossless_compressed);
 
 enum {
    MIPTREE_LAYOUT_ACCELERATED_UPLOAD       = 1 << 0,
@@ -769,7 +745,7 @@ intel_lower_compressed_format(struct brw_context *brw, mesa_format format);
 
 /** \brief Assert that the level and layer are valid for the miptree. */
 static inline void
-intel_miptree_check_level_layer(struct intel_mipmap_tree *mt,
+intel_miptree_check_level_layer(const struct intel_mipmap_tree *mt,
                                 uint32_t level,
                                 uint32_t layer)
 {
@@ -797,6 +773,16 @@ intel_miptree_get_image_offset(const struct intel_mipmap_tree *mt,
 			       GLuint level, GLuint slice,
 			       GLuint *x, GLuint *y);
 
+enum isl_surf_dim
+get_isl_surf_dim(GLenum target);
+
+enum isl_dim_layout
+get_isl_dim_layout(const struct gen_device_info *devinfo, uint32_t tiling,
+                   GLenum target);
+
+enum isl_tiling
+intel_miptree_get_isl_tiling(const struct intel_mipmap_tree *mt);
+
 void
 intel_miptree_get_isl_surf(struct brw_context *brw,
                            const struct intel_mipmap_tree *mt,
@@ -817,7 +803,6 @@ intel_get_image_dims(struct gl_texture_image *image,
 
 void
 intel_get_tile_masks(uint32_t tiling, uint32_t tr_mode, uint32_t cpp,
-                     bool map_stencil_as_y_tiled,
                      uint32_t *mask_x, uint32_t *mask_y);
 
 void
@@ -831,8 +816,7 @@ intel_miptree_get_tile_offsets(const struct intel_mipmap_tree *mt,
                                uint32_t *tile_y);
 uint32_t
 intel_miptree_get_aligned_offset(const struct intel_mipmap_tree *mt,
-                                 uint32_t x, uint32_t y,
-                                 bool map_stencil_as_y_tiled);
+                                 uint32_t x, uint32_t y);
 
 void intel_miptree_set_level_info(struct intel_mipmap_tree *mt,
                                   GLuint level,
@@ -918,20 +902,31 @@ intel_miptree_all_slices_resolve_depth(struct brw_context *brw,
 
 /**\}*/
 
+enum intel_fast_clear_state
+intel_miptree_get_fast_clear_state(const struct intel_mipmap_tree *mt,
+                                   unsigned level, unsigned layer);
+
+void
+intel_miptree_set_fast_clear_state(const struct brw_context *brw,
+                                   struct intel_mipmap_tree *mt,
+                                   unsigned level,
+                                   unsigned first_layer,
+                                   unsigned num_layers,
+                                   enum intel_fast_clear_state new_state);
+
+bool
+intel_miptree_has_color_unresolved(const struct intel_mipmap_tree *mt,
+                                   unsigned start_level, unsigned num_levels,
+                                   unsigned start_layer, unsigned num_layers);
+
 /**
  * Update the fast clear state for a miptree to indicate that it has been used
  * for rendering.
  */
-static inline void
-intel_miptree_used_for_rendering(struct intel_mipmap_tree *mt)
-{
-   /* If the buffer was previously in fast clear state, change it to
-    * unresolved state, since it won't be guaranteed to be clear after
-    * rendering occurs.
-    */
-   if (mt->fast_clear_state == INTEL_FAST_CLEAR_STATE_CLEAR)
-      mt->fast_clear_state = INTEL_FAST_CLEAR_STATE_UNRESOLVED;
-}
+void
+intel_miptree_used_for_rendering(const struct brw_context *brw,
+                                 struct intel_mipmap_tree *mt, unsigned level,
+                                 unsigned start_layer, unsigned num_layers);
 
 /**
  * Flag values telling color resolve pass which special types of buffers
@@ -942,10 +937,16 @@ intel_miptree_used_for_rendering(struct intel_mipmap_tree *mt)
  */
 #define INTEL_MIPTREE_IGNORE_CCS_E (1 << 0)
 
-void
+bool
 intel_miptree_resolve_color(struct brw_context *brw,
-                            struct intel_mipmap_tree *mt,
+                            struct intel_mipmap_tree *mt, unsigned level,
+                            unsigned start_layer, unsigned num_layers,
                             int flags);
+
+void
+intel_miptree_all_slices_resolve_color(struct brw_context *brw,
+                                       struct intel_mipmap_tree *mt,
+                                       int flags);
 
 void
 intel_miptree_make_shareable(struct brw_context *brw,
@@ -955,6 +956,10 @@ void
 intel_miptree_updownsample(struct brw_context *brw,
                            struct intel_mipmap_tree *src,
                            struct intel_mipmap_tree *dst);
+
+void
+intel_update_r8stencil(struct brw_context *brw,
+                       struct intel_mipmap_tree *mt);
 
 /**
  * Horizontal distance from one slice to the next in the two-dimensional
@@ -1000,7 +1005,11 @@ intel_miptree_unmap(struct brw_context *brw,
 
 void
 intel_hiz_exec(struct brw_context *brw, struct intel_mipmap_tree *mt,
-	       unsigned int level, unsigned int layer, enum gen6_hiz_op op);
+	       unsigned int level, unsigned int layer, enum blorp_hiz_op op);
+
+bool
+intel_miptree_sample_with_hiz(struct brw_context *brw,
+                              struct intel_mipmap_tree *mt);
 
 #ifdef __cplusplus
 }

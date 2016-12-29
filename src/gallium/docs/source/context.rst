@@ -231,12 +231,16 @@ If a surface includes several layers then all layers will be cleared.
 ``clear_render_target`` clears a single color rendertarget with the specified
 color value. While it is only possible to clear one surface at a time (which can
 include several layers), this surface need not be bound to the framebuffer.
+If render_condition_enabled is false, any current rendering condition is ignored
+and the clear will be unconditional.
 
 ``clear_depth_stencil`` clears a single depth, stencil or depth/stencil surface
 with the specified depth and stencil values (for combined depth/stencil buffers,
 it is also possible to only clear one or the other part). While it is only
 possible to clear one surface at a time (which can include several layers),
 this surface need not be bound to the framebuffer.
+If render_condition_enabled is false, any current rendering condition is ignored
+and the clear will be unconditional.
 
 ``clear_texture`` clears a non-PIPE_BUFFER resource's specified level
 and bounding box with a clear value provided in that resource's native
@@ -428,9 +432,10 @@ A drawing command can be skipped depending on the outcome of a query
 (typically an occlusion query, or streamout overflow predicate).
 The ``render_condition`` function specifies the query which should be checked
 prior to rendering anything. Functions always honoring render_condition include
-(and are limited to) draw_vbo, clear, clear_render_target, clear_depth_stencil.
-The blit function (but not resource_copy_region, which seems inconsistent)
-can also optionally honor the current render condition.
+(and are limited to) draw_vbo and clear.
+The blit, clear_render_target and clear_depth_stencil functions (but
+not resource_copy_region, which seems inconsistent) can also optionally honor
+the current render condition.
 
 If ``render_condition`` is called with ``query`` = NULL, conditional
 rendering is disabled and drawing takes place normally.
@@ -466,12 +471,10 @@ Flushing
 PIPE_FLUSH_END_OF_FRAME: Whether the flush marks the end of frame.
 
 PIPE_FLUSH_DEFERRED: It is not required to flush right away, but it is required
-to return a valid fence. The behavior of fence_finish or any other call isn't
-changed. The only side effect can be that fence_finish will wait a little
-longer. No guidance is given as to how drivers should implement fence_finish
-with deferred flushes. If some drivers can't do deferred flushes safely, they
-should just ignore the flag.
-
+to return a valid fence. If fence_finish is called with the returned fence
+and the context is still unflushed, and the ctx parameter of fence_finish is
+equal to the context where the fence was created, fence_finish will flush
+the context.
 
 
 ``flush_resource``
@@ -689,3 +692,41 @@ last_level for layers range from first_layer through last_layer.
 It returns TRUE if mipmap generation succeeds, otherwise it
 returns FALSE. Mipmap generation may fail when it is not supported
 for particular texture types or formats.
+
+Device resets
+^^^^^^^^^^^^^
+
+The state tracker can query or request notifications of when the GPU
+is reset for whatever reason (application error, driver error). When
+a GPU reset happens, the context becomes unusable and all related state
+should be considered lost and undefined. Despite that, context
+notifications are single-shot, i.e. subsequent calls to
+``get_device_reset_status`` will return PIPE_NO_RESET.
+
+* ``get_device_reset_status`` queries whether a device reset has happened
+  since the last call or since the last notification by callback.
+* ``set_device_reset_callback`` sets a callback which will be called when
+  a device reset is detected. The callback is only called synchronously.
+
+Using several contexts
+----------------------
+
+Several contexts from the same screen can be used at the same time. Objects
+created on one context cannot be used in another context, but the objects
+created by the screen methods can be used by all contexts.
+
+Transfers
+^^^^^^^^^
+A transfer on one context is not expected to synchronize properly with
+rendering on other contexts, thus only areas not yet used for rendering should
+be locked.
+
+A flush is required after transfer_unmap to expect other contexts to see the
+uploaded data, unless:
+
+* Using persistent mapping. Associated with coherent mapping, unmapping the
+  resource is also not required to use it in other contexts. Without coherent
+  mapping, memory_barrier(PIPE_BARRIER_MAPPED_BUFFER) should be called on the
+  context that has mapped the resource. No flush is required.
+
+* Mapping the resource with PIPE_TRANSFER_MAP_DIRECTLY.

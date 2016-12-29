@@ -97,13 +97,67 @@ swap_file(struct qpu_reg *src)
 }
 
 /**
+ * Sets up the VPM read FIFO before we do any VPM read.
+ *
+ * VPM reads (vertex attribute input) and VPM writes (varyings output) from
+ * the QPU reuse the VRI (varying interpolation) block's FIFOs to talk to the
+ * VPM block.  In the VS/CS (unlike in the FS), the block starts out
+ * uninitialized, and you need to emit setup to the block before any VPM
+ * reads/writes.
+ *
+ * VRI has a FIFO in each direction, with each FIFO able to hold four
+ * 32-bit-per-vertex values.  VPM reads come through the read FIFO and VPM
+ * writes go through the write FIFO.  The read/write setup values from QPU go
+ * through the write FIFO as well, with a sideband signal indicating that
+ * they're setup values.  Once a read setup reaches the other side of the
+ * FIFO, the VPM block will start asynchronously reading vertex attributes and
+ * filling the read FIFO -- that way hopefully the QPU doesn't have to block
+ * on reads later.
+ *
+ * VPM read setup can configure 16 32-bit-per-vertex values to be read at a
+ * time, which is 4 vec4s.  If more than that is being read (since we support
+ * 8 vec4 vertex attributes), then multiple read setup writes need to be done.
+ *
+ * The existence of the FIFO makes it seem like you should be able to emit
+ * both setups for the 5-8 attribute cases and then do all the attribute
+ * reads.  However, once the setup value makes it to the other end of the
+ * write FIFO, it will immediately update the VPM block's setup register.
+ * That updated setup register would be used for read FIFO fills from then on,
+ * breaking whatever remaining VPM values were supposed to be read into the
+ * read FIFO from the previous attribute set.
+ *
+ * As a result, we need to emit the read setup, pull every VPM read value from
+ * that setup, and only then emit the second setup if applicable.
+ */
+static void
+setup_for_vpm_read(struct vc4_compile *c, struct qblock *block)
+{
+        if (c->num_inputs_in_fifo) {
+                c->num_inputs_in_fifo--;
+                return;
+        }
+
+        c->num_inputs_in_fifo = MIN2(c->num_inputs_remaining, 16);
+
+        queue(block,
+              qpu_load_imm_ui(qpu_vrsetup(),
+                              c->vpm_read_offset |
+                              0x00001a00 |
+                              ((c->num_inputs_in_fifo & 0xf) << 20)));
+        c->num_inputs_remaining -= c->num_inputs_in_fifo;
+        c->vpm_read_offset += c->num_inputs_in_fifo;
+
+        c->num_inputs_in_fifo--;
+}
+
+/**
  * This is used to resolve the fact that we might register-allocate two
  * different operands of an instruction to the same physical register file
  * even though instructions have only one field for the register file source
  * address.
  *
  * In that case, we need to move one to a temporary that can be used in the
- * instruction, instead.  We reserve ra31/rb31 for this purpose.
+ * instruction, instead.  We reserve ra14/rb14 for this purpose.
  */
 static void
 fixup_raddr_conflict(struct qblock *block,
@@ -129,9 +183,9 @@ fixup_raddr_conflict(struct qblock *block,
                  * in case of unpacks.
                  */
                 if (qir_is_float_input(inst))
-                        queue(block, qpu_a_FMAX(qpu_rb(31), *src0, *src0));
+                        queue(block, qpu_a_FMAX(qpu_rb(14), *src0, *src0));
                 else
-                        queue(block, qpu_a_MOV(qpu_rb(31), *src0));
+                        queue(block, qpu_a_MOV(qpu_rb(14), *src0));
 
                 /* If we had an unpack on this A-file source, we need to put
                  * it into this MOV, not into the later move from regfile B.
@@ -140,10 +194,10 @@ fixup_raddr_conflict(struct qblock *block,
                         *last_inst(block) |= *unpack;
                         *unpack = 0;
                 }
-                *src0 = qpu_rb(31);
+                *src0 = qpu_rb(14);
         } else {
-                queue(block, qpu_a_MOV(qpu_ra(31), *src0));
-                *src0 = qpu_ra(31);
+                queue(block, qpu_a_MOV(qpu_ra(14), *src0));
+                *src0 = qpu_ra(14);
         }
 }
 
@@ -234,8 +288,8 @@ vc4_generate_code_block(struct vc4_compile *c,
                 };
 
                 uint64_t unpack = 0;
-                struct qpu_reg src[4];
-                for (int i = 0; i < qir_get_op_nsrc(qinst->op); i++) {
+                struct qpu_reg src[ARRAY_SIZE(qinst->src)];
+                for (int i = 0; i < qir_get_nsrc(qinst); i++) {
                         int index = qinst->src[i].index;
                         switch (qinst->src[i].file) {
                         case QFILE_NULL:
@@ -268,6 +322,7 @@ vc4_generate_code_block(struct vc4_compile *c,
                                 assert(src[i].addr <= 47);
                                 break;
                         case QFILE_VPM:
+                                setup_for_vpm_read(c, block);
                                 assert((int)qinst->src[i].index >=
                                        last_vpm_read_index);
                                 (void)last_vpm_read_index;
@@ -284,11 +339,19 @@ vc4_generate_code_block(struct vc4_compile *c,
                         case QFILE_FRAG_REV_FLAG:
                                 src[i] = qpu_rb(QPU_R_MS_REV_FLAGS);
                                 break;
+                        case QFILE_QPU_ELEMENT:
+                                src[i] = qpu_ra(QPU_R_ELEM_QPU);
+                                break;
 
                         case QFILE_TLB_COLOR_WRITE:
                         case QFILE_TLB_COLOR_WRITE_MS:
                         case QFILE_TLB_Z_WRITE:
                         case QFILE_TLB_STENCIL_SETUP:
+                        case QFILE_TEX_S:
+                        case QFILE_TEX_S_DIRECT:
+                        case QFILE_TEX_T:
+                        case QFILE_TEX_R:
+                        case QFILE_TEX_B:
                                 unreachable("bad qir src file");
                         }
                 }
@@ -321,6 +384,23 @@ vc4_generate_code_block(struct vc4_compile *c,
                         dst = qpu_ra(QPU_W_TLB_STENCIL_SETUP);
                         break;
 
+                case QFILE_TEX_S:
+                case QFILE_TEX_S_DIRECT:
+                        dst = qpu_rb(QPU_W_TMU0_S);
+                        break;
+
+                case QFILE_TEX_T:
+                        dst = qpu_rb(QPU_W_TMU0_T);
+                        break;
+
+                case QFILE_TEX_R:
+                        dst = qpu_rb(QPU_W_TMU0_R);
+                        break;
+
+                case QFILE_TEX_B:
+                        dst = qpu_rb(QPU_W_TMU0_B);
+                        break;
+
                 case QFILE_VARY:
                 case QFILE_UNIF:
                 case QFILE_SMALL_IMM:
@@ -328,6 +408,7 @@ vc4_generate_code_block(struct vc4_compile *c,
                 case QFILE_FRAG_X:
                 case QFILE_FRAG_Y:
                 case QFILE_FRAG_REV_FLAG:
+                case QFILE_QPU_ELEMENT:
                         assert(!"not reached");
                         break;
                 }
@@ -369,6 +450,29 @@ vc4_generate_code_block(struct vc4_compile *c,
                         queue(block, qpu_load_imm_ui(dst, qinst->src[0].index));
                         break;
 
+                case QOP_LOAD_IMM_U2:
+                        queue(block, qpu_load_imm_u2(dst, qinst->src[0].index));
+                        break;
+
+                case QOP_LOAD_IMM_I2:
+                        queue(block, qpu_load_imm_i2(dst, qinst->src[0].index));
+                        break;
+
+                case QOP_ROT_MUL:
+                        /* Rotation at the hardware level occurs on the inputs
+                         * to the MUL unit, and they must be accumulators in
+                         * order to have the time necessary to move things.
+                         */
+                        assert(src[0].mux <= QPU_MUX_R3);
+
+                        queue(block,
+                              qpu_m_rot(dst, src[0], qinst->src[1].index -
+                                        QPU_SMALL_IMM_MUL_ROT) | unpack);
+                        set_last_cond_mul(block, qinst->cond);
+                        handled_qinst_cond = true;
+                        set_last_dst_pack(block, qinst);
+                        break;
+
                 case QOP_MS_MASK:
                         src[1] = qpu_ra(QPU_R_MS_REV_FLAGS);
                         fixup_raddr_conflict(block, dst, &src[0], &src[1],
@@ -395,27 +499,19 @@ vc4_generate_code_block(struct vc4_compile *c,
                         queue(block, qpu_a_FADD(dst, src[0], qpu_r5()) | unpack);
                         break;
 
-                case QOP_TEX_S:
-                case QOP_TEX_T:
-                case QOP_TEX_R:
-                case QOP_TEX_B:
-                        queue(block, qpu_a_MOV(qpu_rb(QPU_W_TMU0_S +
-                                                      (qinst->op - QOP_TEX_S)),
-                                               src[0]) | unpack);
-                        break;
-
-                case QOP_TEX_DIRECT:
-                        fixup_raddr_conflict(block, dst, &src[0], &src[1],
-                                             qinst, &unpack);
-                        queue(block, qpu_a_ADD(qpu_rb(QPU_W_TMU0_S),
-                                               src[0], src[1]) | unpack);
-                        break;
 
                 case QOP_TEX_RESULT:
                         queue(block, qpu_NOP());
                         *last_inst(block) = qpu_set_sig(*last_inst(block),
                                                         QPU_SIG_LOAD_TMU0);
                         handle_r4_qpu_write(block, qinst, dst);
+                        break;
+
+                case QOP_THRSW:
+                        queue(block, qpu_NOP());
+                        *last_inst(block) = qpu_set_sig(*last_inst(block),
+                                                        QPU_SIG_THREAD_SWITCH);
+                        c->last_thrsw = last_inst(block);
                         break;
 
                 case QOP_BRANCH:
@@ -449,7 +545,7 @@ vc4_generate_code_block(struct vc4_compile *c,
                          * argument slot as well so that we don't take up
                          * another raddr just to get unused data.
                          */
-                        if (qir_get_op_nsrc(qinst->op) == 1)
+                        if (qir_get_non_sideband_nsrc(qinst) == 1)
                                 src[1] = src[0];
 
                         fixup_raddr_conflict(block, dst, &src[0], &src[1],
@@ -483,32 +579,17 @@ vc4_generate_code_block(struct vc4_compile *c,
 void
 vc4_generate_code(struct vc4_context *vc4, struct vc4_compile *c)
 {
-        struct qpu_reg *temp_registers = vc4_register_allocate(vc4, c);
-        uint32_t inputs_remaining = c->num_inputs;
-        uint32_t vpm_read_fifo_count = 0;
-        uint32_t vpm_read_offset = 0;
         struct qblock *start_block = list_first_entry(&c->blocks,
                                                       struct qblock, link);
+
+        struct qpu_reg *temp_registers = vc4_register_allocate(vc4, c);
+        if (!temp_registers)
+                return;
 
         switch (c->stage) {
         case QSTAGE_VERT:
         case QSTAGE_COORD:
-                /* There's a 4-entry FIFO for VPMVCD reads, each of which can
-                 * load up to 16 dwords (4 vec4s) per vertex.
-                 */
-                while (inputs_remaining) {
-                        uint32_t num_entries = MIN2(inputs_remaining, 16);
-                        queue(start_block,
-                              qpu_load_imm_ui(qpu_vrsetup(),
-                                              vpm_read_offset |
-                                              0x00001a00 |
-                                              ((num_entries & 0xf) << 20)));
-                        inputs_remaining -= num_entries;
-                        vpm_read_offset += num_entries;
-                        vpm_read_fifo_count++;
-                }
-                assert(vpm_read_fifo_count <= 4);
-
+                c->num_inputs_remaining = c->num_inputs;
                 queue(start_block, qpu_load_imm_ui(qpu_vwsetup(), 0x00001a00));
                 break;
         case QSTAGE_FRAG:
@@ -517,6 +598,23 @@ vc4_generate_code(struct vc4_context *vc4, struct vc4_compile *c)
 
         qir_for_each_block(block, c)
                 vc4_generate_code_block(c, block, temp_registers);
+
+        /* Switch the last SIG_THRSW instruction to SIG_LAST_THRSW.
+         *
+         * LAST_THRSW is a new signal in BCM2708B0 (including Raspberry Pi)
+         * that ensures that a later thread doesn't try to lock the scoreboard
+         * and terminate before an earlier-spawned thread on the same QPU, by
+         * delaying switching back to the later shader until earlier has
+         * finished.  Otherwise, if the earlier thread was hitting the same
+         * quad, the scoreboard would deadlock.
+         */
+        if (c->last_thrsw) {
+                assert(QPU_GET_FIELD(*c->last_thrsw, QPU_SIG) ==
+                       QPU_SIG_THREAD_SWITCH);
+                *c->last_thrsw = ((*c->last_thrsw & ~QPU_SIG_MASK) |
+                                  QPU_SET_FIELD(QPU_SIG_LAST_THREAD_SWITCH,
+                                                QPU_SIG));
+        }
 
         uint32_t cycles = qpu_schedule_instructions(c);
         uint32_t inst_count_at_schedule_time = c->qpu_inst_count;

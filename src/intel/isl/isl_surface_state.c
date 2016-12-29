@@ -142,7 +142,7 @@ get_image_alignment(const struct isl_surf *surf)
           * true alignment is likely outside the enum range of HALIGN* and
           * VALIGN*.
           */
-         return isl_extent3d(0, 0, 0);
+         return isl_extent3d(4, 4, 1);
       } else {
          /* In Skylake, RENDER_SUFFACE_STATE.SurfaceVerticalAlignment is in units
           * of surface elements (not pixels nor samples). For compressed formats,
@@ -172,9 +172,21 @@ get_qpitch(const struct isl_surf *surf)
    default:
       unreachable("Bad isl_surf_dim");
    case ISL_DIM_LAYOUT_GEN4_2D:
-   case ISL_DIM_LAYOUT_GEN4_3D:
       if (GEN_GEN >= 9) {
-         return isl_surf_get_array_pitch_el_rows(surf);
+         if (surf->dim == ISL_SURF_DIM_3D && surf->tiling == ISL_TILING_W) {
+            /* This is rather annoying and completely undocumented.  It
+             * appears that the hardware has a bug (or undocumented feature)
+             * regarding stencil buffers most likely related to the way
+             * W-tiling is handled as modified Y-tiling.  If you bind a 3-D
+             * stencil buffer normally, and use texelFetch on it, the z or
+             * array index will get implicitly multiplied by 2 for no obvious
+             * reason.  The fix appears to be to divide qpitch by 2 for
+             * W-tiled surfaces.
+             */
+            return isl_surf_get_array_pitch_el_rows(surf) / 2;
+         } else {
+            return isl_surf_get_array_pitch_el_rows(surf);
+         }
       } else {
          /* From the Broadwell PRM for RENDER_SURFACE_STATE.QPitch
           *
@@ -199,6 +211,22 @@ get_qpitch(const struct isl_surf *surf)
        *    slices.
        */
       return isl_surf_get_array_pitch_el(surf);
+   case ISL_DIM_LAYOUT_GEN4_3D:
+      /* QPitch doesn't make sense for ISL_DIM_LAYOUT_GEN4_3D since it uses a
+       * different pitch at each LOD.  Also, the QPitch field is ignored for
+       * these surfaces.  From the Broadwell PRM documentation for QPitch:
+       *
+       *    This field specifies the distance in rows between array slices. It
+       *    is used only in the following cases:
+       *     - Surface Array is enabled OR
+       *     - Number of Mulitsamples is not NUMSAMPLES_1 and Multisampled
+       *       Surface Storage Format set to MSFMT_MSS OR
+       *     - Surface Type is SURFTYPE_CUBE
+       *
+       * None of the three conditions above can possibly apply to a 3D surface
+       * so it is safe to just set QPitch to 0.
+       */
+      return 0;
    }
 }
 #endif /* GEN_GEN >= 8 */
@@ -210,11 +238,28 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    struct GENX(RENDER_SURFACE_STATE) s = { 0 };
 
    s.SurfaceType = get_surftype(info->surf->dim, info->view->usage);
+
+   if (info->view->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT)
+      assert(isl_format_supports_rendering(dev->info, info->view->format));
+   else if (info->view->usage & ISL_SURF_USAGE_TEXTURE_BIT)
+      assert(isl_format_supports_sampling(dev->info, info->view->format));
+
+   /* From the Sky Lake PRM Vol. 2d, RENDER_SURFACE_STATE::SurfaceFormat
+    *
+    *    This field cannot be a compressed (BC*, DXT*, FXT*, ETC*, EAC*)
+    *    format if the Surface Type is SURFTYPE_1D
+    */
+   if (info->surf->dim == ISL_SURF_DIM_1D)
+      assert(!isl_format_is_compressed(info->view->format));
+
    s.SurfaceFormat = info->view->format;
 
 #if GEN_IS_HASWELL
    s.IntegerSurfaceFormat = isl_format_has_int_channel(s.SurfaceFormat);
 #endif
+
+   assert(info->surf->logical_level0_px.width > 0 &&
+          info->surf->logical_level0_px.height > 0);
 
    s.Width = info->surf->logical_level0_px.width - 1;
    s.Height = info->surf->logical_level0_px.height - 1;
@@ -239,6 +284,19 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    switch (s.SurfaceType) {
    case SURFTYPE_1D:
    case SURFTYPE_2D:
+      /* From the Ivy Bridge PRM >> RENDER_SURFACE_STATE::MinimumArrayElement:
+       *
+       *    "If Number of Multisamples is not MULTISAMPLECOUNT_1, this field
+       *    must be set to zero if this surface is used with sampling engine
+       *    messages."
+       *
+       * This restriction appears to exist only on Ivy Bridge.
+       */
+      if (GEN_GEN == 7 && !GEN_IS_HASWELL && !ISL_DEV_IS_BAYTRAIL(dev) &&
+          (info->view->usage & ISL_SURF_USAGE_TEXTURE_BIT) &&
+          info->surf->samples > 1)
+         assert(info->view->base_array_layer == 0);
+
       s.MinimumArrayElement = info->view->base_array_layer;
 
       /* From the Broadwell PRM >> RENDER_SURFACE_STATE::Depth:
@@ -270,8 +328,6 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
          s.RenderTargetViewExtent = s.Depth;
       break;
    case SURFTYPE_3D:
-      s.MinimumArrayElement = info->view->base_array_layer;
-
       /* From the Broadwell PRM >> RENDER_SURFACE_STATE::Depth:
        *
        *    If the volume texture is MIP-mapped, this field specifies the
@@ -291,11 +347,16 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
        * textures with more levels than we can render to.  In order to prevent
        * assert-failures in the packing function below, we only set the field
        * when it's actually going to be used by the hardware.
+       *
+       * Similaraly, the MinimumArrayElement field is ignored by all hardware
+       * prior to Sky Lake when texturing and we want it set to 0 anyway.
+       * Since it's already initialized to 0, we can just leave it alone for
+       * texture surfaces.
        */
       if (info->view->usage & (ISL_SURF_USAGE_RENDER_TARGET_BIT |
                                ISL_SURF_USAGE_STORAGE_BIT)) {
-         s.RenderTargetViewExtent = isl_minify(info->surf->logical_level0_px.depth,
-                                               info->view->base_level) - 1;
+         s.MinimumArrayElement = info->view->base_array_layer;
+         s.RenderTargetViewExtent = info->view->array_len - 1;
       }
       break;
    default:
@@ -390,10 +451,10 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
 #endif
 
 #if (GEN_GEN >= 8 || GEN_IS_HASWELL)
-   s.ShaderChannelSelectRed = info->view->channel_select[0];
-   s.ShaderChannelSelectGreen = info->view->channel_select[1];
-   s.ShaderChannelSelectBlue = info->view->channel_select[2];
-   s.ShaderChannelSelectAlpha = info->view->channel_select[3];
+   s.ShaderChannelSelectRed = info->view->swizzle.r;
+   s.ShaderChannelSelectGreen = info->view->swizzle.g;
+   s.ShaderChannelSelectBlue = info->view->swizzle.b;
+   s.ShaderChannelSelectAlpha = info->view->swizzle.a;
 #endif
 
    s.SurfaceBaseAddress = info->address;
@@ -414,6 +475,16 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
       assert(info->surf->levels == 1);
       assert(info->surf->logical_level0_px.array_len == 1);
       assert(info->aux_usage == ISL_AUX_USAGE_NONE);
+
+      if (GEN_GEN >= 8) {
+         /* Broadwell added more rules. */
+         assert(info->surf->samples == 1);
+         if (isl_format_get_layout(info->view->format)->bpb == 8)
+            assert(info->x_offset_sa % 16 == 0);
+         if (isl_format_get_layout(info->view->format)->bpb == 16)
+            assert(info->x_offset_sa % 8 == 0);
+      }
+
 #if GEN_GEN >= 7
       s.SurfaceArray = false;
 #endif
@@ -480,35 +551,37 @@ isl_genX(surf_fill_state_s)(const struct isl_device *dev, void *state,
    }
 #endif
 
+   if (info->aux_usage != ISL_AUX_USAGE_NONE) {
 #if GEN_GEN >= 9
-   s.RedClearColor = info->clear_color.u32[0];
-   s.GreenClearColor = info->clear_color.u32[1];
-   s.BlueClearColor = info->clear_color.u32[2];
-   s.AlphaClearColor = info->clear_color.u32[3];
+      s.RedClearColor = info->clear_color.u32[0];
+      s.GreenClearColor = info->clear_color.u32[1];
+      s.BlueClearColor = info->clear_color.u32[2];
+      s.AlphaClearColor = info->clear_color.u32[3];
 #elif GEN_GEN >= 7
-   /* Prior to Sky Lake, we only have one bit for the clear color which
-    * gives us 0 or 1 in whatever the surface's format happens to be.
-    */
-   if (isl_format_has_int_channel(info->view->format)) {
-      for (unsigned i = 0; i < 4; i++) {
-         assert(info->clear_color.u32[i] == 0 ||
-                info->clear_color.u32[i] == 1);
+      /* Prior to Sky Lake, we only have one bit for the clear color which
+       * gives us 0 or 1 in whatever the surface's format happens to be.
+       */
+      if (isl_format_has_int_channel(info->view->format)) {
+         for (unsigned i = 0; i < 4; i++) {
+            assert(info->clear_color.u32[i] == 0 ||
+                   info->clear_color.u32[i] == 1);
+         }
+         s.RedClearColor = info->clear_color.u32[0] != 0;
+         s.GreenClearColor = info->clear_color.u32[1] != 0;
+         s.BlueClearColor = info->clear_color.u32[2] != 0;
+         s.AlphaClearColor = info->clear_color.u32[3] != 0;
+      } else {
+         for (unsigned i = 0; i < 4; i++) {
+            assert(info->clear_color.f32[i] == 0.0f ||
+                   info->clear_color.f32[i] == 1.0f);
+         }
+         s.RedClearColor = info->clear_color.f32[0] != 0.0f;
+         s.GreenClearColor = info->clear_color.f32[1] != 0.0f;
+         s.BlueClearColor = info->clear_color.f32[2] != 0.0f;
+         s.AlphaClearColor = info->clear_color.f32[3] != 0.0f;
       }
-      s.RedClearColor = info->clear_color.u32[0] != 0;
-      s.GreenClearColor = info->clear_color.u32[1] != 0;
-      s.BlueClearColor = info->clear_color.u32[2] != 0;
-      s.AlphaClearColor = info->clear_color.u32[3] != 0;
-   } else {
-      for (unsigned i = 0; i < 4; i++) {
-         assert(info->clear_color.f32[i] == 0.0f ||
-                info->clear_color.f32[i] == 1.0f);
-      }
-      s.RedClearColor = info->clear_color.f32[0] != 0.0f;
-      s.GreenClearColor = info->clear_color.f32[1] != 0.0f;
-      s.BlueClearColor = info->clear_color.f32[2] != 0.0f;
-      s.AlphaClearColor = info->clear_color.f32[3] != 0.0f;
-   }
 #endif
+   }
 
    GENX(RENDER_SURFACE_STATE_pack)(NULL, state, &s);
 }

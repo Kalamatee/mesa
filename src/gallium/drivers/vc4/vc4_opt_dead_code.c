@@ -54,7 +54,7 @@ dce(struct vc4_compile *c, struct qinst *inst)
 static bool
 has_nonremovable_reads(struct vc4_compile *c, struct qinst *inst)
 {
-        for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
+        for (int i = 0; i < qir_get_nsrc(inst); i++) {
                 if (inst->src[i].file == QFILE_VPM) {
                         uint32_t attr = inst->src[i].index / 4;
                         uint32_t offset = (inst->src[i].index % 4) * 4;
@@ -88,7 +88,7 @@ qir_opt_dead_code(struct vc4_compile *c)
         bool *used = calloc(c->num_temps, sizeof(bool));
 
         qir_for_each_inst_inorder(inst, c) {
-                for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
+                for (int i = 0; i < qir_get_nsrc(inst); i++) {
                         if (inst->src[i].file == QFILE_TEMP)
                                 used[inst->src[i].index] = true;
                 }
@@ -102,13 +102,34 @@ qir_opt_dead_code(struct vc4_compile *c)
                                 continue;
                         }
 
+                        if (qir_has_side_effects(c, inst))
+                                continue;
+
                         if (inst->sf ||
-                            qir_has_side_effects(c, inst) ||
                             has_nonremovable_reads(c, inst)) {
+                                /* If we can't remove the instruction, but we
+                                 * don't need its destination value, just
+                                 * remove the destination.  The register
+                                 * allocator would trivially color it and it
+                                 * wouldn't cause any register pressure, but
+                                 * it's nicer to read the QIR code without
+                                 * unused destination regs.
+                                 */
+                                if (inst->dst.file == QFILE_TEMP) {
+                                        if (debug) {
+                                                fprintf(stderr,
+                                                        "Removing dst from: ");
+                                                qir_dump_inst(c, inst);
+                                                fprintf(stderr, "\n");
+                                        }
+                                        c->defs[inst->dst.index] = NULL;
+                                        inst->dst.file = QFILE_NULL;
+                                        progress = true;
+                                }
                                 continue;
                         }
 
-                        for (int i = 0; i < qir_get_op_nsrc(inst->op); i++) {
+                        for (int i = 0; i < qir_get_nsrc(inst); i++) {
                                 if (inst->src[i].file != QFILE_VPM)
                                         continue;
                                 uint32_t attr = inst->src[i].index / 4;
