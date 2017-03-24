@@ -19,7 +19,7 @@ LIB_GALLIUM_SOURCES = \
             destroypipescreen \
             bltpiperesourcerastport
 
-#MM- core-linklibs : linklibs-gallium
+##MM- core-linklibs : linklibs-gallium
 
 %build_module mmake=workbench-libs-gallium \
    modname=gallium modtype=library \

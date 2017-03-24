@@ -26,25 +26,9 @@
 
 #include "r600_pipe_common.h"
 #include "util/u_surface.h"
+#include "util/rand_xor.h"
 
 static uint64_t seed_xorshift128plus[2];
-
-/* Super fast random number generator.
- *
- * This rand_xorshift128plus function by Sebastiano Vigna belongs
- * to the public domain.
- */
-static uint64_t rand_xorshift128plus(void)
-{
-	uint64_t *s = seed_xorshift128plus;
-
-	uint64_t s1 = s[0];
-	const uint64_t s0 = s[1];
-	s[0] = s0;
-	s1 ^= s1 << 23;
-	s[1] = s1 ^ s0 ^ (s1 >> 18) ^ (s0 >> 5);
-	return s[1] + s0;
-}
 
 #define RAND_NUM_SIZE 8
 
@@ -91,8 +75,10 @@ static void set_random_pixels(struct pipe_context *ctx,
 			assert(t->stride % RAND_NUM_SIZE == 0);
 			assert(cpu->stride % RAND_NUM_SIZE == 0);
 
-			for (x = 0; x < size; x++)
-				*ptr++ = *ptr_cpu++ = rand_xorshift128plus();
+			for (x = 0; x < size; x++) {
+				*ptr++ = *ptr_cpu++ =
+					rand_xorshift128plus(seed_xorshift128plus);
+			}
 		}
 	}
 
@@ -197,8 +183,7 @@ void r600_test_dma(struct r600_common_screen *rscreen)
 	/* the seed for random test parameters */
 	srand(0x9b47d95b);
 	/* the seed for random pixel data */
-	seed_xorshift128plus[0] = 0x3bffb83978e24f88;
-	seed_xorshift128plus[1] = 0x9238d5d56c71cd35;
+	s_rand_xorshift128plus(seed_xorshift128plus, false);
 
 	iterations = 1000000000; /* just kill it when you are bored */
 	num_partial_copies = 30;

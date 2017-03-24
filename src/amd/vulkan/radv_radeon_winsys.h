@@ -148,6 +148,7 @@ struct radeon_info {
 #define RADEON_SURF_HAS_TILE_MODE_INDEX         (1 << 20)
 #define RADEON_SURF_FMASK                       (1 << 21)
 #define RADEON_SURF_DISABLE_DCC                 (1 << 22)
+#define RADEON_SURF_TC_COMPATIBLE_HTILE         (1 << 23)
 
 #define RADEON_SURF_GET(v, field)   (((v) >> RADEON_SURF_ ## field ## _SHIFT) & RADEON_SURF_ ## field ## _MASK)
 #define RADEON_SURF_SET(v, field)   (((v) & RADEON_SURF_ ## field ## _MASK) << RADEON_SURF_ ## field ## _SHIFT)
@@ -217,6 +218,10 @@ struct radeon_surf {
 
 	uint64_t                    dcc_size;
 	uint64_t                    dcc_alignment;
+
+	uint64_t                    htile_size;
+	uint64_t                    htile_slice_size;
+	uint64_t                    htile_alignment;
 };
 
 enum radeon_bo_layout {
@@ -305,6 +310,8 @@ struct radeon_winsys {
 			 int queue_index,
 			 struct radeon_winsys_cs **cs_array,
 			 unsigned cs_count,
+			 struct radeon_winsys_cs *initial_preamble_cs,
+			 struct radeon_winsys_cs *continue_preamble_cs,
 			 struct radeon_winsys_sem **wait_sem,
 			 unsigned wait_sem_count,
 			 struct radeon_winsys_sem **signal_sem,
@@ -318,6 +325,8 @@ struct radeon_winsys {
 
 	void (*cs_execute_secondary)(struct radeon_winsys_cs *parent,
 				    struct radeon_winsys_cs *child);
+
+	void (*cs_dump)(struct radeon_winsys_cs *cs, FILE* file, uint32_t trace_id);
 
 	int (*surface_init)(struct radeon_winsys *ws,
 			    struct radeon_surf *surf);

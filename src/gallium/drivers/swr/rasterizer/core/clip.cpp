@@ -65,7 +65,7 @@ inline void intersect(
     case FRUSTUM_BOTTOM:    t = ComputeInterpFactor(v1[3] - v1[1], v2[3] - v2[1]); break;
     case FRUSTUM_NEAR:      t = ComputeInterpFactor(v1[2], v2[2]); break;
     case FRUSTUM_FAR:       t = ComputeInterpFactor(v1[3] - v1[2], v2[3] - v2[2]); break;
-    default: SWR_ASSERT(false, "invalid clipping plane: %d", ClippingPlane);
+    default: SWR_INVALID("invalid clipping plane: %d", ClippingPlane);
     };
 
 
@@ -104,7 +104,7 @@ inline int inside(const float v[4])
     case FRUSTUM_NEAR   : return (v[2]>=0.0f);
     case FRUSTUM_FAR    : return (v[2]<= v[3]);
     default:
-        SWR_ASSERT(false, "invalid clipping plane: %d", ClippingPlane);
+        SWR_INVALID("invalid clipping plane: %d", ClippingPlane);
         return 0;
     }
 }
@@ -155,28 +155,6 @@ int ClipTriToPlane( const float *pInPts, int numInPts,
         //  => do not add vertex
     }
     return i;
-}
-
-
-
-void Clip(const float *pTriangle, const float *pAttribs, int numAttribs, float *pOutTriangles, int *numVerts, float *pOutAttribs)
-{
-    // temp storage to hold at least 6 sets of vertices, the max number that can be created during clipping
-    OSALIGNSIMD(float) tempPts[6 * 4];
-    OSALIGNSIMD(float) tempAttribs[6 * KNOB_NUM_ATTRIBUTES * 4];
-
-    // we opt to clip to viewport frustum to produce smaller triangles for rasterization precision
-    int NumOutPts = ClipTriToPlane<FRUSTUM_NEAR>(pTriangle, 3, pAttribs, numAttribs, tempPts, tempAttribs);
-    NumOutPts = ClipTriToPlane<FRUSTUM_FAR>(tempPts, NumOutPts, tempAttribs, numAttribs, pOutTriangles, pOutAttribs);
-    NumOutPts = ClipTriToPlane<FRUSTUM_LEFT>(pOutTriangles, NumOutPts, pOutAttribs, numAttribs, tempPts, tempAttribs);
-    NumOutPts = ClipTriToPlane<FRUSTUM_RIGHT>(tempPts, NumOutPts, tempAttribs, numAttribs, pOutTriangles, pOutAttribs);
-    NumOutPts = ClipTriToPlane<FRUSTUM_BOTTOM>(pOutTriangles, NumOutPts, pOutAttribs, numAttribs, tempPts, tempAttribs);
-    NumOutPts = ClipTriToPlane<FRUSTUM_TOP>(tempPts, NumOutPts, tempAttribs, numAttribs, pOutTriangles, pOutAttribs);
-
-    SWR_ASSERT(NumOutPts <= 6);
-
-    *numVerts = NumOutPts;
-    return;
 }
 
 void ClipTriangles(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], uint32_t primMask, simdscalari primId, simdscalari viewportIdx)

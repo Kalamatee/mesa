@@ -65,11 +65,13 @@ struct intel_image_format {
 };
 
 struct __DRIimageRec {
+   struct intel_screen *screen;
    drm_intel_bo *bo;
    uint32_t pitch; /**< in bytes */
    GLenum internal_format;
    uint32_t dri_format;
    GLuint format;
+   uint64_t modifier; /**< fb modifier (fourcc) */
    uint32_t offset;
 
    /*

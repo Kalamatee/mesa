@@ -159,8 +159,8 @@ void r600_init_resource_fields(struct r600_common_screen *rscreen,
 	}
 
 	/* Tiled textures are unmappable. Always put them in VRAM. */
-	if (res->b.b.target != PIPE_BUFFER &&
-	    !rtex->surface.is_linear) {
+	if ((res->b.b.target != PIPE_BUFFER && !rtex->surface.is_linear) ||
+	    res->flags & R600_RESOURCE_FLAG_UNMAPPABLE) {
 		res->domains = RADEON_DOMAIN_VRAM;
 		res->flags &= ~RADEON_FLAG_CPU_ACCESS;
 		res->flags |= RADEON_FLAG_NO_CPU_ACCESS |
@@ -170,8 +170,12 @@ void r600_init_resource_fields(struct r600_common_screen *rscreen,
 	/* If VRAM is just stolen system memory, allow both VRAM and
 	 * GTT, whichever has free space. If a buffer is evicted from
 	 * VRAM to GTT, it will stay there.
+	 *
+	 * DRM 3.6.0 has good BO move throttling, so we can allow VRAM-only
+	 * placements even with a low amount of stolen VRAM.
 	 */
 	if (!rscreen->info.has_dedicated_vram &&
+	    (rscreen->info.drm_major < 3 || rscreen->info.drm_minor < 6) &&
 	    res->domains == RADEON_DOMAIN_VRAM)
 		res->domains = RADEON_DOMAIN_VRAM_GTT;
 
@@ -275,7 +279,6 @@ void r600_invalidate_resource(struct pipe_context *ctx,
 
 static void *r600_buffer_get_transfer(struct pipe_context *ctx,
 				      struct pipe_resource *resource,
-                                      unsigned level,
                                       unsigned usage,
                                       const struct pipe_box *box,
 				      struct pipe_transfer **ptransfer,
@@ -285,8 +288,9 @@ static void *r600_buffer_get_transfer(struct pipe_context *ctx,
 	struct r600_common_context *rctx = (struct r600_common_context*)ctx;
 	struct r600_transfer *transfer = slab_alloc(&rctx->pool_transfers);
 
-	transfer->transfer.resource = resource;
-	transfer->transfer.level = level;
+	transfer->transfer.resource = NULL;
+	pipe_resource_reference(&transfer->transfer.resource, resource);
+	transfer->transfer.level = 0;
 	transfer->transfer.usage = usage;
 	transfer->transfer.box = *box;
 	transfer->transfer.stride = 0;
@@ -364,12 +368,15 @@ static void *r600_buffer_transfer_map(struct pipe_context *ctx,
 			unsigned offset;
 			struct r600_resource *staging = NULL;
 
-			u_upload_alloc(rctx->uploader, 0, box->width + (box->x % R600_MAP_BUFFER_ALIGNMENT),
-				       256, &offset, (struct pipe_resource**)&staging, (void**)&data);
+			u_upload_alloc(ctx->stream_uploader, 0,
+                                       box->width + (box->x % R600_MAP_BUFFER_ALIGNMENT),
+				       rctx->screen->info.tcc_cache_line_size,
+				       &offset, (struct pipe_resource**)&staging,
+                                       (void**)&data);
 
 			if (staging) {
 				data += box->x % R600_MAP_BUFFER_ALIGNMENT;
-				return r600_buffer_get_transfer(ctx, resource, level, usage, box,
+				return r600_buffer_get_transfer(ctx, resource, usage, box,
 								ptransfer, data, staging, offset);
 			}
 		} else {
@@ -377,11 +384,11 @@ static void *r600_buffer_transfer_map(struct pipe_context *ctx,
 			usage |= PIPE_TRANSFER_UNSYNCHRONIZED;
 		}
 	}
-	/* Using a staging buffer in GTT for larger reads is much faster. */
+	/* Use a staging buffer in cached GTT for reads. */
 	else if ((usage & PIPE_TRANSFER_READ) &&
-		 !(usage & (PIPE_TRANSFER_WRITE |
-			    PIPE_TRANSFER_PERSISTENT)) &&
-		 rbuffer->domains & RADEON_DOMAIN_VRAM &&
+		 !(usage & PIPE_TRANSFER_PERSISTENT) &&
+		 (rbuffer->domains & RADEON_DOMAIN_VRAM ||
+		  rbuffer->flags & RADEON_FLAG_GTT_WC) &&
 		 r600_can_dma_copy_buffer(rctx, 0, box->x, box->width)) {
 		struct r600_resource *staging;
 
@@ -390,18 +397,19 @@ static void *r600_buffer_transfer_map(struct pipe_context *ctx,
 				box->width + (box->x % R600_MAP_BUFFER_ALIGNMENT));
 		if (staging) {
 			/* Copy the VRAM buffer to the staging buffer. */
-			ctx->resource_copy_region(ctx, &staging->b.b, 0,
-						  box->x % R600_MAP_BUFFER_ALIGNMENT,
-						  0, 0, resource, level, box);
+			rctx->dma_copy(ctx, &staging->b.b, 0,
+				       box->x % R600_MAP_BUFFER_ALIGNMENT,
+				       0, 0, resource, 0, box);
 
-			data = r600_buffer_map_sync_with_rings(rctx, staging, PIPE_TRANSFER_READ);
+			data = r600_buffer_map_sync_with_rings(rctx, staging,
+							       usage & ~PIPE_TRANSFER_UNSYNCHRONIZED);
 			if (!data) {
 				r600_resource_reference(&staging, NULL);
 				return NULL;
 			}
 			data += box->x % R600_MAP_BUFFER_ALIGNMENT;
 
-			return r600_buffer_get_transfer(ctx, resource, level, usage, box,
+			return r600_buffer_get_transfer(ctx, resource, usage, box,
 							ptransfer, data, staging, 0);
 		}
 	}
@@ -412,7 +420,7 @@ static void *r600_buffer_transfer_map(struct pipe_context *ctx,
 	}
 	data += box->x;
 
-	return r600_buffer_get_transfer(ctx, resource, level, usage, box,
+	return r600_buffer_get_transfer(ctx, resource, usage, box,
 					ptransfer, data, NULL, 0);
 }
 
@@ -468,6 +476,7 @@ static void r600_buffer_transfer_unmap(struct pipe_context *ctx,
 	if (rtransfer->staging)
 		r600_resource_reference(&rtransfer->staging, NULL);
 
+	pipe_resource_reference(&transfer->resource, NULL);
 	slab_free(&rctx->pool_transfers, transfer);
 }
 
@@ -543,7 +552,7 @@ struct pipe_resource *r600_buffer_create(struct pipe_screen *screen,
 }
 
 struct pipe_resource *r600_aligned_buffer_create(struct pipe_screen *screen,
-						 unsigned bind,
+						 unsigned flags,
 						 unsigned usage,
 						 unsigned size,
 						 unsigned alignment)
@@ -553,9 +562,9 @@ struct pipe_resource *r600_aligned_buffer_create(struct pipe_screen *screen,
 	memset(&buffer, 0, sizeof buffer);
 	buffer.target = PIPE_BUFFER;
 	buffer.format = PIPE_FORMAT_R8_UNORM;
-	buffer.bind = bind;
+	buffer.bind = 0;
 	buffer.usage = usage;
-	buffer.flags = 0;
+	buffer.flags = flags;
 	buffer.width0 = size;
 	buffer.height0 = 1;
 	buffer.depth0 = 1;

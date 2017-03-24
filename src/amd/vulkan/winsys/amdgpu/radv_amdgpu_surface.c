@@ -260,6 +260,30 @@ static int radv_compute_level(ADDR_HANDLE addrlib,
 		}
 	}
 
+	if (!is_stencil && AddrSurfInfoIn->flags.depth &&
+	    surf_level->mode == RADEON_SURF_MODE_2D && level == 0) {
+		ADDR_COMPUTE_HTILE_INFO_INPUT AddrHtileIn = {0};
+		ADDR_COMPUTE_HTILE_INFO_OUTPUT AddrHtileOut = {0};
+		AddrHtileIn.flags.tcCompatible = AddrSurfInfoIn->flags.tcCompatible;
+		AddrHtileIn.pitch = AddrSurfInfoOut->pitch;
+		AddrHtileIn.height = AddrSurfInfoOut->height;
+		AddrHtileIn.numSlices = AddrSurfInfoOut->depth;
+		AddrHtileIn.blockWidth = ADDR_HTILE_BLOCKSIZE_8;
+		AddrHtileIn.blockHeight = ADDR_HTILE_BLOCKSIZE_8;
+		AddrHtileIn.pTileInfo = AddrSurfInfoOut->pTileInfo;
+		AddrHtileIn.tileIndex = AddrSurfInfoOut->tileIndex;
+		AddrHtileIn.macroModeIndex = AddrSurfInfoOut->macroModeIndex;
+
+		ret = AddrComputeHtileInfo(addrlib,
+		                           &AddrHtileIn,
+		                           &AddrHtileOut);
+
+		if (ret == ADDR_OK) {
+			surf->htile_size = AddrHtileOut.htileBytes;
+			surf->htile_slice_size = AddrHtileOut.sliceSize;
+			surf->htile_alignment = AddrHtileOut.baseAlign;
+		}
+	}
 	return 0;
 }
 
@@ -274,6 +298,19 @@ static void radv_set_micro_tile_mode(struct radeon_surf *surf,
 		surf->micro_tile_mode = G_009910_MICRO_TILE_MODE(tile_mode);
 }
 
+static unsigned cik_get_macro_tile_index(struct radeon_surf *surf)
+{
+	unsigned index, tileb;
+
+	tileb = 8 * 8 * surf->bpe;
+	tileb = MIN2(surf->tile_split, tileb);
+
+	for (index = 0; tileb > 64; index++)
+		tileb >>= 1;
+
+	assert(index < 16);
+	return index;
+}
 
 static int radv_amdgpu_winsys_surface_init(struct radeon_winsys *_ws,
 					   struct radeon_surf *surf)
@@ -435,12 +472,15 @@ static int radv_amdgpu_winsys_surface_init(struct radeon_winsys *_ws,
 				AddrSurfInfoIn.tileIndex = 10; /* 2D displayable */
 			else
 				AddrSurfInfoIn.tileIndex = 14; /* 2D non-displayable */
+			AddrSurfInfoOut.macroModeIndex = cik_get_macro_tile_index(surf);
 		}
 	}
 
 	surf->bo_size = 0;
 	surf->dcc_size = 0;
 	surf->dcc_alignment = 1;
+	surf->htile_size = surf->htile_slice_size = 0;
+	surf->htile_alignment = 1;
 
 	/* Calculate texture layout information. */
 	for (level = 0; level <= surf->last_level; level++) {

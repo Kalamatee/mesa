@@ -290,6 +290,7 @@ enum tgsi_property_name {
    TGSI_PROPERTY_CS_FIXED_BLOCK_WIDTH,
    TGSI_PROPERTY_CS_FIXED_BLOCK_HEIGHT,
    TGSI_PROPERTY_CS_FIXED_BLOCK_DEPTH,
+   TGSI_PROPERTY_MUL_ZERO_WINS,
    TGSI_PROPERTY_COUNT,
 };
 
@@ -345,7 +346,7 @@ struct tgsi_property_data {
 #define TGSI_OPCODE_SLT                 14
 #define TGSI_OPCODE_SGE                 15
 #define TGSI_OPCODE_MAD                 16
-#define TGSI_OPCODE_SUB                 17
+#define TGSI_OPCODE_TEX_LZ              17
 #define TGSI_OPCODE_LRP                 18
 #define TGSI_OPCODE_FMA                 19
 #define TGSI_OPCODE_SQRT                20
@@ -353,7 +354,7 @@ struct tgsi_property_data {
 #define TGSI_OPCODE_F2U64               22
 #define TGSI_OPCODE_F2I64               23
 #define TGSI_OPCODE_FRC                 24
-#define TGSI_OPCODE_CLAMP               25
+#define TGSI_OPCODE_TXF_LZ              25
 #define TGSI_OPCODE_FLR                 26
 #define TGSI_OPCODE_ROUND               27
 #define TGSI_OPCODE_EX2                 28
@@ -361,7 +362,7 @@ struct tgsi_property_data {
 #define TGSI_OPCODE_POW                 30
 #define TGSI_OPCODE_XPD                 31
 #define TGSI_OPCODE_U2I64               32
-#define TGSI_OPCODE_ABS                 33
+/* gap */
 #define TGSI_OPCODE_I2I64               34
 #define TGSI_OPCODE_DPH                 35
 #define TGSI_OPCODE_COS                 36
@@ -397,7 +398,7 @@ struct tgsi_property_data {
 #define TGSI_OPCODE_CMP                 66
 #define TGSI_OPCODE_SCS                 67
 #define TGSI_OPCODE_TXB                 68
-                                /* gap */
+#define TGSI_OPCODE_FBFETCH             69
 #define TGSI_OPCODE_DIV                 70
 #define TGSI_OPCODE_DP2                 71
 #define TGSI_OPCODE_TXL                 72
@@ -601,7 +602,10 @@ struct tgsi_property_data {
 #define TGSI_OPCODE_U64DIV              245
 #define TGSI_OPCODE_I64MOD              246
 #define TGSI_OPCODE_U64MOD              247
-#define TGSI_OPCODE_LAST                248
+
+#define TGSI_OPCODE_DDIV                248
+
+#define TGSI_OPCODE_LAST                249
 
 /**
  * Opcode is the operation code to execute. A given operation defines the

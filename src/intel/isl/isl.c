@@ -56,7 +56,7 @@ static const struct {
    [5] = {24, 32,  4},
    [6] = {24, 32,  4},
    [7] = {32, 32,  4, 24},
-   [8] = {52, 64, 32, 40},
+   [8] = {64, 64, 32, 40},
    [9] = {64, 64, 32, 40},
 };
 
@@ -480,7 +480,22 @@ isl_choose_image_alignment_el(const struct isl_device *dev,
                               enum isl_msaa_layout msaa_layout,
                               struct isl_extent3d *image_align_el)
 {
-   if (info->format == ISL_FORMAT_HIZ) {
+   const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
+   if (fmtl->txc == ISL_TXC_MCS) {
+      assert(tiling == ISL_TILING_Y0);
+
+      /*
+       * IvyBrigde PRM Vol 2, Part 1, "11.7 MCS Buffer for Render Target(s)":
+       *
+       * Height, width, and layout of MCS buffer in this case must match with
+       * Render Target height, width, and layout. MCS buffer is tiledY.
+       *
+       * To avoid wasting memory, choose the smallest alignment possible:
+       * HALIGN_4 and VALIGN_4.
+       */
+      *image_align_el = isl_extent3d(4, 4, 1);
+      return;
+   } else if (info->format == ISL_FORMAT_HIZ) {
       assert(ISL_DEV_GEN(dev) >= 6);
       /* HiZ surfaces are always aligned to 16x8 pixels in the primary surface
        * which works out to 2x2 HiZ elments.
@@ -980,65 +995,12 @@ isl_calc_array_pitch_el_rows(const struct isl_device *dev,
    return pitch_el_rows;
 }
 
-/**
- * Calculate the pitch of each surface row, in bytes.
- */
 static uint32_t
-isl_calc_linear_row_pitch(const struct isl_device *dev,
-                          const struct isl_surf_init_info *restrict info,
-                          const struct isl_extent2d *phys_slice0_sa)
+isl_calc_row_pitch_alignment(const struct isl_surf_init_info *surf_info,
+                             const struct isl_tile_info *tile_info)
 {
-   const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
-
-   uint32_t row_pitch = info->min_pitch;
-
-   /* First, align the surface to a cache line boundary, as the PRM explains
-    * below.
-    *
-    * From the Broadwell PRM >> Volume 5: Memory Views >> Common Surface
-    * Formats >> Surface Padding Requirements >> Render Target and Media
-    * Surfaces:
-    *
-    *    The data port accesses data (pixels) outside of the surface if they
-    *    are contained in the same cache request as pixels that are within the
-    *    surface. These pixels will not be returned by the requesting message,
-    *    however if these pixels lie outside of defined pages in the GTT,
-    *    a GTT error will result when the cache request is processed. In order
-    *    to avoid these GTT errors, “padding” at the bottom of the surface is
-    *    sometimes necessary.
-    *
-    * From the Broadwell PRM >> Volume 5: Memory Views >> Common Surface
-    * Formats >> Surface Padding Requirements >> Sampling Engine Surfaces:
-    *
-    *    The sampling engine accesses texels outside of the surface if they
-    *    are contained in the same cache line as texels that are within the
-    *    surface.  These texels will not participate in any calculation
-    *    performed by the sampling engine and will not affect the result of
-    *    any sampling engine operation, however if these texels lie outside of
-    *    defined pages in the GTT, a GTT error will result when the cache line
-    *    is accessed. In order to avoid these GTT errors, “padding” at the
-    *    bottom and right side of a sampling engine surface is sometimes
-    *    necessary.
-    *
-    *    It is possible that a cache line will straddle a page boundary if the
-    *    base address or pitch is not aligned. All pages included in the cache
-    *    lines that are part of the surface must map to valid GTT entries to
-    *    avoid errors. To determine the necessary padding on the bottom and
-    *    right side of the surface, refer to the table in  Alignment Unit Size
-    *    section for the i and j parameters for the surface format in use. The
-    *    surface must then be extended to the next multiple of the alignment
-    *    unit size in each dimension, and all texels contained in this
-    *    extended surface must have valid GTT entries.
-    *
-    *    For example, suppose the surface size is 15 texels by 10 texels and
-    *    the alignment parameters are i=4 and j=2. In this case, the extended
-    *    surface would be 16 by 10. Note that these calculations are done in
-    *    texels, and must be converted to bytes based on the surface format
-    *    being used to determine whether additional pages need to be defined.
-    */
-   assert(phys_slice0_sa->w % fmtl->bw == 0);
-   const uint32_t bs = fmtl->bpb / 8;
-   row_pitch = MAX(row_pitch, bs * (phys_slice0_sa->w / fmtl->bw));
+   if (tile_info->tiling != ISL_TILING_LINEAR)
+      return tile_info->phys_extent_B.width;
 
    /* From the Broadwel PRM >> Volume 2d: Command Reference: Structures >>
     * RENDER_SURFACE_STATE Surface Pitch (p349):
@@ -1054,15 +1016,91 @@ isl_calc_linear_row_pitch(const struct isl_device *dev,
     *    - For other linear surfaces, the pitch can be any multiple of
     *      bytes.
     */
-   if (info->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) {
-      if (isl_format_is_yuv(info->format)) {
-         row_pitch = isl_align_npot(row_pitch, 2 * bs);
+   const struct isl_format_layout *fmtl = isl_format_get_layout(surf_info->format);
+   const uint32_t bs = fmtl->bpb / 8;
+
+   if (surf_info->usage & ISL_SURF_USAGE_RENDER_TARGET_BIT) {
+      if (isl_format_is_yuv(surf_info->format)) {
+         return 2 * bs;
       } else  {
-         row_pitch = isl_align_npot(row_pitch, bs);
+         return bs;
       }
    }
 
-   return row_pitch;
+   return 1;
+}
+
+static uint32_t
+isl_calc_linear_min_row_pitch(const struct isl_device *dev,
+                              const struct isl_surf_init_info *info,
+                              const struct isl_extent2d *phys_slice0_sa,
+                              uint32_t alignment)
+{
+   const struct isl_format_layout *fmtl = isl_format_get_layout(info->format);
+   const uint32_t bs = fmtl->bpb / 8;
+
+   assert(phys_slice0_sa->w % fmtl->bw == 0);
+
+   uint32_t min_row_pitch = bs * (phys_slice0_sa->w / fmtl->bw);
+   min_row_pitch = MAX2(min_row_pitch, info->min_pitch);
+   min_row_pitch = isl_align_npot(min_row_pitch, alignment);
+
+   return min_row_pitch;
+}
+
+static uint32_t
+isl_calc_tiled_min_row_pitch(const struct isl_device *dev,
+                             const struct isl_surf_init_info *surf_info,
+                             const struct isl_tile_info *tile_info,
+                             const struct isl_extent2d *phys_slice0_sa,
+                             uint32_t alignment)
+{
+   const struct isl_format_layout *fmtl = isl_format_get_layout(surf_info->format);
+
+   assert(fmtl->bpb % tile_info->format_bpb == 0);
+   assert(phys_slice0_sa->w % fmtl->bw == 0);
+
+   const uint32_t tile_el_scale = fmtl->bpb / tile_info->format_bpb;
+   const uint32_t total_w_el = phys_slice0_sa->width / fmtl->bw;
+   const uint32_t total_w_tl =
+      isl_align_div(total_w_el * tile_el_scale,
+                    tile_info->logical_extent_el.width);
+
+   uint32_t min_row_pitch = total_w_tl * tile_info->phys_extent_B.width;
+   min_row_pitch = MAX2(min_row_pitch, surf_info->min_pitch);
+   min_row_pitch = isl_align_npot(min_row_pitch, alignment);
+
+   return min_row_pitch;
+}
+
+static uint32_t
+isl_calc_min_row_pitch(const struct isl_device *dev,
+                       const struct isl_surf_init_info *surf_info,
+                       const struct isl_tile_info *tile_info,
+                       const struct isl_extent2d *phys_slice0_sa,
+                       uint32_t alignment)
+{
+   if (tile_info->tiling == ISL_TILING_LINEAR) {
+      return isl_calc_linear_min_row_pitch(dev, surf_info, phys_slice0_sa,
+                                           alignment);
+   } else {
+      return isl_calc_tiled_min_row_pitch(dev, surf_info, tile_info,
+                                          phys_slice0_sa, alignment);
+   }
+}
+
+static uint32_t
+isl_calc_row_pitch(const struct isl_device *dev,
+                   const struct isl_surf_init_info *surf_info,
+                   const struct isl_tile_info *tile_info,
+                   enum isl_dim_layout dim_layout,
+                   const struct isl_extent2d *phys_slice0_sa)
+{
+   const uint32_t alignment =
+      isl_calc_row_pitch_alignment(surf_info, tile_info);
+
+   return isl_calc_min_row_pitch(dev, surf_info, tile_info, phys_slice0_sa,
+                                 alignment);
 }
 
 /**
@@ -1237,9 +1275,11 @@ isl_surf_init_s(const struct isl_device *dev,
    uint32_t pad_bytes;
    isl_apply_surface_padding(dev, info, &tile_info, &total_h_el, &pad_bytes);
 
-   uint32_t row_pitch, size, base_alignment;
+   const uint32_t row_pitch = isl_calc_row_pitch(dev, info, &tile_info,
+                                                 dim_layout, &phys_slice0_sa);
+
+   uint32_t size, base_alignment;
    if (tiling == ISL_TILING_LINEAR) {
-      row_pitch = isl_calc_linear_row_pitch(dev, info, &phys_slice0_sa);
       size = row_pitch * total_h_el + pad_bytes;
 
       /* From the Broadwell PRM Vol 2d, RENDER_SURFACE_STATE::SurfaceBaseAddress:
@@ -1261,21 +1301,6 @@ isl_surf_init_s(const struct isl_device *dev,
       }
       base_alignment = isl_round_up_to_power_of_two(base_alignment);
    } else {
-      assert(fmtl->bpb % tile_info.format_bpb == 0);
-      const uint32_t tile_el_scale = fmtl->bpb / tile_info.format_bpb;
-
-      assert(phys_slice0_sa.w % fmtl->bw == 0);
-      const uint32_t total_w_el = phys_slice0_sa.width / fmtl->bw;
-      const uint32_t total_w_tl =
-         isl_align_div(total_w_el * tile_el_scale,
-                       tile_info.logical_extent_el.width);
-
-      row_pitch = total_w_tl * tile_info.phys_extent_B.width;
-      if (row_pitch < info->min_pitch) {
-         row_pitch = isl_align_npot(info->min_pitch,
-                                    tile_info.phys_extent_B.width);
-      }
-
       total_h_el += isl_align_div_npot(pad_bytes, row_pitch);
       const uint32_t total_h_tl =
          isl_align_div(total_h_el, tile_info.logical_extent_el.height);
@@ -1323,7 +1348,7 @@ isl_surf_get_tile_info(const struct isl_device *dev,
    isl_tiling_get_info(dev, surf->tiling, fmtl->bpb, tile_info);
 }
 
-void
+bool
 isl_surf_get_hiz_surf(const struct isl_device *dev,
                       const struct isl_surf *surf,
                       struct isl_surf *hiz_surf)
@@ -1391,20 +1416,20 @@ isl_surf_get_hiz_surf(const struct isl_device *dev,
     */
    const unsigned samples = ISL_DEV_GEN(dev) >= 9 ? 1 : surf->samples;
 
-   isl_surf_init(dev, hiz_surf,
-                 .dim = surf->dim,
-                 .format = ISL_FORMAT_HIZ,
-                 .width = surf->logical_level0_px.width,
-                 .height = surf->logical_level0_px.height,
-                 .depth = surf->logical_level0_px.depth,
-                 .levels = surf->levels,
-                 .array_len = surf->logical_level0_px.array_len,
-                 .samples = samples,
-                 .usage = ISL_SURF_USAGE_HIZ_BIT,
-                 .tiling_flags = ISL_TILING_HIZ_BIT);
+   return isl_surf_init(dev, hiz_surf,
+                        .dim = surf->dim,
+                        .format = ISL_FORMAT_HIZ,
+                        .width = surf->logical_level0_px.width,
+                        .height = surf->logical_level0_px.height,
+                        .depth = surf->logical_level0_px.depth,
+                        .levels = surf->levels,
+                        .array_len = surf->logical_level0_px.array_len,
+                        .samples = samples,
+                        .usage = ISL_SURF_USAGE_HIZ_BIT,
+                        .tiling_flags = ISL_TILING_HIZ_BIT);
 }
 
-void
+bool
 isl_surf_get_mcs_surf(const struct isl_device *dev,
                       const struct isl_surf *surf,
                       struct isl_surf *mcs_surf)
@@ -1417,6 +1442,16 @@ isl_surf_get_mcs_surf(const struct isl_device *dev,
    assert(surf->levels == 1);
    assert(surf->logical_level0_px.depth == 1);
 
+   /* The "Auxiliary Surface Pitch" field in RENDER_SURFACE_STATE is only 9
+    * bits which means the maximum pitch of a compression surface is 512
+    * tiles or 64KB (since MCS is always Y-tiled).  Since a 16x MCS buffer is
+    * 64bpp, this gives us a maximum width of 8192 pixels.  We can create
+    * larger multisampled surfaces, we just can't compress them.   For 2x, 4x,
+    * and 8x, we have enough room for the full 16k supported by the hardware.
+    */
+   if (surf->samples == 16 && surf->logical_level0_px.width > 8192)
+      return false;
+
    enum isl_format mcs_format;
    switch (surf->samples) {
    case 2:  mcs_format = ISL_FORMAT_MCS_2X;  break;
@@ -1427,17 +1462,17 @@ isl_surf_get_mcs_surf(const struct isl_device *dev,
       unreachable("Invalid sample count");
    }
 
-   isl_surf_init(dev, mcs_surf,
-                 .dim = ISL_SURF_DIM_2D,
-                 .format = mcs_format,
-                 .width = surf->logical_level0_px.width,
-                 .height = surf->logical_level0_px.height,
-                 .depth = 1,
-                 .levels = 1,
-                 .array_len = surf->logical_level0_px.array_len,
-                 .samples = 1, /* MCS surfaces are really single-sampled */
-                 .usage = ISL_SURF_USAGE_MCS_BIT,
-                 .tiling_flags = ISL_TILING_Y0_BIT);
+   return isl_surf_init(dev, mcs_surf,
+                        .dim = ISL_SURF_DIM_2D,
+                        .format = mcs_format,
+                        .width = surf->logical_level0_px.width,
+                        .height = surf->logical_level0_px.height,
+                        .depth = 1,
+                        .levels = 1,
+                        .array_len = surf->logical_level0_px.array_len,
+                        .samples = 1, /* MCS surfaces are really single-sampled */
+                        .usage = ISL_SURF_USAGE_MCS_BIT,
+                        .tiling_flags = ISL_TILING_Y0_BIT);
 }
 
 bool
@@ -1491,19 +1526,17 @@ isl_surf_get_ccs_surf(const struct isl_device *dev,
       return false;
    }
 
-   isl_surf_init(dev, ccs_surf,
-                 .dim = surf->dim,
-                 .format = ccs_format,
-                 .width = surf->logical_level0_px.width,
-                 .height = surf->logical_level0_px.height,
-                 .depth = surf->logical_level0_px.depth,
-                 .levels = surf->levels,
-                 .array_len = surf->logical_level0_px.array_len,
-                 .samples = 1,
-                 .usage = ISL_SURF_USAGE_CCS_BIT,
-                 .tiling_flags = ISL_TILING_CCS_BIT);
-
-   return true;
+   return isl_surf_init(dev, ccs_surf,
+                        .dim = surf->dim,
+                        .format = ccs_format,
+                        .width = surf->logical_level0_px.width,
+                        .height = surf->logical_level0_px.height,
+                        .depth = surf->logical_level0_px.depth,
+                        .levels = surf->levels,
+                        .array_len = surf->logical_level0_px.array_len,
+                        .samples = 1,
+                        .usage = ISL_SURF_USAGE_CCS_BIT,
+                        .tiling_flags = ISL_TILING_CCS_BIT);
 }
 
 void

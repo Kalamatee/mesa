@@ -295,15 +295,14 @@ brw_miptree_layout_2d(struct intel_mipmap_tree *mt)
    unsigned y = 0;
    unsigned width = mt->physical_width0;
    unsigned height = mt->physical_height0;
-   unsigned depth = mt->physical_depth0; /* number of array layers. */
+   /* Number of layers of array texture or slices of 3d texture (gen9+). */
+   unsigned depth = mt->physical_depth0;
    unsigned int bw, bh;
 
    _mesa_get_format_block_size(mt->format, &bw, &bh);
 
    mt->total_width = mt->physical_width0;
-
-   if (mt->compressed)
-       mt->total_width = ALIGN_NPOT(mt->total_width, bw);
+   mt->total_width = ALIGN_NPOT(mt->total_width, bw);
 
    /* May need to adjust width to accommodate the placement of
     * the 2nd mipmap.  This occurs when the alignment
@@ -313,17 +312,11 @@ brw_miptree_layout_2d(struct intel_mipmap_tree *mt)
    if (mt->first_level != mt->last_level) {
        unsigned mip1_width;
 
-       if (mt->compressed) {
-          mip1_width = ALIGN_NPOT(minify(mt->physical_width0, 1), mt->halign) +
-             ALIGN_NPOT(minify(mt->physical_width0, 2), bw);
-       } else {
-          mip1_width = ALIGN_NPOT(minify(mt->physical_width0, 1), mt->halign) +
-             minify(mt->physical_width0, 2);
-       }
+      mip1_width = ALIGN_NPOT(minify(mt->physical_width0, 1), mt->halign) +
+                   ALIGN_NPOT(minify(mt->physical_width0, 2), bw);
 
-       if (mip1_width > mt->total_width) {
-           mt->total_width = mip1_width;
-       }
+      if (mip1_width > mt->total_width)
+         mt->total_width = mip1_width;
    }
 
    mt->total_width /= bw;
@@ -335,8 +328,7 @@ brw_miptree_layout_2d(struct intel_mipmap_tree *mt)
       intel_miptree_set_level_info(mt, level, x, y, depth);
 
       img_height = ALIGN_NPOT(height, mt->valign);
-      if (mt->compressed)
-	 img_height /= bh;
+      img_height /= bh;
 
       if (mt->array_layout == ALL_SLICES_AT_EACH_LOD) {
          /* Compact arrays with separated miplevels */
@@ -771,7 +763,7 @@ intel_miptree_set_alignment(struct brw_context *brw,
    }
 }
 
-void
+bool
 brw_miptree_layout(struct brw_context *brw,
                    struct intel_mipmap_tree *mt,
                    uint32_t layout_flags)
@@ -781,10 +773,8 @@ brw_miptree_layout(struct brw_context *brw,
    intel_miptree_set_alignment(brw, mt, layout_flags);
    intel_miptree_set_total_width_height(brw, mt);
 
-   if (!mt->total_width || !mt->total_height) {
-      intel_miptree_release(&mt);
-      return;
-   }
+   if (!mt->total_width || !mt->total_height)
+      return false;
 
    /* On Gen9+ the alignment values are expressed in multiples of the block
     * size
@@ -798,5 +788,7 @@ brw_miptree_layout(struct brw_context *brw,
 
    if ((layout_flags & MIPTREE_LAYOUT_FOR_BO) == 0)
       mt->tiling = brw_miptree_choose_tiling(brw, mt, layout_flags);
+
+   return true;
 }
 

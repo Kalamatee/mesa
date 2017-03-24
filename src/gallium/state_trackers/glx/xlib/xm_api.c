@@ -189,7 +189,7 @@ xmesa_close_display(Display *display)
 static XMesaDisplay
 xmesa_init_display( Display *display )
 {
-   pipe_static_mutex(init_mutex);
+   static mtx_t init_mutex = _MTX_INITIALIZER_NP;
    XMesaDisplay xmdpy;
    XMesaExtDisplayInfo *info;
 
@@ -197,14 +197,14 @@ xmesa_init_display( Display *display )
       return NULL;
    }
 
-   pipe_mutex_lock(init_mutex);
+   mtx_lock(&init_mutex);
 
    /* Look for XMesaDisplay which corresponds to this display */
    info = MesaExtInfo.head;
    while(info) {
       if (info->display == display) {
          /* Found it */
-         pipe_mutex_unlock(init_mutex);
+         mtx_unlock(&init_mutex);
          return  &info->mesaDisplay;
       }
       info = info->next;
@@ -216,7 +216,7 @@ xmesa_init_display( Display *display )
    /* allocate mesa display info */
    info = (XMesaExtDisplayInfo *) Xmalloc(sizeof(XMesaExtDisplayInfo));
    if (info == NULL) {
-      pipe_mutex_unlock(init_mutex);
+      mtx_unlock(&init_mutex);
       return NULL;
    }
    info->display = display;
@@ -242,7 +242,7 @@ xmesa_init_display( Display *display )
    }
 
    if (xmdpy->screen && xmdpy->smapi) {
-      pipe_mutex_init(xmdpy->mutex);
+      (void) mtx_init(&xmdpy->mutex, mtx_plain);
    }
    else {
       if (xmdpy->screen) {
@@ -255,7 +255,7 @@ xmesa_init_display( Display *display )
       xmdpy->display = NULL;
    }
 
-   pipe_mutex_unlock(init_mutex);
+   mtx_unlock(&init_mutex);
 
    return xmdpy;
 }
@@ -372,9 +372,9 @@ xmesa_get_window_size(Display *dpy, XMesaBuffer b,
    XMesaDisplay xmdpy = xmesa_init_display(dpy);
    Status stat;
 
-   pipe_mutex_lock(xmdpy->mutex);
+   mtx_lock(&xmdpy->mutex);
    stat = get_drawable_size(dpy, b->ws.drawable, width, height);
-   pipe_mutex_unlock(xmdpy->mutex);
+   mtx_unlock(&xmdpy->mutex);
 
    if (!stat) {
       /* probably querying a window that's recently been destroyed */

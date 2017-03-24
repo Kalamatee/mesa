@@ -41,6 +41,8 @@ struct amdgpu_ctx {
    amdgpu_bo_handle user_fence_bo;
    uint64_t *user_fence_cpu_address_base;
    int refcount;
+   unsigned initial_num_total_rejected_cs;
+   unsigned num_rejected_cs;
 };
 
 struct amdgpu_cs_buffer {
@@ -91,6 +93,11 @@ struct amdgpu_cs_context {
    struct amdgpu_cs_buffer     *slab_buffers;
 
    int                         buffer_indices_hashlist[4096];
+
+   struct amdgpu_winsys_bo     *last_added_bo;
+   unsigned                    last_added_bo_index;
+   unsigned                    last_added_bo_usage;
+   uint64_t                    last_added_bo_priority_usage;
 
    unsigned                    max_dependencies;
 

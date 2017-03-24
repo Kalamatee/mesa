@@ -64,7 +64,7 @@ intel_miptree_alloc_mcs(struct brw_context *brw,
  */
 static enum intel_msaa_layout
 compute_msaa_layout(struct brw_context *brw, mesa_format format,
-                    bool disable_aux_buffers)
+                    enum intel_aux_disable aux_disable)
 {
    /* Prior to Gen7, all MSAA surfaces used IMS layout. */
    if (brw->gen < 7)
@@ -90,7 +90,7 @@ compute_msaa_layout(struct brw_context *brw, mesa_format format,
        */
       if (brw->gen == 7 && _mesa_get_format_datatype(format) == GL_INT) {
          return INTEL_MSAA_LAYOUT_UMS;
-      } else if (disable_aux_buffers) {
+      } else if (aux_disable & INTEL_AUX_DISABLE_MCS) {
          /* We can't use the CMS layout because it uses an aux buffer, the MCS
           * buffer. So fallback to UMS, which is identical to CMS without the
           * MCS. */
@@ -149,7 +149,7 @@ intel_miptree_supports_non_msrt_fast_clear(struct brw_context *brw,
    if (brw->gen < 7)
       return false;
 
-   if (mt->disable_aux_buffers)
+   if (mt->aux_disable & INTEL_AUX_DISABLE_MCS)
       return false;
 
    /* This function applies only to non-multisampled render targets. */
@@ -209,9 +209,8 @@ intel_miptree_supports_non_msrt_fast_clear(struct brw_context *brw,
 
    if (brw->gen >= 9) {
       mesa_format linear_format = _mesa_get_srgb_format_linear(mt->format);
-      const uint32_t brw_format = brw_format_for_mesa_format(linear_format);
-      return isl_format_supports_lossless_compression(&brw->screen->devinfo,
-                                                      brw_format);
+      const uint32_t brw_format = brw_isl_format_for_mesa_format(linear_format);
+      return isl_format_supports_ccs_e(&brw->screen->devinfo, brw_format);
    } else
       return true;
 }
@@ -322,8 +321,9 @@ intel_miptree_create_layout(struct brw_context *brw,
    mt->logical_width0 = width0;
    mt->logical_height0 = height0;
    mt->logical_depth0 = depth0;
-   mt->disable_aux_buffers = (layout_flags & MIPTREE_LAYOUT_DISABLE_AUX) != 0;
-   mt->no_ccs = true;
+   mt->aux_disable = (layout_flags & MIPTREE_LAYOUT_DISABLE_AUX) != 0 ?
+      INTEL_AUX_DISABLE_ALL : INTEL_AUX_DISABLE_NONE;
+   mt->aux_disable |= INTEL_AUX_DISABLE_CCS;
    mt->is_scanout = (layout_flags & MIPTREE_LAYOUT_FOR_SCANOUT) != 0;
    exec_list_make_empty(&mt->hiz_map);
    exec_list_make_empty(&mt->color_resolve_map);
@@ -336,8 +336,7 @@ intel_miptree_create_layout(struct brw_context *brw,
    int depth_multiply = 1;
    if (num_samples > 1) {
       /* Adjust width/height/depth for MSAA */
-      mt->msaa_layout = compute_msaa_layout(brw, format,
-                                            mt->disable_aux_buffers);
+      mt->msaa_layout = compute_msaa_layout(brw, format, mt->aux_disable);
       if (mt->msaa_layout == INTEL_MSAA_LAYOUT_IMS) {
          /* From the Ivybridge PRM, Volume 1, Part 1, page 108:
           * "If the surface is multisampled and it is a depth or stencil
@@ -526,9 +525,12 @@ intel_miptree_create_layout(struct brw_context *brw,
              (layout_flags & MIPTREE_LAYOUT_FORCE_HALIGN16) == 0);
    }
 
-   brw_miptree_layout(brw, mt, layout_flags);
+   if (!brw_miptree_layout(brw, mt, layout_flags)) {
+      intel_miptree_release(&mt);
+      return NULL;
+   }
 
-   if (mt->disable_aux_buffers)
+   if (mt->aux_disable & INTEL_AUX_DISABLE_MCS)
       assert(mt->msaa_layout != INTEL_MSAA_LAYOUT_CMS);
 
    return mt;
@@ -628,13 +630,8 @@ miptree_create(struct brw_context *brw,
                                     first_level, last_level, width0,
                                     height0, depth0, num_samples,
                                     layout_flags);
-   /*
-    * pitch == 0 || height == 0  indicates the null texture
-    */
-   if (!mt || !mt->total_width || !mt->total_height) {
-      intel_miptree_release(&mt);
+   if (!mt)
       return NULL;
-   }
 
    if (mt->tiling == (I915_TILING_Y | I915_TILING_X))
       mt->tiling = I915_TILING_Y;
@@ -736,7 +733,7 @@ intel_miptree_create(struct brw_context *brw,
     */
    if (intel_tiling_supports_non_msrt_mcs(brw, mt->tiling) &&
        intel_miptree_supports_non_msrt_fast_clear(brw, mt)) {
-      mt->no_ccs = false;
+      mt->aux_disable &= ~INTEL_AUX_DISABLE_CCS;
       assert(brw->gen < 8 || mt->halign == 16 || num_samples <= 1);
 
       /* On Gen9+ clients are not currently capable of consuming compressed
@@ -858,7 +855,7 @@ intel_update_winsys_renderbuffer_miptree(struct brw_context *intel,
     */
    if (intel_tiling_supports_non_msrt_mcs(intel, singlesample_mt->tiling) &&
        intel_miptree_supports_non_msrt_fast_clear(intel, singlesample_mt)) {
-      singlesample_mt->no_ccs = false;
+      singlesample_mt->aux_disable &= ~INTEL_AUX_DISABLE_CCS;
    }
 
    if (num_samples == 0) {
@@ -1524,7 +1521,7 @@ intel_miptree_alloc_mcs(struct brw_context *brw,
 {
    assert(brw->gen >= 7); /* MCS only used on Gen7+ */
    assert(mt->mcs_buf == NULL);
-   assert(!mt->disable_aux_buffers);
+   assert((mt->aux_disable & INTEL_AUX_DISABLE_MCS) == 0);
 
    /* Choose the correct format for the MCS buffer.  All that really matters
     * is that we allocate the right buffer size, since we'll always be
@@ -1583,8 +1580,7 @@ intel_miptree_alloc_non_msrt_mcs(struct brw_context *brw,
                                  bool is_lossless_compressed)
 {
    assert(mt->mcs_buf == NULL);
-   assert(!mt->disable_aux_buffers);
-   assert(!mt->no_ccs);
+   assert(!(mt->aux_disable & (INTEL_AUX_DISABLE_MCS | INTEL_AUX_DISABLE_CCS)));
 
    struct isl_surf temp_main_surf;
    struct isl_surf temp_ccs_surf;
@@ -1907,7 +1903,13 @@ intel_hiz_miptree_buf_create(struct brw_context *brw,
    buf->aux_base.bo = buf->mt->bo;
    buf->aux_base.size = buf->mt->total_height * buf->mt->pitch;
    buf->aux_base.pitch = buf->mt->pitch;
-   buf->aux_base.qpitch = buf->mt->qpitch;
+
+   /* On gen6 hiz is unconditionally laid out packing all slices
+    * at each level-of-detail (LOD). This means there is no valid qpitch
+    * setting. In fact, this is ignored when hardware is setup - there is no
+    * hardware qpitch setting of hiz on gen6.
+    */
+   buf->aux_base.qpitch = 0;
 
    return buf;
 }
@@ -1922,7 +1924,7 @@ intel_miptree_wants_hiz_buffer(struct brw_context *brw,
    if (mt->hiz_buf != NULL)
       return false;
 
-   if (mt->disable_aux_buffers)
+   if (mt->aux_disable & INTEL_AUX_DISABLE_HIZ)
       return false;
 
    switch (mt->format) {
@@ -1942,7 +1944,7 @@ intel_miptree_alloc_hiz(struct brw_context *brw,
 			struct intel_mipmap_tree *mt)
 {
    assert(mt->hiz_buf == NULL);
-   assert(!mt->disable_aux_buffers);
+   assert((mt->aux_disable & INTEL_AUX_DISABLE_HIZ) == 0);
 
    if (brw->gen == 7) {
       mt->hiz_buf = intel_gen7_hiz_buf_create(brw, mt);
@@ -2160,7 +2162,8 @@ intel_miptree_check_color_resolve(const struct brw_context *brw,
                                   const struct intel_mipmap_tree *mt,
                                   unsigned level, unsigned layer)
 {
-   if (mt->no_ccs || !mt->mcs_buf)
+
+   if ((mt->aux_disable & INTEL_AUX_DISABLE_CCS) || !mt->mcs_buf)
       return;
 
    /* Fast color clear is supported for mipmapped surfaces only on Gen8+. */
@@ -2240,7 +2243,7 @@ intel_miptree_needs_color_resolve(const struct brw_context *brw,
                                   const struct intel_mipmap_tree *mt,
                                   int flags)
 {
-   if (mt->no_ccs)
+   if (mt->aux_disable & INTEL_AUX_DISABLE_CCS)
       return false;
 
    const bool is_lossless_compressed =
@@ -2334,19 +2337,34 @@ intel_miptree_make_shareable(struct brw_context *brw,
 
    if (mt->mcs_buf) {
       intel_miptree_all_slices_resolve_color(brw, mt, 0);
-      mt->no_ccs = true;
+      mt->aux_disable |= (INTEL_AUX_DISABLE_CCS | INTEL_AUX_DISABLE_MCS);
       drm_intel_bo_unreference(mt->mcs_buf->bo);
       free(mt->mcs_buf);
       mt->mcs_buf = NULL;
+
+      /* Any pending MCS/CCS operations are no longer needed. Trying to
+       * execute any will likely crash due to the missing aux buffer. So let's
+       * delete all pending ops.
+       */
+      exec_list_make_empty(&mt->color_resolve_map);
    }
 
    if (mt->hiz_buf) {
+      mt->aux_disable |= INTEL_AUX_DISABLE_HIZ;
       intel_miptree_all_slices_resolve_depth(brw, mt);
       intel_miptree_hiz_buffer_free(mt->hiz_buf);
       mt->hiz_buf = NULL;
-   }
 
-   mt->disable_aux_buffers = true;
+      for (uint32_t l = mt->first_level; l <= mt->last_level; ++l) {
+         mt->level[l].has_hiz = false;
+      }
+
+      /* Any pending HiZ operations are no longer needed. Trying to execute
+       * any will likely crash due to the missing aux buffer. So let's delete
+       * all pending ops.
+       */
+      exec_list_make_empty(&mt->hiz_map);
+   }
 }
 
 
@@ -3423,19 +3441,14 @@ intel_miptree_get_aux_isl_surf(struct brw_context *brw,
       } else if (intel_miptree_is_lossless_compressed(brw, mt)) {
          assert(brw->gen >= 9);
          *usage = ISL_AUX_USAGE_CCS_E;
-      } else if (!mt->no_ccs) {
+      } else if ((mt->aux_disable & INTEL_AUX_DISABLE_CCS) == 0) {
          *usage = ISL_AUX_USAGE_CCS_D;
       } else {
          unreachable("Invalid MCS miptree");
       }
    } else if (mt->hiz_buf) {
-      if (mt->hiz_buf->mt) {
-         aux_pitch = mt->hiz_buf->mt->pitch;
-         aux_qpitch = mt->hiz_buf->mt->qpitch;
-      } else {
-         aux_pitch = mt->hiz_buf->aux_base.pitch;
-         aux_qpitch = mt->hiz_buf->aux_base.qpitch;
-      }
+      aux_pitch = mt->hiz_buf->aux_base.pitch;
+      aux_qpitch = mt->hiz_buf->aux_base.qpitch;
 
       *usage = ISL_AUX_USAGE_HIZ;
    } else {

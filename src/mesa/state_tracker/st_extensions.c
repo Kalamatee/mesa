@@ -310,6 +310,8 @@ void st_init_limits(struct pipe_screen *screen,
       options->LowerBufferInterfaceBlocks = true;
    }
 
+   c->GLSLOptimizeConservatively =
+      screen->get_param(screen, PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY);
    c->LowerTessLevel = true;
    c->LowerCsDerivedVariables = true;
    c->PrimitiveRestartForPatches =
@@ -346,7 +348,7 @@ void st_init_limits(struct pipe_screen *screen,
    c->MaxGeometryTotalOutputComponents =
       screen->get_param(screen, PIPE_CAP_MAX_GEOMETRY_TOTAL_OUTPUT_COMPONENTS);
    c->MaxTessPatchComponents =
-      MAX2(screen->get_param(screen, PIPE_CAP_MAX_SHADER_PATCH_VARYINGS),
+      MIN2(screen->get_param(screen, PIPE_CAP_MAX_SHADER_PATCH_VARYINGS),
            MAX_VARYING) * 4;
 
    c->MinProgramTexelOffset =
@@ -586,6 +588,7 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_draw_instanced),               PIPE_CAP_TGSI_INSTANCEID                  },
       { o(ARB_fragment_program_shadow),      PIPE_CAP_TEXTURE_SHADOW_MAP               },
       { o(ARB_framebuffer_object),           PIPE_CAP_MIXED_FRAMEBUFFER_SIZES          },
+      { o(ARB_gpu_shader_int64),             PIPE_CAP_INT64                            },
       { o(ARB_indirect_parameters),          PIPE_CAP_MULTI_DRAW_INDIRECT_PARAMS       },
       { o(ARB_instanced_arrays),             PIPE_CAP_VERTEX_ELEMENT_INSTANCE_DIVISOR  },
       { o(ARB_occlusion_query),              PIPE_CAP_OCCLUSION_QUERY                  },
@@ -613,6 +616,8 @@ void st_init_extensions(struct pipe_screen *screen,
       { o(ARB_timer_query),                  PIPE_CAP_QUERY_TIMESTAMP                  },
       { o(ARB_transform_feedback2),          PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME       },
       { o(ARB_transform_feedback3),          PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS },
+
+      { o(KHR_blend_equation_advanced),      PIPE_CAP_TGSI_FS_FBFETCH                  },
 
       { o(EXT_blend_equation_separate),      PIPE_CAP_BLEND_EQUATION_SEPARATE          },
       { o(EXT_depth_bounds_test),            PIPE_CAP_DEPTH_BOUNDS_TEST                },
@@ -873,6 +878,12 @@ void st_init_extensions(struct pipe_screen *screen,
        options->force_glsl_version <= consts->GLSLVersion) {
       consts->ForceGLSLVersion = options->force_glsl_version;
    }
+
+   consts->AllowHigherCompatVersion = options->allow_higher_compat_version;
+
+   consts->ForceGLSLAbsSqrt = options->force_glsl_abs_sqrt;
+
+   consts->dri_config_options_sha1 = options->config_options_sha1;
 
    if (consts->GLSLVersion >= 400)
       extensions->ARB_gpu_shader5 = GL_TRUE;
@@ -1155,10 +1166,7 @@ void st_init_extensions(struct pipe_screen *screen,
    }
 #endif
 
-   if (screen->get_shader_param(screen, PIPE_SHADER_VERTEX,
-                                PIPE_SHADER_CAP_DOUBLES) &&
-       screen->get_shader_param(screen, PIPE_SHADER_FRAGMENT,
-                                PIPE_SHADER_CAP_DOUBLES)) {
+   if (screen->get_param(screen, PIPE_CAP_DOUBLES)) {
       extensions->ARB_gpu_shader_fp64 = GL_TRUE;
       extensions->ARB_vertex_attrib_64bit = GL_TRUE;
    }

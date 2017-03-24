@@ -56,11 +56,7 @@ enum SWR_CLIPCODES
     GUARDBAND_BOTTOM = (0x80 << CLIPCODE_SHIFT | 0x8)
 };
 
-#define FRUSTUM_CLIP_MASK (FRUSTUM_LEFT|FRUSTUM_TOP|FRUSTUM_RIGHT|FRUSTUM_BOTTOM|FRUSTUM_NEAR|FRUSTUM_FAR)
 #define GUARDBAND_CLIP_MASK (FRUSTUM_NEAR|FRUSTUM_FAR|GUARDBAND_LEFT|GUARDBAND_TOP|GUARDBAND_RIGHT|GUARDBAND_BOTTOM|NEGW)
-
-void Clip(const float *pTriangle, const float *pAttribs, int numAttribs, float *pOutTriangles, 
-          int *numVerts, float *pOutAttribs);
 
 INLINE
 void ComputeClipCodes(const API_STATE& state, const simdvector& vertex, simdscalar& clipCodes, simdscalari viewportIndexes)
@@ -262,45 +258,6 @@ public:
         return _simd_movemask_ps(vClipCullMask);
     }
 
-    // clip a single primitive
-    int ClipScalar(PA_STATE& pa, uint32_t primIndex, float* pOutPos, float* pOutAttribs)
-    {
-        OSALIGNSIMD(float) inVerts[3 * 4];
-        OSALIGNSIMD(float) inAttribs[3 * KNOB_NUM_ATTRIBUTES * 4];
-
-        // transpose primitive position
-        __m128 verts[3];
-        pa.AssembleSingle(VERTEX_POSITION_SLOT, primIndex, verts);
-        _mm_store_ps(&inVerts[0], verts[0]);
-        _mm_store_ps(&inVerts[4], verts[1]);
-        _mm_store_ps(&inVerts[8], verts[2]);
-
-        // transpose attribs
-        uint32_t numScalarAttribs = this->state.linkageCount * 4;
-
-        int idx = 0;
-        DWORD slot = 0;
-        uint32_t mapIdx = 0;
-        uint32_t tmpLinkage = uint32_t(this->state.linkageMask);
-        while (_BitScanForward(&slot, tmpLinkage))
-        {
-            tmpLinkage &= ~(1 << slot);
-            // Compute absolute attrib slot in vertex array
-            uint32_t inputSlot = VERTEX_ATTRIB_START_SLOT + this->state.linkageMap[mapIdx++];
-            __m128 attrib[3];    // triangle attribs (always 4 wide)
-            pa.AssembleSingle(inputSlot, primIndex, attrib);
-            _mm_store_ps(&inAttribs[idx], attrib[0]);
-            _mm_store_ps(&inAttribs[idx + numScalarAttribs], attrib[1]);
-            _mm_store_ps(&inAttribs[idx + numScalarAttribs * 2], attrib[2]);
-            idx += 4;
-        }
-
-        int numVerts;
-        Clip(inVerts, inAttribs, numScalarAttribs, pOutPos, &numVerts, pOutAttribs);
-
-        return numVerts;
-    }
-
     // clip SIMD primitives
     void ClipSimd(const simdscalar& vPrimMask, const simdscalar& vClipMask, PA_STATE& pa, const simdscalari& vPrimId, const simdscalari& vViewportIdx)
     {
@@ -388,6 +345,7 @@ public:
             // so that the binner knows to bloat wide points later
             if (pa.binTopology == TOP_POINT_LIST)
                 clipTopology = TOP_POINT_LIST;
+
         }
         else if (NumVertsPerPrim == 2)
         {
@@ -399,7 +357,6 @@ public:
             SWR_ASSERT(0 && "Unexpected points in clipper.");
         }
         
-
         uint32_t* pVertexCount = (uint32_t*)&vNumClippedVerts;
         uint32_t* pPrimitiveId = (uint32_t*)&vPrimId;
         uint32_t* pViewportIdx = (uint32_t*)&vViewportIdx;
@@ -522,7 +479,6 @@ public:
             pfnBinner = GetBinTrianglesFunc((pa.pDC->pState->state.rastState.conservativeRast > 0));
             break;
         };
-
 
         // update clipper invocations pipeline stat
         uint32_t numInvoc = _mm_popcnt_u32(primMask);
@@ -650,7 +606,7 @@ private:
             }
             break;
         case FRUSTUM_FAR:       t = ComputeInterpFactor(_simd_sub_ps(v1[3], v1[2]), _simd_sub_ps(v2[3], v2[2])); break;
-        default: SWR_ASSERT(false, "invalid clipping plane: %d", ClippingPlane);
+        default: SWR_INVALID("invalid clipping plane: %d", ClippingPlane);
         };
 
         // interpolate position and store
@@ -711,7 +667,7 @@ private:
         case FRUSTUM_NEAR:      return _simd_cmpge_ps(v[2], this->state.rastState.clipHalfZ ? _simd_setzero_ps() : _simd_mul_ps(v[3], _simd_set1_ps(-1.0f)));
         case FRUSTUM_FAR:       return _simd_cmple_ps(v[2], v[3]);
         default:
-            SWR_ASSERT(false, "invalid clipping plane: %d", ClippingPlane);
+            SWR_INVALID("invalid clipping plane: %d", ClippingPlane);
             return _simd_setzero_ps();
         }
     }

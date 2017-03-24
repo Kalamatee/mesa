@@ -934,6 +934,12 @@ struct isl_view {
     * for texturing, they are ignored.
     */
    uint32_t base_array_layer;
+
+   /**
+    * Array Length
+    *
+    * Indicates the number of array elements starting at  Base Array Layer.
+    */
    uint32_t array_len;
 
    struct isl_swizzle swizzle;
@@ -1040,10 +1046,20 @@ bool isl_format_supports_filtering(const struct gen_device_info *devinfo,
                                    enum isl_format format);
 bool isl_format_supports_vertex_fetch(const struct gen_device_info *devinfo,
                                       enum isl_format format);
-bool isl_format_supports_lossless_compression(const struct gen_device_info *devinfo,
-                                              enum isl_format format);
+bool isl_format_supports_typed_writes(const struct gen_device_info *devinfo,
+                                      enum isl_format format);
+bool isl_format_supports_typed_reads(const struct gen_device_info *devinfo,
+                                     enum isl_format format);
+bool isl_format_supports_ccs_d(const struct gen_device_info *devinfo,
+                               enum isl_format format);
+bool isl_format_supports_ccs_e(const struct gen_device_info *devinfo,
+                               enum isl_format format);
 bool isl_format_supports_multisampling(const struct gen_device_info *devinfo,
                                        enum isl_format format);
+
+bool isl_formats_are_ccs_e_compatible(const struct gen_device_info *devinfo,
+                                      enum isl_format format1,
+                                      enum isl_format format2);
 
 bool isl_format_has_unorm_channel(enum isl_format fmt) ATTRIBUTE_CONST;
 bool isl_format_has_snorm_channel(enum isl_format fmt) ATTRIBUTE_CONST;
@@ -1265,12 +1281,12 @@ isl_surf_get_tile_info(const struct isl_device *dev,
                        const struct isl_surf *surf,
                        struct isl_tile_info *tile_info);
 
-void
+bool
 isl_surf_get_hiz_surf(const struct isl_device *dev,
                       const struct isl_surf *surf,
                       struct isl_surf *hiz_surf);
 
-void
+bool
 isl_surf_get_mcs_surf(const struct isl_device *dev,
                       const struct isl_surf *surf,
                       struct isl_surf *mcs_surf);

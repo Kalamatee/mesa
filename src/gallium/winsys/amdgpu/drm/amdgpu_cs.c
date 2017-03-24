@@ -178,6 +178,7 @@ static struct radeon_winsys_ctx *amdgpu_ctx_create(struct radeon_winsys *ws)
 
    ctx->ws = amdgpu_winsys(ws);
    ctx->refcount = 1;
+   ctx->initial_num_total_rejected_cs = ctx->ws->num_total_rejected_cs;
 
    r = amdgpu_cs_ctx_create(ctx->ws->dev, &ctx->ctx);
    if (r) {
@@ -227,6 +228,13 @@ amdgpu_ctx_query_reset_status(struct radeon_winsys_ctx *rwctx)
    uint32_t result, hangs;
    int r;
 
+   /* Return a failure due to a rejected command submission. */
+   if (ctx->ws->num_total_rejected_cs > ctx->initial_num_total_rejected_cs) {
+      return ctx->num_rejected_cs ? PIPE_GUILTY_CONTEXT_RESET :
+                                    PIPE_INNOCENT_CONTEXT_RESET;
+   }
+
+   /* Return a failure due to a GPU hang. */
    r = amdgpu_cs_query_reset_state(ctx->ctx, &result, &hangs);
    if (r) {
       fprintf(stderr, "amdgpu: amdgpu_cs_query_reset_state failed. (%i)\n", r);
@@ -436,6 +444,15 @@ static unsigned amdgpu_cs_add_buffer(struct radeon_winsys_cs *rcs,
    struct amdgpu_cs_buffer *buffer;
    int index;
 
+   /* Fast exit for no-op calls.
+    * This is very effective with suballocators and linear uploaders that
+    * are outside of the winsys.
+    */
+   if (bo == cs->last_added_bo &&
+       (usage & cs->last_added_bo_usage) == usage &&
+       (1ull << priority) & cs->last_added_bo_priority_usage)
+      return cs->last_added_bo_index;
+
    if (!bo->bo) {
       index = amdgpu_lookup_or_add_slab_buffer(acs, bo);
       if (index < 0)
@@ -456,6 +473,11 @@ static unsigned amdgpu_cs_add_buffer(struct radeon_winsys_cs *rcs,
    buffer->u.real.priority_usage |= 1llu << priority;
    buffer->usage |= usage;
    cs->flags[index] = MAX2(cs->flags[index], priority / 4);
+
+   cs->last_added_bo = bo;
+   cs->last_added_bo_index = index;
+   cs->last_added_bo_usage = buffer->usage;
+   cs->last_added_bo_priority_usage = buffer->u.real.priority_usage;
    return index;
 }
 
@@ -637,6 +659,7 @@ static bool amdgpu_init_cs_context(struct amdgpu_cs_context *cs,
    for (i = 0; i < ARRAY_SIZE(cs->buffer_indices_hashlist); i++) {
       cs->buffer_indices_hashlist[i] = -1;
    }
+   cs->last_added_bo = NULL;
 
    cs->request.number_of_ibs = 1;
    cs->request.ibs = &cs->ib[IB_MAIN];
@@ -668,6 +691,7 @@ static void amdgpu_cs_context_cleanup(struct amdgpu_cs_context *cs)
    for (i = 0; i < ARRAY_SIZE(cs->buffer_indices_hashlist); i++) {
       cs->buffer_indices_hashlist[i] = -1;
    }
+   cs->last_added_bo = NULL;
 }
 
 static void amdgpu_destroy_cs_context(struct amdgpu_cs_context *cs)
@@ -933,22 +957,6 @@ static void amdgpu_add_fence_dependency(struct amdgpu_cs *acs,
    bo->num_fences = new_num_fences;
 }
 
-/* Since the kernel driver doesn't synchronize execution between different
- * rings automatically, we have to add fence dependencies manually.
- */
-static void amdgpu_add_fence_dependencies(struct amdgpu_cs *acs)
-{
-   struct amdgpu_cs_context *cs = acs->csc;
-   int i;
-
-   cs->request.number_of_dependencies = 0;
-
-   for (i = 0; i < cs->num_real_buffers; i++)
-      amdgpu_add_fence_dependency(acs, &cs->real_buffers[i]);
-   for (i = 0; i < cs->num_slab_buffers; i++)
-      amdgpu_add_fence_dependency(acs, &cs->slab_buffers[i]);
-}
-
 static void amdgpu_add_fence(struct amdgpu_winsys_bo *bo,
                              struct pipe_fence_handle *fence)
 {
@@ -976,6 +984,38 @@ static void amdgpu_add_fence(struct amdgpu_winsys_bo *bo,
    bo->num_fences++;
 }
 
+/* Since the kernel driver doesn't synchronize execution between different
+ * rings automatically, we have to add fence dependencies manually.
+ */
+static void amdgpu_add_fence_dependencies(struct amdgpu_cs *acs)
+{
+   struct amdgpu_cs_context *cs = acs->csc;
+   unsigned num_buffers;
+   int i;
+
+   cs->request.number_of_dependencies = 0;
+
+   num_buffers = cs->num_real_buffers;
+   for (i = 0; i < num_buffers; i++) {
+      struct amdgpu_cs_buffer *buffer = &cs->real_buffers[i];
+      struct amdgpu_winsys_bo *bo = buffer->bo;
+
+      amdgpu_add_fence_dependency(acs, buffer);
+      p_atomic_inc(&bo->num_active_ioctls);
+      amdgpu_add_fence(bo, cs->fence);
+   }
+
+   num_buffers = cs->num_slab_buffers;
+   for (i = 0; i < num_buffers; i++) {
+      struct amdgpu_cs_buffer *buffer = &cs->slab_buffers[i];
+      struct amdgpu_winsys_bo *bo = buffer->bo;
+
+      amdgpu_add_fence_dependency(acs, buffer);
+      p_atomic_inc(&bo->num_active_ioctls);
+      amdgpu_add_fence(bo, cs->fence);
+   }
+}
+
 void amdgpu_cs_submit_ib(void *job, int thread_index)
 {
    struct amdgpu_cs *acs = (struct amdgpu_cs*)job;
@@ -997,11 +1037,11 @@ void amdgpu_cs_submit_ib(void *job, int thread_index)
       amdgpu_bo_handle *handles;
       unsigned num = 0;
 
-      pipe_mutex_lock(ws->global_bo_list_lock);
+      mtx_lock(&ws->global_bo_list_lock);
 
       handles = malloc(sizeof(handles[0]) * ws->num_buffers);
       if (!handles) {
-         pipe_mutex_unlock(ws->global_bo_list_lock);
+         mtx_unlock(&ws->global_bo_list_lock);
          amdgpu_cs_context_cleanup(cs);
          cs->error_code = -ENOMEM;
          return;
@@ -1016,7 +1056,7 @@ void amdgpu_cs_submit_ib(void *job, int thread_index)
                                 handles, NULL,
                                 &cs->request.resources);
       free(handles);
-      pipe_mutex_unlock(ws->global_bo_list_lock);
+      mtx_unlock(&ws->global_bo_list_lock);
    } else {
       r = amdgpu_bo_list_create(ws->dev, cs->num_real_buffers,
                                 cs->handles, cs->flags,
@@ -1031,16 +1071,25 @@ void amdgpu_cs_submit_ib(void *job, int thread_index)
       goto cleanup;
    }
 
-   r = amdgpu_cs_submit(acs->ctx->ctx, 0, &cs->request, 1);
+   if (acs->ctx->num_rejected_cs)
+      r = -ECANCELED;
+   else
+      r = amdgpu_cs_submit(acs->ctx->ctx, 0, &cs->request, 1);
+
    cs->error_code = r;
    if (r) {
       if (r == -ENOMEM)
          fprintf(stderr, "amdgpu: Not enough memory for command submission.\n");
+      else if (r == -ECANCELED)
+         fprintf(stderr, "amdgpu: The CS has been cancelled because the context is lost.\n");
       else
          fprintf(stderr, "amdgpu: The CS has been rejected, "
                  "see dmesg for more information (%i).\n", r);
 
       amdgpu_fence_signalled(cs->fence);
+
+      acs->ctx->num_rejected_cs++;
+      ws->num_total_rejected_cs++;
    } else {
       /* Success. */
       uint64_t *user_fence = NULL;
@@ -1067,11 +1116,9 @@ cleanup:
 void amdgpu_cs_sync_flush(struct radeon_winsys_cs *rcs)
 {
    struct amdgpu_cs *cs = amdgpu_cs(rcs);
-   struct amdgpu_winsys *ws = cs->ctx->ws;
 
    /* Wait for any pending ioctl of this CS to complete. */
-   if (util_queue_is_initialized(&ws->cs_queue))
-      util_queue_job_wait(&cs->flush_completed);
+   util_queue_fence_wait(&cs->flush_completed);
 }
 
 static int amdgpu_cs_flush(struct radeon_winsys_cs *rcs,
@@ -1127,11 +1174,10 @@ static int amdgpu_cs_flush(struct radeon_winsys_cs *rcs,
    }
 
    /* If the CS is not empty or overflowed.... */
-   if (radeon_emitted(&cs->main.base, 0) &&
+   if (likely(radeon_emitted(&cs->main.base, 0) &&
        cs->main.base.current.cdw <= cs->main.base.current.max_dw &&
-       !debug_get_option_noop()) {
+       !debug_get_option_noop())) {
       struct amdgpu_cs_context *cur = cs->csc;
-      unsigned i, num_buffers;
 
       /* Set IB sizes. */
       amdgpu_ib_finalize(&cs->main);
@@ -1157,39 +1203,30 @@ static int amdgpu_cs_flush(struct radeon_winsys_cs *rcs,
       if (fence)
          amdgpu_fence_reference(fence, cur->fence);
 
-      /* Prepare buffers. */
-      pipe_mutex_lock(ws->bo_fence_lock);
-      amdgpu_add_fence_dependencies(cs);
-
-      num_buffers = cur->num_real_buffers;
-      for (i = 0; i < num_buffers; i++) {
-         struct amdgpu_winsys_bo *bo = cur->real_buffers[i].bo;
-         p_atomic_inc(&bo->num_active_ioctls);
-         amdgpu_add_fence(bo, cur->fence);
-      }
-
-      num_buffers = cur->num_slab_buffers;
-      for (i = 0; i < num_buffers; i++) {
-         struct amdgpu_winsys_bo *bo = cur->slab_buffers[i].bo;
-         p_atomic_inc(&bo->num_active_ioctls);
-         amdgpu_add_fence(bo, cur->fence);
-      }
-      pipe_mutex_unlock(ws->bo_fence_lock);
-
       amdgpu_cs_sync_flush(rcs);
+
+      /* Prepare buffers.
+       *
+       * This fence must be held until the submission is queued to ensure
+       * that the order of fence dependency updates matches the order of
+       * submissions.
+       */
+      mtx_lock(&ws->bo_fence_lock);
+      amdgpu_add_fence_dependencies(cs);
 
       /* Swap command streams. "cst" is going to be submitted. */
       cs->csc = cs->cst;
       cs->cst = cur;
 
       /* Submit. */
-      if ((flags & RADEON_FLUSH_ASYNC) &&
-          util_queue_is_initialized(&ws->cs_queue)) {
-         util_queue_add_job(&ws->cs_queue, cs, &cs->flush_completed,
-                            amdgpu_cs_submit_ib, NULL);
-      } else {
-         amdgpu_cs_submit_ib(cs, 0);
-         error_code = cs->cst->error_code;
+      util_queue_add_job(&ws->cs_queue, cs, &cs->flush_completed,
+                         amdgpu_cs_submit_ib, NULL);
+      /* The submission has been queued, unlock the fence now. */
+      mtx_unlock(&ws->bo_fence_lock);
+
+      if (!(flags & RADEON_FLUSH_ASYNC)) {
+         amdgpu_cs_sync_flush(rcs);
+         error_code = cur->error_code;
       }
    } else {
       amdgpu_cs_context_cleanup(cs->csc);
@@ -1204,7 +1241,11 @@ static int amdgpu_cs_flush(struct radeon_winsys_cs *rcs,
    cs->main.base.used_gart = 0;
    cs->main.base.used_vram = 0;
 
-   ws->num_cs_flushes++;
+   if (cs->ring_type == RING_GFX)
+      ws->num_gfx_IBs++;
+   else if (cs->ring_type == RING_DMA)
+      ws->num_sdma_IBs++;
+
    return error_code;
 }
 

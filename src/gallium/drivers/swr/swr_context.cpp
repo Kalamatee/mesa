@@ -33,11 +33,9 @@
 #include "util/u_inlines.h"
 #include "util/u_format.h"
 #include "util/u_atomic.h"
-
-extern "C" {
+#include "util/u_upload_mgr.h"
 #include "util/u_transfer.h"
 #include "util/u_surface.h"
-}
 
 #include "api.h"
 #include "backend.h"
@@ -309,7 +307,7 @@ swr_blit(struct pipe_context *pipe, const struct pipe_blit_info *blit_info)
    util_blitter_save_vertex_buffer_slot(ctx->blitter, ctx->vertex_buffer);
    util_blitter_save_vertex_elements(ctx->blitter, (void *)ctx->velems);
    util_blitter_save_vertex_shader(ctx->blitter, (void *)ctx->vs);
-   /*util_blitter_save_geometry_shader(ctx->blitter, (void*)ctx->gs);*/
+   util_blitter_save_geometry_shader(ctx->blitter, (void*)ctx->gs);
    util_blitter_save_so_targets(
       ctx->blitter,
       ctx->num_so_targets,
@@ -369,6 +367,9 @@ swr_destroy(struct pipe_context *pipe)
       pipe_sampler_view_reference(&ctx->sampler_views[PIPE_SHADER_VERTEX][i], NULL);
    }
 
+   if (ctx->pipe.stream_uploader)
+      u_upload_destroy(ctx->pipe.stream_uploader);
+
    /* Idle core after destroying buffer resources, but before deleting
     * context.  Destroying resources has potentially called StoreTiles.*/
    SwrWaitForIdle(ctx->swrContext);
@@ -393,7 +394,7 @@ static void
 swr_render_condition(struct pipe_context *pipe,
                      struct pipe_query *query,
                      boolean condition,
-                     uint mode)
+                     enum pipe_render_cond_flag mode)
 {
    struct swr_context *ctx = swr_context(pipe);
 
@@ -485,6 +486,7 @@ swr_create_context(struct pipe_screen *p_screen, void *priv, unsigned flags)
    ctx->pipe.buffer_subdata = u_default_buffer_subdata;
    ctx->pipe.texture_subdata = u_default_texture_subdata;
 
+   ctx->pipe.clear_texture = util_clear_texture;
    ctx->pipe.resource_copy_region = swr_resource_copy;
    ctx->pipe.render_condition = swr_render_condition;
 
@@ -492,6 +494,11 @@ swr_create_context(struct pipe_screen *p_screen, void *priv, unsigned flags)
    swr_clear_init(&ctx->pipe);
    swr_draw_init(&ctx->pipe);
    swr_query_init(&ctx->pipe);
+
+   ctx->pipe.stream_uploader = u_upload_create_default(&ctx->pipe);
+   if (!ctx->pipe.stream_uploader)
+      goto fail;
+   ctx->pipe.const_uploader = ctx->pipe.stream_uploader;
 
    ctx->pipe.blit = swr_blit;
    ctx->blitter = util_blitter_create(&ctx->pipe);

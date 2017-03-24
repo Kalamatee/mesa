@@ -75,6 +75,8 @@ setupLoaderExtensions(__DRIscreen *psp,
 	    psp->dri2.image = (__DRIimageLookupExtension *) extensions[i];
 	if (strcmp(extensions[i]->name, __DRI_USE_INVALIDATE) == 0)
 	    psp->dri2.useInvalidate = (__DRIuseInvalidateExtension *) extensions[i];
+        if (strcmp(extensions[i]->name, __DRI_BACKGROUND_CALLABLE) == 0)
+            psp->dri2.backgroundCallable = (__DRIbackgroundCallableExtension *) extensions[i];
 	if (strcmp(extensions[i]->name, __DRI_SWRAST_LOADER) == 0)
 	    psp->swrast_loader = (__DRIswrastLoaderExtension *) extensions[i];
         if (strcmp(extensions[i]->name, __DRI_IMAGE_LOADER) == 0)
@@ -645,6 +647,8 @@ driCreateNewDrawable(__DRIscreen *screen,
 {
     __DRIdrawable *pdraw;
 
+    assert(data != NULL);
+
     pdraw = malloc(sizeof *pdraw);
     if (!pdraw)
 	return NULL;
@@ -674,6 +678,16 @@ driCreateNewDrawable(__DRIscreen *screen,
 static void
 driDestroyDrawable(__DRIdrawable *pdp)
 {
+    /*
+     * The loader's data structures are going away, even if pdp itself stays
+     * around for the time being because it is currently bound. This happens
+     * when a currently bound GLX pixmap is destroyed.
+     *
+     * Clear out the pointer back into the loader's data structures to avoid
+     * accessing an outdated pointer.
+     */
+    pdp->loaderPrivate = NULL;
+
     dri_put_drawable(pdp);
 }
 
@@ -881,8 +895,12 @@ driImageFormatToGLFormat(uint32_t image_format)
       return MESA_FORMAT_R8G8B8X8_UNORM;
    case __DRI_IMAGE_FORMAT_R8:
       return MESA_FORMAT_R_UNORM8;
+   case __DRI_IMAGE_FORMAT_R16:
+      return MESA_FORMAT_R_UNORM16;
    case __DRI_IMAGE_FORMAT_GR88:
       return MESA_FORMAT_R8G8_UNORM;
+   case __DRI_IMAGE_FORMAT_GR1616:
+      return MESA_FORMAT_R16G16_UNORM;
    case __DRI_IMAGE_FORMAT_SARGB8:
       return MESA_FORMAT_B8G8R8A8_SRGB;
    case __DRI_IMAGE_FORMAT_NONE:

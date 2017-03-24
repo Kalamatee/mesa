@@ -47,13 +47,55 @@
 #include "main/imports.h"
 #include "intel_batchbuffer.h"
 #include "brw_state.h"
-#include "brw_vs.h"
 #include "brw_wm.h"
 #include "brw_gs.h"
 #include "brw_cs.h"
 #include "brw_program.h"
+#include "compiler/brw_eu.h"
 
 #define FILE_DEBUG_FLAG DEBUG_STATE
+
+struct brw_cache_item {
+   /**
+    * Effectively part of the key, cache_id identifies what kind of state
+    * buffer is involved, and also which dirty flag should set.
+    */
+   enum brw_cache_id cache_id;
+
+   /** 32-bit hash of the key data */
+   GLuint hash;
+
+   /** for variable-sized keys */
+   GLuint key_size;
+   GLuint aux_size;
+   const void *key;
+
+   uint32_t offset;
+   uint32_t size;
+
+   struct brw_cache_item *next;
+};
+
+static unsigned
+get_program_string_id(enum brw_cache_id cache_id, const void *key)
+{
+   switch (cache_id) {
+   case BRW_CACHE_VS_PROG:
+      return ((struct brw_vs_prog_key *) key)->program_string_id;
+   case BRW_CACHE_TCS_PROG:
+      return ((struct brw_tcs_prog_key *) key)->program_string_id;
+   case BRW_CACHE_TES_PROG:
+      return ((struct brw_tes_prog_key *) key)->program_string_id;
+   case BRW_CACHE_GS_PROG:
+      return ((struct brw_gs_prog_key *) key)->program_string_id;
+   case BRW_CACHE_CS_PROG:
+      return ((struct brw_cs_prog_key *) key)->program_string_id;
+   case BRW_CACHE_FS_PROG:
+      return ((struct brw_wm_prog_key *) key)->program_string_id;
+   default:
+      unreachable("no program string id for this kind of program");
+   }
+}
 
 static GLuint
 hash_key(struct brw_cache_item *item)
@@ -268,6 +310,23 @@ brw_alloc_item_data(struct brw_cache *cache, uint32_t size)
    return offset;
 }
 
+const void *
+brw_find_previous_compile(struct brw_cache *cache,
+                          enum brw_cache_id cache_id,
+                          unsigned program_string_id)
+{
+   for (unsigned i = 0; i < cache->size; i++) {
+      for (struct brw_cache_item *c = cache->items[i]; c; c = c->next) {
+         if (c->cache_id == cache_id &&
+             get_program_string_id(cache_id, c->key) == program_string_id) {
+            return c->key;
+         }
+      }
+   }
+
+   return NULL;
+}
+
 void
 brw_upload_cache(struct brw_cache *cache,
                  enum brw_cache_id cache_id,
@@ -441,4 +500,52 @@ void
 brw_destroy_caches(struct brw_context *brw)
 {
    brw_destroy_cache(brw, &brw->cache);
+}
+
+static const char *
+cache_name(enum brw_cache_id cache_id)
+{
+   switch (cache_id) {
+   case BRW_CACHE_VS_PROG:
+      return "VS kernel";
+   case BRW_CACHE_TCS_PROG:
+      return "TCS kernel";
+   case BRW_CACHE_TES_PROG:
+      return "TES kernel";
+   case BRW_CACHE_FF_GS_PROG:
+      return "Fixed-function GS kernel";
+   case BRW_CACHE_GS_PROG:
+      return "GS kernel";
+   case BRW_CACHE_CLIP_PROG:
+      return "CLIP kernel";
+   case BRW_CACHE_SF_PROG:
+      return "SF kernel";
+   case BRW_CACHE_FS_PROG:
+      return "FS kernel";
+   case BRW_CACHE_CS_PROG:
+      return "CS kernel";
+   default:
+      return "unknown";
+   }
+}
+
+void
+brw_print_program_cache(struct brw_context *brw)
+{
+   const struct brw_cache *cache = &brw->cache;
+   struct brw_cache_item *item;
+
+   if (!brw->has_llc)
+      drm_intel_bo_map(cache->bo, false);
+
+   for (unsigned i = 0; i < cache->size; i++) {
+      for (item = cache->items[i]; item; item = item->next) {
+         fprintf(stderr, "%s:\n", cache_name(i));
+         brw_disassemble(&brw->screen->devinfo, cache->bo->virtual,
+                         item->offset, item->size, stderr);
+      }
+   }
+
+   if (!brw->has_llc)
+      drm_intel_bo_unmap(cache->bo);
 }

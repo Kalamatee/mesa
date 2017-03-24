@@ -482,7 +482,6 @@ EXTRA_EXT(ARB_texture_gather);
 EXTRA_EXT(ARB_shader_atomic_counters);
 EXTRA_EXT(ARB_draw_indirect);
 EXTRA_EXT(ARB_shader_image_load_store);
-EXTRA_EXT(ARB_viewport_array);
 EXTRA_EXT(ARB_query_buffer_object);
 EXTRA_EXT2(ARB_transform_feedback3, ARB_gpu_shader5);
 EXTRA_EXT(INTEL_performance_query);
@@ -788,10 +787,10 @@ find_custom_value(struct gl_context *ctx, const struct value_desc *d, union valu
       break;
 
    case GL_IMPLEMENTATION_COLOR_READ_TYPE_OES:
-      v->value_int = _mesa_get_color_read_type(ctx);
+      v->value_int = _mesa_get_color_read_type(ctx, NULL, "glGetIntegerv");
       break;
    case GL_IMPLEMENTATION_COLOR_READ_FORMAT_OES:
-      v->value_int = _mesa_get_color_read_format(ctx);
+      v->value_int = _mesa_get_color_read_format(ctx, NULL, "glGetIntegerv");
       break;
 
    case GL_CURRENT_MATRIX_STACK_DEPTH_ARB:

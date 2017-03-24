@@ -478,6 +478,7 @@ static struct ruvd_h264 get_h264_msg(struct ruvd_decoder *dec, struct pipe_h264_
 	memset(&result, 0, sizeof(result));
 	switch (pic->base.profile) {
 	case PIPE_VIDEO_PROFILE_MPEG4_AVC_BASELINE:
+	case PIPE_VIDEO_PROFILE_MPEG4_AVC_CONSTRAINED_BASELINE:
 		result.profile = RUVD_H264_PROFILE_BASELINE;
 		break;
 
@@ -703,13 +704,16 @@ static struct ruvd_h265 get_h265_msg(struct ruvd_decoder *dec, struct pipe_video
 			result.direct_reflist[i][j] = pic->RefPicList[i][j];
 	}
 
-	if ((pic->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10) &&
-		(target->buffer_format == PIPE_FORMAT_NV12)) {
-		result.p010_mode = 0;
-		result.luma_10to8 = 5;
-		result.chroma_10to8 = 5;
-		result.sclr_luma10to8 = 4;
-		result.sclr_chroma10to8 = 4;
+	if (pic->base.profile == PIPE_VIDEO_PROFILE_HEVC_MAIN_10) {
+		if (target->buffer_format == PIPE_FORMAT_P016) {
+			result.p010_mode = 1;
+			result.msb_mode = 1;
+		} else {
+			result.luma_10to8 = 5;
+			result.chroma_10to8 = 5;
+			result.sclr_luma10to8 = 4;
+			result.sclr_chroma10to8 = 4;
+		}
 	}
 
 	/* TODO
@@ -1353,7 +1357,7 @@ static unsigned bank_wh(unsigned bankwh)
 void ruvd_set_dt_surfaces(struct ruvd_msg *msg, struct radeon_surf *luma,
 			  struct radeon_surf *chroma)
 {
-	msg->body.decode.dt_pitch = luma->level[0].nblk_x * luma->bpe;
+	msg->body.decode.dt_pitch = luma->level[0].nblk_x;
 	switch (luma->level[0].mode) {
 	case RADEON_SURF_MODE_LINEAR_ALIGNED:
 		msg->body.decode.dt_tiling_mode = RUVD_TILE_LINEAR;

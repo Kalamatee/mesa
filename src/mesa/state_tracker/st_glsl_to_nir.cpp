@@ -412,9 +412,8 @@ st_nir_get_mesa_program(struct gl_context *ctx,
       _mesa_log("\n\n");
    }
 
-   prog->SamplersUsed = shader->active_samplers;
    prog->ShadowSamplers = shader->shadow_samplers;
-   prog->ExternalSamplersUsed = gl_external_samplers(shader);
+   prog->ExternalSamplersUsed = gl_external_samplers(prog);
    _mesa_update_shader_textures_used(shader_program, prog);
 
    /* Avoid reallocation of the program parameter list, because the uniform
@@ -427,7 +426,8 @@ st_nir_get_mesa_program(struct gl_context *ctx,
     * prog->ParameterValues to get reallocated (e.g., anything that adds a
     * program constant) has to happen before creating this linkage.
     */
-   _mesa_associate_uniform_storage(ctx, shader_program, prog->Parameters);
+   _mesa_associate_uniform_storage(ctx, shader_program, prog->Parameters,
+                                   true);
 
    struct st_vertex_program *stvp;
    struct st_fragment_program *stfp;

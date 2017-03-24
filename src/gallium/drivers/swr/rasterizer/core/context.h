@@ -217,6 +217,12 @@ struct PA_STATE;
 typedef void(*PFN_PROCESS_PRIMS)(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simdvector prims[], 
     uint32_t primMask, simdscalari primID, simdscalari viewportIdx);
 
+#if ENABLE_AVX512_SIMD16
+// function signature for pipeline stages that execute after primitive assembly
+typedef void(*PFN_PROCESS_PRIMS_SIMD16)(DRAW_CONTEXT *pDC, PA_STATE& pa, uint32_t workerId, simd16vector prims[],
+    uint32_t primMask, simd16scalari primID, simd16scalari viewportIdx);
+
+#endif
 OSALIGNLINE(struct) API_STATE
 {
     // Vertex Buffers
@@ -519,6 +525,7 @@ struct SWR_CONTEXT
     #define _AR_BEGIN(ctx, type, id)    ArchRast::Dispatch(ctx, ArchRast::Start(ArchRast::type, id))
     #define _AR_END(ctx, type, count)   ArchRast::Dispatch(ctx, ArchRast::End(ArchRast::type, count))
     #define _AR_EVENT(ctx, event)       ArchRast::Dispatch(ctx, ArchRast::event)
+    #define _AR_FLUSH(ctx, id)          ArchRast::FlushDraw(ctx, id)
 #else
     #ifdef KNOB_ENABLE_RDTSC
         #define _AR_BEGIN(ctx, type, id) (void)ctx; RDTSC_START(type)
@@ -528,6 +535,7 @@ struct SWR_CONTEXT
         #define _AR_END(ctx, type, id)
     #endif
     #define _AR_EVENT(ctx, event)
+    #define _AR_FLUSH(ctx, id)
 #endif
 
 // Use these macros for api thread.
@@ -539,3 +547,4 @@ struct SWR_CONTEXT
 #define AR_BEGIN(type, id) _AR_BEGIN(AR_WORKER_CTX, type, id)
 #define AR_END(type, count) _AR_END(AR_WORKER_CTX, type, count)
 #define AR_EVENT(event) _AR_EVENT(AR_WORKER_CTX, event)
+#define AR_FLUSH(id) _AR_FLUSH(AR_WORKER_CTX, id)

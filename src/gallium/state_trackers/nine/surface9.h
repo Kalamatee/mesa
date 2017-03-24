@@ -90,9 +90,6 @@ NineSurface9_dtor( struct NineSurface9 *This );
 void
 NineSurface9_MarkContainerDirty( struct NineSurface9 *This );
 
-struct pipe_surface *
-NineSurface9_CreatePipeSurface( struct NineSurface9 *This, const int sRGB );
-
 static inline struct pipe_surface *
 NineSurface9_GetSurface( struct NineSurface9 *This, int sRGB )
 {
@@ -106,22 +103,13 @@ NineSurface9_GetResource( struct NineSurface9 *This )
     return This->base.resource;
 }
 
-static inline void
+void
 NineSurface9_SetResource( struct NineSurface9 *This,
-                          struct pipe_resource *resource, unsigned level )
-{
-    This->level = level;
-    pipe_resource_reference(&This->base.resource, resource);
-    pipe_surface_reference(&This->surface[0], NULL);
-    pipe_surface_reference(&This->surface[1], NULL);
-}
+                          struct pipe_resource *resource, unsigned level );
 
-static inline void
+void
 NineSurface9_SetMultiSampleType( struct NineSurface9 *This,
-                                 D3DMULTISAMPLE_TYPE mst )
-{
-    This->desc.MultiSampleType = mst;
-}
+                                 D3DMULTISAMPLE_TYPE mst );
 
 void
 NineSurface9_SetResourceResize( struct NineSurface9 *This,

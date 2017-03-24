@@ -112,8 +112,8 @@ radv_init_surface(struct radv_device *device,
 	                           VK_IMAGE_USAGE_STORAGE_BIT)) ||
 	    (pCreateInfo->flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) ||
             (pCreateInfo->tiling == VK_IMAGE_TILING_LINEAR) ||
-            device->instance->physicalDevice.rad_info.chip_class < VI ||
-            create_info->scanout || !device->allow_dcc ||
+            device->physical_device->rad_info.chip_class < VI ||
+            create_info->scanout || (device->debug_flags & RADV_DEBUG_NO_DCC) ||
             !radv_is_colorbuffer_format_supported(pCreateInfo->format, &blendable))
 		surface->flags |= RADEON_SURF_DISABLE_DCC;
 	if (create_info->scanout)
@@ -123,7 +123,7 @@ radv_init_surface(struct radv_device *device,
 #define ATI_VENDOR_ID 0x1002
 static uint32_t si_get_bo_metadata_word1(struct radv_device *device)
 {
-	return (ATI_VENDOR_ID << 16) | device->instance->physicalDevice.rad_info.pci_id;
+	return (ATI_VENDOR_ID << 16) | device->physical_device->rad_info.pci_id;
 }
 
 static inline unsigned
@@ -326,7 +326,7 @@ si_make_texture_descriptor(struct radv_device *device,
 		/* The last dword is unused by hw. The shader uses it to clear
 		 * bits in the first dword of sampler state.
 		 */
-		if (device->instance->physicalDevice.rad_info.chip_class <= CIK && image->samples <= 1) {
+		if (device->physical_device->rad_info.chip_class <= CIK && image->samples <= 1) {
 			if (first_level == last_level)
 				state[7] = C_008F30_MAX_ANISO_RATIO;
 			else
@@ -510,6 +510,7 @@ radv_image_alloc_fmask(struct radv_device *device,
 
 	image->fmask.offset = align64(image->size, image->fmask.alignment);
 	image->size = image->fmask.offset + image->fmask.size;
+	image->alignment = MAX2(image->alignment, image->fmask.alignment);
 }
 
 static void
@@ -517,8 +518,8 @@ radv_image_get_cmask_info(struct radv_device *device,
 			  struct radv_image *image,
 			  struct radv_cmask_info *out)
 {
-	unsigned pipe_interleave_bytes = device->instance->physicalDevice.rad_info.pipe_interleave_bytes;
-	unsigned num_pipes = device->instance->physicalDevice.rad_info.num_tile_pipes;
+	unsigned pipe_interleave_bytes = device->physical_device->rad_info.pipe_interleave_bytes;
+	unsigned num_pipes = device->physical_device->rad_info.num_tile_pipes;
 	unsigned cl_width, cl_height;
 
 	switch (num_pipes) {
@@ -571,6 +572,7 @@ radv_image_alloc_cmask(struct radv_device *device,
 	/* + 8 for storing the clear values */
 	image->clear_value_offset = image->cmask.offset + image->cmask.size;
 	image->size = image->cmask.offset + image->cmask.size + 8;
+	image->alignment = MAX2(image->alignment, image->cmask.alignment);
 }
 
 static void
@@ -581,88 +583,24 @@ radv_image_alloc_dcc(struct radv_device *device,
 	/* + 8 for storing the clear values */
 	image->clear_value_offset = image->dcc_offset + image->surface.dcc_size;
 	image->size = image->dcc_offset + image->surface.dcc_size + 8;
-}
-
-static unsigned
-radv_image_get_htile_size(struct radv_device *device,
-			  struct radv_image *image)
-{
-	unsigned cl_width, cl_height, width, height;
-	unsigned slice_elements, slice_bytes, base_align;
-	unsigned num_pipes = device->instance->physicalDevice.rad_info.num_tile_pipes;
-	unsigned pipe_interleave_bytes = device->instance->physicalDevice.rad_info.pipe_interleave_bytes;
-
-	/* Overalign HTILE on P2 configs to work around GPU hangs in
-	 * piglit/depthstencil-render-miplevels 585.
-	 *
-	 * This has been confirmed to help Kabini & Stoney, where the hangs
-	 * are always reproducible. I think I have seen the test hang
-	 * on Carrizo too, though it was very rare there.
-	 */
-	if (device->instance->physicalDevice.rad_info.chip_class >= CIK && num_pipes < 4)
-		num_pipes = 4;
-
-	switch (num_pipes) {
-	case 1:
-		cl_width = 32;
-		cl_height = 16;
-		break;
-	case 2:
-		cl_width = 32;
-		cl_height = 32;
-		break;
-	case 4:
-		cl_width = 64;
-		cl_height = 32;
-		break;
-	case 8:
-		cl_width = 64;
-		cl_height = 64;
-		break;
-	case 16:
-		cl_width = 128;
-		cl_height = 64;
-		break;
-	default:
-		assert(0);
-		return 0;
-	}
-
-	width = align(image->surface.npix_x, cl_width * 8);
-	height = align(image->surface.npix_y, cl_height * 8);
-
-	slice_elements = (width * height) / (8 * 8);
-	slice_bytes = slice_elements * 4;
-
-	base_align = num_pipes * pipe_interleave_bytes;
-
-	image->htile.pitch = width;
-	image->htile.height = height;
-	image->htile.xalign = cl_width * 8;
-	image->htile.yalign = cl_height * 8;
-
-	return image->array_size *
-		align(slice_bytes, base_align);
+	image->alignment = MAX2(image->alignment, image->surface.dcc_alignment);
 }
 
 static void
 radv_image_alloc_htile(struct radv_device *device,
 		       struct radv_image *image)
 {
-	if (env_var_as_boolean("RADV_HIZ_DISABLE", false))
+	if ((device->debug_flags & RADV_DEBUG_NO_HIZ) || image->levels > 1) {
+		image->surface.htile_size = 0;
 		return;
+	}
 
-	image->htile.size = radv_image_get_htile_size(device, image);
-
-	if (!image->htile.size)
-		return;
-
-	image->htile.offset = align64(image->size, 32768);
+	image->htile_offset = align64(image->size, image->surface.htile_alignment);
 
 	/* + 8 for storing the clear values */
-	image->clear_value_offset = image->htile.offset + image->htile.size;
-	image->size = image->htile.offset + image->htile.size + 8;
-	image->alignment = align64(image->alignment, 32768);
+	image->clear_value_offset = image->htile_offset + image->surface.htile_size;
+	image->size = image->clear_value_offset + 8;
+	image->alignment = align64(image->alignment, image->surface.htile_alignment);
 }
 
 VkResult
@@ -674,7 +612,7 @@ radv_image_create(VkDevice _device,
 	RADV_FROM_HANDLE(radv_device, device, _device);
 	const VkImageCreateInfo *pCreateInfo = create_info->vk_info;
 	struct radv_image *image = NULL;
-
+	bool can_cmask_dcc = false;
 	assert(pCreateInfo->sType == VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
 
 	radv_assert(pCreateInfo->mipLevels > 0);
@@ -712,15 +650,18 @@ radv_image_create(VkDevice _device,
 	image->size = image->surface.bo_size;
 	image->alignment = image->surface.bo_alignment;
 
+	if (image->exclusive || image->queue_family_mask == 1)
+		can_cmask_dcc = true;
+
 	if ((pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
-	    image->surface.dcc_size)
+	    image->surface.dcc_size && can_cmask_dcc)
 		radv_image_alloc_dcc(device, image);
 	else
 		image->surface.dcc_size = 0;
 
 	if ((pCreateInfo->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) &&
 	    pCreateInfo->mipLevels == 1 &&
-	    !image->surface.dcc_size && image->extent.depth == 1)
+	    !image->surface.dcc_size && image->extent.depth == 1 && can_cmask_dcc)
 		radv_image_alloc_cmask(device, image);
 	if (image->samples > 1 && vk_format_is_color(pCreateInfo->format)) {
 		radv_image_alloc_fmask(device, image);
@@ -818,7 +759,7 @@ void radv_image_set_optimal_micro_tile_mode(struct radv_device *device,
 	 * definitions for them either. They are all 2D_TILED_THIN1 modes with
 	 * different bpp and micro tile mode.
 	 */
-	if (device->instance->physicalDevice.rad_info.chip_class >= CIK) {
+	if (device->physical_device->rad_info.chip_class >= CIK) {
 		switch (micro_tile_mode) {
 		case 0: /* displayable */
 			image->surface.tiling_index[0] = 10;
@@ -897,16 +838,18 @@ bool radv_layout_can_fast_clear(const struct radv_image *image,
 			        VkImageLayout layout,
 			        unsigned queue_mask)
 {
-	return (layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
-		layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) &&
+	return layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
 		queue_mask == (1u << RADV_QUEUE_GENERAL);
 }
 
 
-unsigned radv_image_queue_family_mask(const struct radv_image *image, int family) {
-	if (image->exclusive)
-		return 1u <<family;
-	return image->queue_family_mask;
+unsigned radv_image_queue_family_mask(const struct radv_image *image, uint32_t family, uint32_t queue_family)
+{
+	if (!image->exclusive)
+		return image->queue_family_mask;
+	if (family == VK_QUEUE_FAMILY_IGNORED)
+		return 1u << queue_family;
+	return 1u << family;
 }
 
 VkResult

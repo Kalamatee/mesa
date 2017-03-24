@@ -59,7 +59,10 @@ $(top_builddir)/$(CUR_MESADIR)/glsl/glsl_lexer.cpp : $(top_srcdir)/$(CUR_MESADIR
 	$(call local-l-or-ll-to-c-or-cpp)
 
 $(top_builddir)/$(CUR_MESADIR)/glsl/glsl_parser.cpp : $(top_srcdir)/$(CUR_MESADIR)/glsl/glsl_parser.yy
+	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
 	$(call local-yy-to-cpp-and-h,.cpp)
+
+$(top_builddir)/$(CUR_MESADIR)/glsl/glsl_parser.h: $(top_builddir)/$(CUR_MESADIR)/glsl/glsl_parser.cpp
 
 nir_builder_opcodes_gen := $(top_srcdir)/$(CUR_MESADIR)/nir/nir_builder_opcodes_h.py
 nir_builder_opcodes_deps := \
@@ -112,13 +115,33 @@ $(top_builddir)/$(CUR_MESADIR)/nir/nir_opt_algebraic.c: $(nir_opt_algebraic_deps
 	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
 	@cd $(glapi) && $(PYTHON) $(PYTHON_FLAGS) $(nir_opt_algebraic_gen) $< > $@
 
-MESA3DGL_NIR_GENERATED_FILES := $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(NIR_GENERATED_FILES))
-MESA3DGL_GLSL_GENERATED_C_SOURCES := $(filter %.c, $(MESA3DGL_NIR_GENERATED_FILES))
-MESA3DGL_GLSL_C_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,  $(filter %.c, $(LIBGLSL_FILES) $(NIR_FILES))))
 
-MESA3DGL_GLSL_GENERATED_CXX_FILES := $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(LIBGLSL_GENERATED_CXX_FILES))
-MESA3DGL_GLSL_GENERATED_CXX_SOURCES := $(filter %.cpp, $(MESA3DGL_GLSL_GENERATED_CXX_FILES))
-MESA3DGL_GLSL_CXX_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(filter %.cpp, $(LIBGLSL_FILES) $(NIR_FILES))))
+$(top_builddir)/$(CUR_MESADIR)/glsl/ir_expression_operation.h:  $(top_srcdir)/$(CUR_MESADIR)/glsl/ir_expression_operation.py
+	@mkdir -p $(dir $@)
+	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
+	@cd $(glapi) && $(PYTHON) $(PYTHON_FLAGS) $< enum > $@
+
+
+$(top_builddir)/$(CUR_MESADIR)/glsl/ir_expression_operation_constant.h:  $(top_srcdir)/$(CUR_MESADIR)/glsl/ir_expression_operation.py
+	@mkdir -p $(dir $@)
+	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
+	@cd $(glapi) && $(PYTHON) $(PYTHON_FLAGS) $< constant > $@
+
+
+$(top_builddir)/$(CUR_MESADIR)/glsl/ir_expression_operation_strings.h:  $(top_srcdir)/$(CUR_MESADIR)/glsl/ir_expression_operation.py
+	@mkdir -p $(dir $@)
+	@echo "Generating $(if $(filter /%,$@),$(if $(filter $(SRCDIR)/%,$(abspath $@)),$(patsubst $(SRCDIR)/%,%,$(abspath $@)),$(patsubst $(TOP)/%,%,$(abspath $@))),$(patsubst $(SRCDIR)/%,%,$(abspath $(SRCDIR)/$(CURDIR)/$@)))"
+	@cd $(glapi) && $(PYTHON) $(PYTHON_FLAGS) $< strings > $@
+
+MESA3DGL_GLSL_GENERATED_FILES := $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(LIBGLSL_GENERATED_FILES))
+MESA3DGL_GLSL_GENERATED_HEADERS :=  $(filter %.h, $(MESA3DGL_GLSL_GENERATED_FILES))
+
+MESA3DGL_NIR_GENERATED_FILES := $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(NIR_GENERATED_FILES))
+MESA3DGL_GLSL_GENERATED_C_SOURCES := $(filter %.c, $(MESA3DGL_NIR_GENERATED_FILES) $(MESA3DGL_GLSL_GENERATED_FILES))
+MESA3DGL_GLSL_C_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/,  $(filter %.c, $(LIBCOMPILER_FILES) $(LIBGLSL_FILES) $(NIR_FILES) $(SPIRV_FILES))))
+
+MESA3DGL_GLSL_GENERATED_CXX_SOURCES := $(filter %.cpp, $(MESA3DGL_GLSL_GENERATED_FILES))
+MESA3DGL_GLSL_CXX_SOURCES := $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(filter %.cpp, $(LIBCOMPILER_FILES) $(LIBGLSL_FILES) $(NIR_FILES))))
 
 MESA3DGL_GLSL_SOURCES_C := \
             $(MESA3DGL_GLSL_GENERATED_C_SOURCES:.c=) \
@@ -145,7 +168,7 @@ LIBCOMPILER_C_SOURCES := $(LIBCOMPILER_C_FILES:.c=)
 LIBCOMPILER_CXX_SOURCES := $(LIBCOMPILER_CXX_FILES:.cpp=)
 
 #MM
-mesa3d-linklib-compiler-generate : $(MESA3DGL_GLSL_GENERATED_CXX_FILES) $(MESA3DGL_GLCPP_GENERATED_FILES) $(MESA3DGL_NIR_GENERATED_FILES)
+mesa3d-linklib-compiler-generate : $(MESA3DGL_GLSL_GENERATED_FILES) $(MESA3DGL_GLCPP_GENERATED_FILES) $(MESA3DGL_NIR_GENERATED_FILES)
 
 #MM mesa3d-linklib-compiler : mesa3d-linklib-compiler-generate
 

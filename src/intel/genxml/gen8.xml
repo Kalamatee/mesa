@@ -1,3 +1,4 @@
+<?xml version="1.0" ?>
 <genxml name="BDW" gen="8">
   <enum name="3D_Prim_Topo_Type" prefix="3DPRIM">
     <value name="POINTLIST" value="1"/>
@@ -1123,7 +1124,7 @@
     <field name="Early Cull Enable" start="50" end="50" type="bool"/>
     <field name="Force User Clip Distance Clip Test Enable Bitmask" start="49" end="49" type="bool"/>
     <field name="Force Clip Mode" start="48" end="48" type="bool"/>
-    <field name="Clipper Statistics Enable" start="42" end="42" type="bool"/>
+    <field name="Statistics Enable" start="42" end="42" type="bool"/>
     <field name="User Clip Distance Cull Test Enable Bitmask" start="32" end="39" type="uint"/>
     <field name="Clip Enable" start="95" end="95" type="bool"/>
     <field name="API Mode" start="94" end="94" type="uint">
@@ -1497,7 +1498,7 @@
     </field>
     <field name="Illegal Opcode Exception Enable" start="45" end="45" type="bool"/>
     <field name="Software Exception Enable" start="44" end="44" type="bool"/>
-    <field name="Enable" start="95" end="95" type="bool"/>
+    <field name="Function Enable" start="95" end="95" type="bool"/>
     <field name="Statistics Enable" start="93" end="93" type="bool"/>
     <field name="Maximum Number of Threads" start="72" end="80" type="uint"/>
     <field name="Instance Count" start="64" end="67" type="uint"/>
@@ -2980,8 +2981,7 @@
     <field name="DWord Length" start="0" end="9" type="uint" default="2"/>
     <field name="Address" start="34" end="79" type="address"/>
     <field name="Core Mode Enable" start="32" end="32" type="uint"/>
-    <field name="Data DWord 0" start="96" end="127" type="uint"/>
-    <field name="Data DWord 1" start="128" end="159" type="uint"/>
+    <field name="Immediate Data" start="96" end="159" type="uint"/>
   </instruction>
 
   <instruction name="MI_STORE_DATA_INDEX" bias="2" length="3">
@@ -3176,6 +3176,50 @@
     <field name="SW Tessellation Memory Object Control State" start="40" end="43" type="MEMORY_OBJECT_CONTROL_STATE"/>
   </instruction>
 
+  <register name="IA_VERTICES_COUNT" length="2" num="0x2310">
+    <field name="IA Vertices Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="IA_PRIMITIVES_COUNT" length="2" num="0x2318">
+    <field name="IA Primitives Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="VS_INVOCATION_COUNT" length="2" num="0x2320">
+    <field name="VS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="HS_INVOCATION_COUNT" length="2" num="0x2300">
+    <field name="HS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="DS_INVOCATION_COUNT" length="2" num="0x2308">
+    <field name="DS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="GS_INVOCATION_COUNT" length="2" num="0x2328">
+    <field name="GS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="GS_PRIMITIVES_COUNT" length="2" num="0x2330">
+    <field name="GS Primitives Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="CL_INVOCATION_COUNT" length="2" num="0x2338">
+    <field name="CL Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="CL_PRIMITIVES_COUNT" length="2" num="0x2340">
+    <field name="CL Primitives Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="PS_INVOCATION_COUNT" length="2" num="0x2348">
+    <field name="PS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="CS_INVOCATION_COUNT" length="2" num="0x2290">
+    <field name="CS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
   <register name="L3CNTLREG" length="1" num="0x7034">
     <field name="SLM Enable" start="0" end="0" type="uint"/>
     <field name="URB Allocation" start="1" end="7" type="uint"/>
@@ -3198,6 +3242,27 @@
 
   <register name="SO_WRITE_OFFSET3" length="1" num="0x528c">
     <field name="Write Offset" start="2" end="31" type="offset"/>
+  </register>
+
+  <register name="CACHE_MODE_1" length="1" num="0x7004">
+    <field name="RCZ Read after expansion control fix 2" start="2" end="2" type="bool"/>
+    <field name="Depth Read Hit Write-Only Optimization Disable" start="3" end="3" type="bool"/>
+    <field name="MCS Cache Disable" start="5" end="5" type="bool"/>
+    <field name="4X4 RCPFE-STC Optimization Disable" start="6" end="6" type="bool"/>
+    <field name="Sampler Cache Set XOR selection" start="7" end="8" type="uint"/>
+    <field name="NP PMA Fix Enable" start="11" end="11" type="uint"/>
+    <field name="HIZ Eviction Policy" start="12" end="12" type="uint"/>
+    <field name="NP Early Z Fails Disable" start="13" end="13" type="uint"/>
+    <field name="MSC Resolve Optimization Disable" start="14" end="14" type="uint"/>
+    <field name="RCZ Read after expansion control fix 2 Mask" start="18" end="18" type="bool"/>
+    <field name="Depth Read Hit Write-Only Optimization Disable Mask" start="19" end="19" type="bool"/>
+    <field name="MCS Cache Disable Mask" start="21" end="21" type="bool"/>
+    <field name="4X4 RCPFE-STC Optimization Disable Mask" start="22" end="22" type="bool"/>
+    <field name="Sampler Cache Set XOR selection Mask" start="23" end="24" type="uint"/>
+    <field name="NP PMA Fix Enable Mask" start="27" end="27" type="uint"/>
+    <field name="HIZ Eviction Policy Mask" start="28" end="28" type="uint"/>
+    <field name="NP Early Z Fails Disable Mask" start="29" end="29" type="uint"/>
+    <field name="MSC Resolve Optimization Disable Mask" start="30" end="30" type="uint"/>
   </register>
 
 </genxml>

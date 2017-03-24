@@ -213,7 +213,6 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TEXTURE_BORDER_COLOR_QUIRK:
       return 0;
    case PIPE_CAP_USER_VERTEX_BUFFERS:
-   case PIPE_CAP_USER_INDEX_BUFFERS:
       return 0;
    case PIPE_CAP_USER_CONSTANT_BUFFERS:
       return 1;
@@ -421,6 +420,13 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_VIEWPORT_SUBPIXEL_BITS:
    case PIPE_CAP_TGSI_ARRAY_COMPONENTS:
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
+   case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
+   case PIPE_CAP_TGSI_FS_FBFETCH:
+   case PIPE_CAP_TGSI_MUL_ZERO_WINS:
+   case PIPE_CAP_DOUBLES:
+   case PIPE_CAP_INT64:
+   case PIPE_CAP_INT64_DIVMOD:
+   case PIPE_CAP_TGSI_TEX_TXF_LZ:
       return 0;
    }
 
@@ -430,7 +436,8 @@ svga_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
 
 static int
-vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
+vgpu9_get_shader_param(struct pipe_screen *screen,
+                       enum pipe_shader_type shader,
                        enum pipe_shader_cap param)
 {
    struct svga_screen *svgascreen = svga_screen(screen);
@@ -494,7 +501,6 @@ vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
          return PIPE_SHADER_IR_TGSI;
       case PIPE_SHADER_CAP_SUPPORTED_IRS:
          return 0;
-      case PIPE_SHADER_CAP_DOUBLES:
       case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
@@ -557,7 +563,6 @@ vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
          return PIPE_SHADER_IR_TGSI;
       case PIPE_SHADER_CAP_SUPPORTED_IRS:
          return 0;
-      case PIPE_SHADER_CAP_DOUBLES:
       case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
       case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
@@ -587,7 +592,8 @@ vgpu9_get_shader_param(struct pipe_screen *screen, unsigned shader,
 
 
 static int
-vgpu10_get_shader_param(struct pipe_screen *screen, unsigned shader,
+vgpu10_get_shader_param(struct pipe_screen *screen,
+                        enum pipe_shader_type shader,
                         enum pipe_shader_cap param)
 {
    struct svga_screen *svgascreen = svga_screen(screen);
@@ -653,7 +659,6 @@ vgpu10_get_shader_param(struct pipe_screen *screen, unsigned shader,
       return PIPE_SHADER_IR_TGSI;
    case PIPE_SHADER_CAP_SUPPORTED_IRS:
          return 0;
-   case PIPE_SHADER_CAP_DOUBLES:
    case PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED:
    case PIPE_SHADER_CAP_TGSI_FMA_SUPPORTED:
@@ -673,7 +678,7 @@ vgpu10_get_shader_param(struct pipe_screen *screen, unsigned shader,
 
 
 static int
-svga_get_shader_param(struct pipe_screen *screen, unsigned shader,
+svga_get_shader_param(struct pipe_screen *screen, enum pipe_shader_type shader,
                       enum pipe_shader_cap param)
 {
    struct svga_screen *svgascreen = svga_screen(screen);
@@ -917,8 +922,8 @@ svga_destroy_screen( struct pipe_screen *screen )
    
    svga_screen_cache_cleanup(svgascreen);
 
-   pipe_mutex_destroy(svgascreen->swc_mutex);
-   pipe_mutex_destroy(svgascreen->tex_mutex);
+   mtx_destroy(&svgascreen->swc_mutex);
+   mtx_destroy(&svgascreen->tex_mutex);
 
    svgascreen->sws->destroy(svgascreen->sws);
    
@@ -1102,8 +1107,8 @@ svga_screen_create(struct svga_winsys_screen *sws)
       debug_printf("svga: msaa samples mask: 0x%x\n", svgascreen->ms_samples);
    }
 
-   pipe_mutex_init(svgascreen->tex_mutex);
-   pipe_mutex_init(svgascreen->swc_mutex);
+   (void) mtx_init(&svgascreen->tex_mutex, mtx_plain);
+   (void) mtx_init(&svgascreen->swc_mutex, mtx_plain);
 
    svga_screen_cache_init(svgascreen);
 

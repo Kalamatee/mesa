@@ -43,21 +43,21 @@
 
 #include "brw_program.h"
 #include "brw_context.h"
-#include "brw_shader.h"
-#include "brw_nir.h"
+#include "compiler/brw_nir.h"
+#include "brw_defines.h"
 #include "intel_batchbuffer.h"
 
-static void
+static bool
 brw_nir_lower_uniforms(nir_shader *nir, bool is_scalar)
 {
    if (is_scalar) {
       nir_assign_var_locations(&nir->uniforms, &nir->num_uniforms,
                                type_size_scalar_bytes);
-      nir_lower_io(nir, nir_var_uniform, type_size_scalar_bytes, 0);
+      return nir_lower_io(nir, nir_var_uniform, type_size_scalar_bytes, 0);
    } else {
       nir_assign_var_locations(&nir->uniforms, &nir->num_uniforms,
                                type_size_vec4_bytes);
-      nir_lower_io(nir, nir_var_uniform, type_size_vec4_bytes, 0);
+      return nir_lower_io(nir, nir_var_uniform, type_size_vec4_bytes, 0);
    }
 }
 
@@ -84,7 +84,7 @@ brw_create_nir(struct brw_context *brw,
                  nir_shader_get_entrypoint(nir), true, false);
    } else {
       nir = prog_to_nir(prog, options);
-      NIR_PASS_V(nir, nir_convert_to_ssa); /* turn registers into SSA */
+      NIR_PASS_V(nir, nir_lower_regs_to_ssa); /* turn registers into SSA */
    }
    nir_validate_shader(nir);
 
@@ -136,9 +136,8 @@ get_new_program_id(struct intel_screen *screen)
    return id;
 }
 
-static struct gl_program *brwNewProgram( struct gl_context *ctx,
-				      GLenum target,
-				      GLuint id )
+static struct gl_program *brwNewProgram(struct gl_context *ctx, GLenum target,
+                                        GLuint id, bool is_arb_asm)
 {
    struct brw_context *brw = brw_context(ctx);
 
@@ -152,26 +151,19 @@ static struct gl_program *brwNewProgram( struct gl_context *ctx,
       if (prog) {
 	 prog->id = get_new_program_id(brw->screen);
 
-	 return _mesa_init_gl_program(&prog->program, target, id);
+         return _mesa_init_gl_program(&prog->program, target, id, is_arb_asm);
       }
       else
 	 return NULL;
    }
 
    case GL_FRAGMENT_PROGRAM_ARB: {
-      struct brw_program *prog;
-      if (brw->gen < 6) {
-         struct gen4_fragment_program *g4_prog =
-            rzalloc(NULL, struct gen4_fragment_program);
-         prog = &g4_prog->base;
-      } else {
-         prog = rzalloc(NULL, struct brw_program);
-      }
+      struct brw_program *prog = rzalloc(NULL, struct brw_program);
 
       if (prog) {
 	 prog->id = get_new_program_id(brw->screen);
 
-	 return _mesa_init_gl_program(&prog->program, target, id);
+         return _mesa_init_gl_program(&prog->program, target, id, is_arb_asm);
       }
       else
 	 return NULL;
@@ -185,6 +177,49 @@ static struct gl_program *brwNewProgram( struct gl_context *ctx,
 static void brwDeleteProgram( struct gl_context *ctx,
 			      struct gl_program *prog )
 {
+   struct brw_context *brw = brw_context(ctx);
+
+   /* Beware!  prog's refcount has reached zero, and it's about to be freed.
+    *
+    * In brw_upload_pipeline_state(), we compare brw->foo_program to
+    * ctx->FooProgram._Current, and flag BRW_NEW_FOO_PROGRAM if the
+    * pointer has changed.
+    *
+    * We cannot leave brw->foo_program as a dangling pointer to the dead
+    * program.  malloc() may allocate the same memory for a new gl_program,
+    * causing us to see matching pointers...but totally different programs.
+    *
+    * We cannot set brw->foo_program to NULL, either.  If we've deleted the
+    * active program, Mesa may set ctx->FooProgram._Current to NULL.  That
+    * would cause us to see matching pointers (NULL == NULL), and fail to
+    * detect that a program has changed since our last draw.
+    *
+    * So, set it to a bogus gl_program pointer that will never match,
+    * causing us to properly reevaluate the state on our next draw.
+    *
+    * Getting this wrong causes heisenbugs which are very hard to catch,
+    * as you need a very specific allocation pattern to hit the problem.
+    */
+   static const struct gl_program deleted_program;
+
+   if (brw->vertex_program == prog)
+      brw->vertex_program = &deleted_program;
+
+   if (brw->tess_ctrl_program == prog)
+      brw->tess_ctrl_program = &deleted_program;
+
+   if (brw->tess_eval_program == prog)
+      brw->tess_eval_program = &deleted_program;
+
+   if (brw->geometry_program == prog)
+      brw->geometry_program = &deleted_program;
+
+   if (brw->fragment_program == prog)
+      brw->fragment_program = &deleted_program;
+
+   if (brw->compute_program == prog)
+      brw->compute_program = &deleted_program;
+
    _mesa_delete_program( ctx, prog );
 }
 
@@ -209,11 +244,9 @@ brwProgramStringNotify(struct gl_context *ctx,
 	 brw->ctx.NewDriverState |= BRW_NEW_FRAGMENT_PROGRAM;
       newFP->id = get_new_program_id(brw->screen);
 
-      brw_add_texrect_params(prog);
-
       prog->nir = brw_create_nir(brw, NULL, prog, MESA_SHADER_FRAGMENT, true);
 
-      brw_fs_precompile(ctx, NULL, prog);
+      brw_fs_precompile(ctx, prog);
       break;
    }
    case GL_VERTEX_PROGRAM_ARB: {
@@ -232,12 +265,10 @@ brwProgramStringNotify(struct gl_context *ctx,
        */
       _tnl_program_string(ctx, target, prog);
 
-      brw_add_texrect_params(prog);
-
       prog->nir = brw_create_nir(brw, NULL, prog, MESA_SHADER_VERTEX,
                                  compiler->scalar_stage[MESA_SHADER_VERTEX]);
 
-      brw_vs_precompile(ctx, NULL, prog);
+      brw_vs_precompile(ctx, prog);
       break;
    }
    default:
@@ -311,25 +342,6 @@ brw_blend_barrier(struct gl_context *ctx)
 }
 
 void
-brw_add_texrect_params(struct gl_program *prog)
-{
-   for (int texunit = 0; texunit < BRW_MAX_TEX_UNIT; texunit++) {
-      if (!(prog->TexturesUsed[texunit] & (1 << TEXTURE_RECT_INDEX)))
-         continue;
-
-      int tokens[STATE_LENGTH] = {
-         STATE_INTERNAL,
-         STATE_TEXRECT_SCALE,
-         texunit,
-         0,
-         0
-      };
-
-      _mesa_add_state_reference(prog->Parameters, (gl_state_index *)tokens);
-   }
-}
-
-void
 brw_get_scratch_bo(struct brw_context *brw,
 		   drm_intel_bo **scratch_bo, int size)
 {
@@ -375,7 +387,6 @@ void brwInitFragProgFuncs( struct dd_function_table *functions )
    functions->DeleteProgram = brwDeleteProgram;
    functions->ProgramStringNotify = brwProgramStringNotify;
 
-   functions->NewShader = brw_new_shader;
    functions->LinkShader = brw_link_shader;
 
    functions->MemoryBarrier = brw_memory_barrier;
@@ -394,7 +405,7 @@ brw_init_shader_time(struct brw_context *brw)
    const int max_entries = 2048;
    brw->shader_time.bo =
       drm_intel_bo_alloc(brw->bufmgr, "shader time",
-                         max_entries * SHADER_TIME_STRIDE * 3, 4096);
+                         max_entries * BRW_SHADER_TIME_STRIDE * 3, 4096);
    brw->shader_time.names = rzalloc_array(brw, const char *, max_entries);
    brw->shader_time.ids = rzalloc_array(brw, int, max_entries);
    brw->shader_time.types = rzalloc_array(brw, enum shader_time_shader_type,
@@ -573,11 +584,11 @@ brw_collect_shader_time(struct brw_context *brw)
    void *bo_map = brw->shader_time.bo->virtual;
 
    for (int i = 0; i < brw->shader_time.num_entries; i++) {
-      uint32_t *times = bo_map + i * 3 * SHADER_TIME_STRIDE;
+      uint32_t *times = bo_map + i * 3 * BRW_SHADER_TIME_STRIDE;
 
-      brw->shader_time.cumulative[i].time += times[SHADER_TIME_STRIDE * 0 / 4];
-      brw->shader_time.cumulative[i].written += times[SHADER_TIME_STRIDE * 1 / 4];
-      brw->shader_time.cumulative[i].reset += times[SHADER_TIME_STRIDE * 2 / 4];
+      brw->shader_time.cumulative[i].time += times[BRW_SHADER_TIME_STRIDE * 0 / 4];
+      brw->shader_time.cumulative[i].written += times[BRW_SHADER_TIME_STRIDE * 1 / 4];
+      brw->shader_time.cumulative[i].reset += times[BRW_SHADER_TIME_STRIDE * 2 / 4];
    }
 
    /* Zero the BO out to clear it out for our next collection.
@@ -606,29 +617,25 @@ brw_collect_and_report_shader_time(struct brw_context *brw)
  * change their lifetimes compared to normal operation.
  */
 int
-brw_get_shader_time_index(struct brw_context *brw,
-                          struct gl_shader_program *shader_prog,
-                          struct gl_program *prog,
-                          enum shader_time_shader_type type)
+brw_get_shader_time_index(struct brw_context *brw, struct gl_program *prog,
+                          enum shader_time_shader_type type, bool is_glsl_sh)
 {
    int shader_time_index = brw->shader_time.num_entries++;
    assert(shader_time_index < brw->shader_time.max_entries);
    brw->shader_time.types[shader_time_index] = type;
 
-   int id = shader_prog ? shader_prog->Name : prog->Id;
    const char *name;
-   if (id == 0) {
+   if (prog->Id == 0) {
       name = "ff";
-   } else if (!shader_prog) {
-      name = "prog";
-   } else if (shader_prog->Label) {
-      name = ralloc_strdup(brw->shader_time.names, shader_prog->Label);
+   } else if (is_glsl_sh) {
+      name = prog->info.label ?
+         ralloc_strdup(brw->shader_time.names, prog->info.label) : "glsl";
    } else {
-      name = "glsl";
+      name = "prog";
    }
 
    brw->shader_time.names[shader_time_index] = name;
-   brw->shader_time.ids[shader_time_index] = id;
+   brw->shader_time.ids[shader_time_index] = prog->Id;
 
    return shader_time_index;
 }
@@ -675,4 +682,91 @@ brw_setup_tex_for_precompile(struct brw_context *brw,
          tex->swizzles[i] = SWIZZLE_XYZW;
       }
    }
+}
+
+/**
+ * Sets up the starting offsets for the groups of binding table entries
+ * common to all pipeline stages.
+ *
+ * Unused groups are initialized to 0xd0d0d0d0 to make it obvious that they're
+ * unused but also make sure that addition of small offsets to them will
+ * trigger some of our asserts that surface indices are < BRW_MAX_SURFACES.
+ */
+uint32_t
+brw_assign_common_binding_table_offsets(const struct gen_device_info *devinfo,
+                                        const struct gl_program *prog,
+                                        struct brw_stage_prog_data *stage_prog_data,
+                                        uint32_t next_binding_table_offset)
+{
+   int num_textures = util_last_bit(prog->SamplersUsed);
+
+   stage_prog_data->binding_table.texture_start = next_binding_table_offset;
+   next_binding_table_offset += num_textures;
+
+   if (prog->info.num_ubos) {
+      assert(prog->info.num_ubos <= BRW_MAX_UBO);
+      stage_prog_data->binding_table.ubo_start = next_binding_table_offset;
+      next_binding_table_offset += prog->info.num_ubos;
+   } else {
+      stage_prog_data->binding_table.ubo_start = 0xd0d0d0d0;
+   }
+
+   if (prog->info.num_ssbos) {
+      assert(prog->info.num_ssbos <= BRW_MAX_SSBO);
+      stage_prog_data->binding_table.ssbo_start = next_binding_table_offset;
+      next_binding_table_offset += prog->info.num_ssbos;
+   } else {
+      stage_prog_data->binding_table.ssbo_start = 0xd0d0d0d0;
+   }
+
+   if (INTEL_DEBUG & DEBUG_SHADER_TIME) {
+      stage_prog_data->binding_table.shader_time_start = next_binding_table_offset;
+      next_binding_table_offset++;
+   } else {
+      stage_prog_data->binding_table.shader_time_start = 0xd0d0d0d0;
+   }
+
+   if (prog->nir->info->uses_texture_gather) {
+      if (devinfo->gen >= 8) {
+         stage_prog_data->binding_table.gather_texture_start =
+            stage_prog_data->binding_table.texture_start;
+      } else {
+         stage_prog_data->binding_table.gather_texture_start = next_binding_table_offset;
+         next_binding_table_offset += num_textures;
+      }
+   } else {
+      stage_prog_data->binding_table.gather_texture_start = 0xd0d0d0d0;
+   }
+
+   if (prog->info.num_abos) {
+      stage_prog_data->binding_table.abo_start = next_binding_table_offset;
+      next_binding_table_offset += prog->info.num_abos;
+   } else {
+      stage_prog_data->binding_table.abo_start = 0xd0d0d0d0;
+   }
+
+   if (prog->info.num_images) {
+      stage_prog_data->binding_table.image_start = next_binding_table_offset;
+      next_binding_table_offset += prog->info.num_images;
+   } else {
+      stage_prog_data->binding_table.image_start = 0xd0d0d0d0;
+   }
+
+   /* This may or may not be used depending on how the compile goes. */
+   stage_prog_data->binding_table.pull_constants_start = next_binding_table_offset;
+   next_binding_table_offset++;
+
+   /* Plane 0 is just the regular texture section */
+   stage_prog_data->binding_table.plane_start[0] = stage_prog_data->binding_table.texture_start;
+
+   stage_prog_data->binding_table.plane_start[1] = next_binding_table_offset;
+   next_binding_table_offset += num_textures;
+
+   stage_prog_data->binding_table.plane_start[2] = next_binding_table_offset;
+   next_binding_table_offset += num_textures;
+
+   /* prog_data->base.binding_table.size will be set by brw_mark_surface_used. */
+
+   assert(next_binding_table_offset <= BRW_MAX_SURFACES);
+   return next_binding_table_offset;
 }

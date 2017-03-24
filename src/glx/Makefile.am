@@ -37,10 +37,10 @@ AM_CFLAGS = \
 	-I$(top_srcdir)/include/GL/internal \
 	-I$(top_srcdir)/src \
 	-I$(top_srcdir)/src/loader \
-	-I$(top_srcdir)/src/mapi \
-	-I$(top_srcdir)/src/mapi/glapi \
 	-I$(top_builddir)/src/mapi \
+	-I$(top_srcdir)/src/mapi \
 	-I$(top_builddir)/src/mapi/glapi \
+	-I$(top_srcdir)/src/mapi/glapi \
 	$(VISIBILITY_CFLAGS) \
 	$(SHARED_GLAPI_CFLAGS) \
 	$(EXTRA_DEFINES_XF86VIDMODE) \
@@ -174,7 +174,10 @@ AM_CFLAGS += \
 GL_LIB_VERSION=1:2
 endif
 
+# Push the libdrm furhter up, as due to libtool bug we might end up relinking
+# against the system one.
 GL_LIBS = \
+	$(LIBDRM_LIBS) \
 	libglx.la \
 	$(top_builddir)/src/mapi/glapi/libglapi.la \
 	$(SHARED_GLAPI_LIB) \

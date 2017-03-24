@@ -27,10 +27,10 @@ USER_INCLUDES := \
             -iquote $(GALLIUM_PATH)/include \
             -iquote $(GALLIUM_PATH)/auxiliary
 
-USER_LDFLAGS := \
+USER_LDFLAGS := -static-libstdc++ \
   -L$(top_libdir) \
   -ledid -lgallium_i915 -lgalliumauxiliary -lmesautil \
-  -lhiddstubs -lstdcio -lstdc
+  -lhiddstubs -lpthread -lstdcio -lstdc
 
 ##USER_CFLAGS := -DINTELGMA_COMPOSIT
 

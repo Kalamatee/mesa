@@ -43,7 +43,6 @@
 #include "core/clip.h"
 #include "core/utils.h"
 
-#include "common/simdintrin.h"
 #include "common/os.h"
 
 static const SWR_RECT g_MaxScissorRect = { 0, 0, KNOB_MAX_SCISSOR_X, KNOB_MAX_SCISSOR_Y };
@@ -455,6 +454,8 @@ void SwrSync(HANDLE hContext, PFN_CALLBACK_FUNC pfnFunc, uint64_t userData, uint
     pDC->retireCallback.userData2 = userData2;
     pDC->retireCallback.userData3 = userData3;
 
+    AR_API_EVENT(SwrSyncEvent(pDC->drawId));
+
     //enqueue
     QueueDraw(pContext);
 
@@ -784,7 +785,6 @@ void SetupMacroTileScissors(DRAW_CONTEXT *pDC)
 // templated backend function tables
 extern PFN_BACKEND_FUNC gBackendNullPs[SWR_MULTISAMPLE_TYPE_COUNT];
 extern PFN_BACKEND_FUNC gBackendSingleSample[SWR_INPUT_COVERAGE_COUNT][2][2];
-extern PFN_BACKEND_FUNC gBackendPixelRateTable[SWR_MULTISAMPLE_TYPE_COUNT][SWR_MSAA_SAMPLE_PATTERN_COUNT][SWR_INPUT_COVERAGE_COUNT][2][2][2];
 extern PFN_BACKEND_FUNC gBackendSampleRateTable[SWR_MULTISAMPLE_TYPE_COUNT][SWR_INPUT_COVERAGE_COUNT][2][2];
 void SetupPipeline(DRAW_CONTEXT *pDC)
 {
@@ -805,7 +805,6 @@ void SetupPipeline(DRAW_CONTEXT *pDC)
         const bool bMultisampleEnable = ((rastState.sampleCount > SWR_MULTISAMPLE_1X) || rastState.forcedSampleCount) ? 1 : 0;
         const uint32_t centroid = ((psState.barycentricsMask & SWR_BARYCENTRIC_CENTROID_MASK) > 0) ? 1 : 0;
         const uint32_t canEarlyZ = (psState.forceEarlyZ || (!psState.writesODepth && !psState.usesSourceDepth && !psState.usesUAV)) ? 1 : 0;
-
         SWR_BARYCENTRICS_MASK barycentricsMask = (SWR_BARYCENTRICS_MASK)psState.barycentricsMask;
         
         // select backend function
@@ -816,7 +815,9 @@ void SetupPipeline(DRAW_CONTEXT *pDC)
             {
                 // always need to generate I & J per sample for Z interpolation
                 barycentricsMask = (SWR_BARYCENTRICS_MASK)(barycentricsMask | SWR_BARYCENTRIC_PER_SAMPLE_MASK);
-                backendFuncs.pfnBackend = gBackendPixelRateTable[rastState.sampleCount][rastState.samplePattern][psState.inputCoverage][centroid][forcedSampleCount][canEarlyZ];
+                backendFuncs.pfnBackend = gBackendPixelRateTable[rastState.sampleCount][rastState.samplePattern][psState.inputCoverage]
+                                                                [centroid][forcedSampleCount][canEarlyZ]
+                    ;
             }
             else
             {
@@ -955,7 +956,7 @@ void SetupPipeline(DRAW_CONTEXT *pDC)
         case R32_FLOAT: pState->state.pfnQuantizeDepth = QuantizeDepth < R32_FLOAT > ; break;
         case R24_UNORM_X8_TYPELESS: pState->state.pfnQuantizeDepth = QuantizeDepth < R24_UNORM_X8_TYPELESS > ; break;
         case R16_UNORM: pState->state.pfnQuantizeDepth = QuantizeDepth < R16_UNORM > ; break;
-        default: SWR_ASSERT(false, "Unsupported depth format for depth quantiztion.");
+        default: SWR_INVALID("Unsupported depth format for depth quantiztion.");
             pState->state.pfnQuantizeDepth = QuantizeDepth < R32_FLOAT > ;
         }
     }
@@ -1139,6 +1140,8 @@ void DrawInstanced(
         //enqueue DC
         QueueDraw(pContext);
 
+        AR_API_EVENT(DrawInstancedSplitEvent(pDC->drawId));
+
         remainingVerts -= numVertsForDraw;
         draw++;
     }
@@ -1227,7 +1230,7 @@ void DrawIndexedInstance(
     case R16_UINT: indexSize = sizeof(uint16_t); break;
     case R8_UINT: indexSize = sizeof(uint8_t); break;
     default:
-        SWR_ASSERT(0);
+        SWR_INVALID("Invalid index buffer format: %d", pState->indexBuffer.format);
     }
 
     int draw = 0;
@@ -1283,6 +1286,8 @@ void DrawIndexedInstance(
 
         //enqueue DC
         QueueDraw(pContext);
+
+        AR_API_EVENT(DrawIndexedInstancedSplitEvent(pDC->drawId));
 
         pIB += maxIndicesPerDraw * indexSize;
         remainingIndices -= numIndicesForDraw;
@@ -1367,6 +1372,8 @@ void SWR_API SwrInvalidateTiles(
 
     //enqueue
     QueueDraw(pContext);
+
+    AR_API_EVENT(SwrInvalidateTilesEvent(pDC->drawId));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1400,6 +1407,8 @@ void SWR_API SwrDiscardRect(
 
     //enqueue
     QueueDraw(pContext);
+
+    AR_API_EVENT(SwrDiscardRectEvent(pDC->drawId));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1468,6 +1477,8 @@ void SWR_API SwrStoreTiles(
 
     //enqueue
     QueueDraw(pContext);
+
+    AR_API_EVENT(SwrStoreTilesEvent(pDC->drawId));
 
     AR_API_END(APIStoreTiles, 1);
 }

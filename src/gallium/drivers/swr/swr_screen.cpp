@@ -39,10 +39,6 @@
 
 #include "state_tracker/sw_winsys.h"
 
-extern "C" {
-#include "gallivm/lp_bld_limits.h"
-}
-
 #include "jit_api.h"
 
 #include "memory/TilingFunctions.h"
@@ -235,7 +231,6 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_MIXED_COLORBUFFER_FORMATS:
    case PIPE_CAP_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION:
    case PIPE_CAP_USER_VERTEX_BUFFERS:
-   case PIPE_CAP_USER_INDEX_BUFFERS:
    case PIPE_CAP_USER_CONSTANT_BUFFERS:
    case PIPE_CAP_STREAM_OUTPUT_INTERLEAVE_BUFFERS:
    case PIPE_CAP_QUERY_TIMESTAMP:
@@ -248,6 +243,7 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_CLIP_HALFZ:
    case PIPE_CAP_POLYGON_OFFSET_CLAMP:
    case PIPE_CAP_DEPTH_BOUNDS_TEST:
+   case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_TEXTURE_FLOAT_LINEAR:
    case PIPE_CAP_TEXTURE_HALF_FLOAT_LINEAR:
    case PIPE_CAP_CULL_DISTANCE:
@@ -288,7 +284,6 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_FORCE_PERSAMPLE_INTERP:
    case PIPE_CAP_SHAREABLE_SHADERS:
    case PIPE_CAP_COPY_BETWEEN_COMPRESSED_AND_PLAIN_FORMATS:
-   case PIPE_CAP_CLEAR_TEXTURE:
    case PIPE_CAP_DRAW_PARAMETERS:
    case PIPE_CAP_TGSI_PACK_HALF_FLOAT:
    case PIPE_CAP_MULTI_DRAW_INDIRECT:
@@ -318,6 +313,12 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
    case PIPE_CAP_TGSI_CAN_READ_OUTPUTS:
    case PIPE_CAP_STREAM_OUTPUT_PAUSE_RESUME:
    case PIPE_CAP_NATIVE_FENCE_FD:
+   case PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY:
+   case PIPE_CAP_TGSI_FS_FBFETCH:
+   case PIPE_CAP_TGSI_MUL_ZERO_WINS:
+   case PIPE_CAP_INT64:
+   case PIPE_CAP_INT64_DIVMOD:
+   case PIPE_CAP_TGSI_TEX_TXF_LZ:
       return 0;
 
    case PIPE_CAP_VENDOR_ID:
@@ -344,13 +345,15 @@ swr_get_param(struct pipe_screen *screen, enum pipe_cap param)
 
 static int
 swr_get_shader_param(struct pipe_screen *screen,
-                     unsigned shader,
+                     enum pipe_shader_type shader,
                      enum pipe_shader_cap param)
 {
-   if (shader == PIPE_SHADER_VERTEX || shader == PIPE_SHADER_FRAGMENT)
+   if (shader == PIPE_SHADER_VERTEX ||
+       shader == PIPE_SHADER_FRAGMENT ||
+       shader == PIPE_SHADER_GEOMETRY)
       return gallivm_get_shader_param(param);
 
-   // Todo: geometry, tesselation, compute
+   // Todo: tesselation, compute
    return 0;
 }
 
@@ -539,6 +542,11 @@ mesa_to_swr_format(enum pipe_format format)
       {PIPE_FORMAT_R32G32_FIXED,           R32G32_SFIXED},
       {PIPE_FORMAT_R32G32B32_FIXED,        R32G32B32_SFIXED},
       {PIPE_FORMAT_R32G32B32A32_FIXED,     R32G32B32A32_SFIXED},
+
+      {PIPE_FORMAT_R64_FLOAT,              R64_FLOAT},
+      {PIPE_FORMAT_R64G64_FLOAT,           R64G64_FLOAT},
+      {PIPE_FORMAT_R64G64B64_FLOAT,        R64G64B64_FLOAT},
+      {PIPE_FORMAT_R64G64B64A64_FLOAT,     R64G64B64A64_FLOAT},
 
       /* These formats have entries in SWR but don't have Load/StoreTile
        * implementations. That means these aren't renderable, and thus having
@@ -878,18 +886,11 @@ swr_resource_destroy(struct pipe_screen *p_screen, struct pipe_resource *pt)
       winsys->displaytarget_destroy(winsys, spr->display_target);
 
    } else {
-      /* For regular resources, if the resource is being used, defer deletion
-       * (use aligned-free) */
-      if (pipe && spr->status) {
-         swr_resource_unused(pt);
-         swr_fence_work_free(screen->flush_fence,
-                             spr->swr.pBaseAddress, true);
-         swr_fence_work_free(screen->flush_fence, 
-                             spr->secondary.pBaseAddress, true);
-      } else {
-         AlignedFree(spr->swr.pBaseAddress);
-         AlignedFree(spr->secondary.pBaseAddress);
-      }
+      /* For regular resources, defer deletion */
+      swr_resource_unused(pt);
+      swr_fence_work_free(screen->flush_fence, spr->swr.pBaseAddress, true);
+      swr_fence_work_free(screen->flush_fence,
+                          spr->secondary.pBaseAddress, true);
    }
 
    FREE(spr);

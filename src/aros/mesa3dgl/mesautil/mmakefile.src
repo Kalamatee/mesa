@@ -26,21 +26,26 @@ $(top_builddir)/$(CUR_MESADIR)/format_srgb.c: $(top_srcdir)/$(CUR_MESADIR)/forma
 	$(PYTHON)  $< > $@
 
 MESA_UTIL_C_FILES := $(filter %.c, $(MESA_UTIL_FILES))
+MESA_UTIL_CXX_FILES := $(filter %.cpp, $(MESA_UTIL_FILES))
 
 MESA_UTIL_GENERATED_C_SOURCES := \
-            $(top_builddir)/$(CUR_MESADIR)/format_srgb.c
+            $(addprefix $(top_builddir)/$(CUR_MESADIR)/, $(MESA_UTIL_GENERATED_FILES))
 
 MESA3DGL_MESAUTIL_C_SOURCES := \
             $(wildcard $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(MESA_UTIL_C_FILES))) \
             $(MESA_UTIL_GENERATED_C_SOURCES)
 
+MESA3DGL_MESAUTIL_CXX_SOURCES := $(addprefix $(top_srcdir)/$(CUR_MESADIR)/, $(MESA_UTIL_CXX_FILES))
+
 MESA3DGL_MESAUTIL_SOURCES_C := $(MESA3DGL_MESAUTIL_C_SOURCES:.c=)
+
+MESA3DGL_MESAUTIL_SOURCES_CXX := $(MESA3DGL_MESAUTIL_CXX_SOURCES:.cpp=)
 
 #MM
 mesa3d-linklib-mesautil-generated : $(MESA3DGL_MESAUTIL_GENERATED_C_SOURCES)
 
 #MM mesa3d-linklib-mesautil : mesa3d-linklib-mesautil-generated
 
-%build_linklib mmake=mesa3d-linklib-mesautil libname=mesautil libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_MESAUTIL_SOURCES_C)"
+%build_linklib mmake=mesa3d-linklib-mesautil libname=mesautil libdir=$(top_libdir) objdir=$(top_builddir)/$(CUR_MESADIR) files="$(MESA3DGL_MESAUTIL_SOURCES_C)" cxxfiles="$(MESA3DGL_MESAUTIL_SOURCES_CXX)"
 
 %common

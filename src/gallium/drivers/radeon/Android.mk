@@ -31,7 +31,7 @@ include $(CLEAR_VARS)
 LOCAL_SRC_FILES := $(C_SOURCES)
 
 ifeq ($(MESA_ENABLE_LLVM),true)
-LOCAL_SRC_FILES += $(LLVM_C_FILES)
+LOCAL_CFLAGS += -DFORCE_BUILD_AMDGPU   # instructs LLVM to declare LLVMInitializeAMDGPU* functions
 endif
 
 LOCAL_SHARED_LIBRARIES := libdrm_radeon

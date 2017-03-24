@@ -253,6 +253,16 @@ enum miptree_array_layout {
    ALL_SLICES_AT_EACH_LOD,
 };
 
+enum intel_aux_disable {
+   INTEL_AUX_DISABLE_NONE = 0,
+   INTEL_AUX_DISABLE_HIZ  = 1 << 1,
+   INTEL_AUX_DISABLE_MCS  = 1 << 2,
+   INTEL_AUX_DISABLE_CCS  = 1 << 3,
+   INTEL_AUX_DISABLE_ALL  = INTEL_AUX_DISABLE_HIZ |
+                            INTEL_AUX_DISABLE_MCS |
+                            INTEL_AUX_DISABLE_CCS
+};
+
 /**
  * Miptree aux buffer. These buffers are associated with a miptree, but the
  * format is managed by the hardware.
@@ -638,13 +648,7 @@ struct intel_mipmap_tree
     * buffer. This is useful for sharing the miptree bo with an external client
     * that doesn't understand auxiliary buffers.
     */
-   bool disable_aux_buffers;
-
-   /**
-    * Fast clear and lossless compression are always disabled for this
-    * miptree.
-    */
-   bool no_ccs;
+   enum intel_aux_disable aux_disable;
 
    /**
     * Tells if the underlying buffer is to be also consumed by entities other
@@ -979,7 +983,7 @@ brw_miptree_get_vertical_slice_pitch(const struct brw_context *brw,
                                      const struct intel_mipmap_tree *mt,
                                      unsigned level);
 
-void
+bool
 brw_miptree_layout(struct brw_context *brw,
                    struct intel_mipmap_tree *mt,
                    uint32_t layout_flags);

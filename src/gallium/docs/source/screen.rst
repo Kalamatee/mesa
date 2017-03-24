@@ -115,10 +115,6 @@ The integer capabilities:
   aligned to 4.  If false, there are no restrictions on src_offset.
 * ``PIPE_CAP_COMPUTE``: Whether the implementation supports the
   compute entry points defined in pipe_context and pipe_screen.
-* ``PIPE_CAP_USER_INDEX_BUFFERS``: Whether user index buffers are supported.
-  If not, the state tracker must upload all indices which are not in hw
-  resources.  If user-space buffers are supported, the driver must also still
-  accept HW resource buffers.
 * ``PIPE_CAP_USER_CONSTANT_BUFFERS``: Whether user-space constant buffers
   are supported.  If not, the state tracker must put constants into HW
   resources/buffers.  If user-space constant buffers are supported, the
@@ -366,6 +362,20 @@ The integer capabilities:
   ARB_transform_feedback3.
 * ``PIPE_CAP_TGSI_CAN_READ_OUTPUTS``: Whether every TGSI shader stage can read
   from the output file.
+* ``PIPE_CAP_GLSL_OPTIMIZE_CONSERVATIVELY``: Tell the GLSL compiler to use
+  the minimum amount of optimizations just to be able to do all the linking
+  and lowering.
+* ``PIPE_CAP_TGSI_FS_FBFETCH``: Whether a fragment shader can use the FBFETCH
+  opcode to retrieve the current value in the framebuffer.
+* ``PIPE_CAP_TGSI_MUL_ZERO_WINS``: Whether TGSI shaders support the
+  ``TGSI_PROPERTY_MUL_ZERO_WINS`` shader property.
+* ``PIPE_CAP_DOUBLES``: Whether double precision floating-point operations
+  are supported.
+* ``PIPE_CAP_INT64``: Whether 64-bit integer operations are supported.
+* ``PIPE_CAP_INT64_DIVMOD``: Whether 64-bit integer division/modulo
+  operations are supported.
+* ``PIPE_CAP_TGSI_TEX_TXF_LZ``: Whether TEX_LZ and TXF_LZ opcodes are
+  supported.
 
 
 .. _pipe_capf:
@@ -444,8 +454,6 @@ to be 0.
   program.  It should be one of the ``pipe_shader_ir`` enum values.
 * ``PIPE_SHADER_CAP_MAX_SAMPLER_VIEWS``: The maximum number of texture
   sampler views. Must not be lower than PIPE_SHADER_CAP_MAX_TEXTURE_SAMPLERS.
-* ``PIPE_SHADER_CAP_DOUBLES``: Whether double precision floating-point
-  operations are supported.
 * ``PIPE_SHADER_CAP_TGSI_DROUND_SUPPORTED``: Whether double precision rounding
   is supported. If it is, DTRUNC/DCEIL/DFLR/DROUND opcodes may be used.
 * ``PIPE_SHADER_CAP_TGSI_DFRACEXP_DLDEXP_SUPPORTED``: Whether DFRACEXP and
@@ -702,6 +710,20 @@ which isn't multisampled.
 
 
 
+resource_changed
+^^^^^^^^^^^^^^^^
+
+Mark a resource as changed so derived internal resources will be recreated
+on next use.
+
+When importing external images that can't be directly used as texture sampler
+source, internal copies may have to be created that the hardware can sample
+from. When those resources are reimported, the image data may have changed, and
+the previously derived internal resources must be invalidated to avoid sampling
+from old copies.
+
+
+
 resource_destroy
 ^^^^^^^^^^^^^^^^
 
@@ -737,6 +759,16 @@ query group at the specified **index** is returned in **info**.
 The function returns non-zero on success.
 The driver-specific query group is described with the
 pipe_driver_query_group_info structure.
+
+
+
+get_disk_shader_cache
+^^^^^^^^^^^^^^^^^^^^^
+
+Returns a pointer to a driver-specific on-disk shader cache. If the driver
+failed to create the cache or does not support an on-disk shader cache NULL is
+returned. The callback itself may also be NULL if the driver doesn't support
+an on-disk shader cache.
 
 
 Thread safety

@@ -1,3 +1,4 @@
+<?xml version="1.0" ?>
 <genxml name="HSW" gen="7.5">
   <enum name="3D_Prim_Topo_Type" prefix="3DPRIM">
     <value name="POINTLIST" value="1"/>
@@ -1043,7 +1044,7 @@
       <value name="FRONT" value="2"/>
       <value name="BACK" value="3"/>
     </field>
-    <field name="Clipper Statistics Enable" start="42" end="42" type="bool"/>
+    <field name="Statistics Enable" start="42" end="42" type="bool"/>
     <field name="User Clip Distance Cull Test Enable Bitmask" start="32" end="39" type="uint"/>
     <field name="Clip Enable" start="95" end="95" type="bool"/>
     <field name="API Mode" start="94" end="94" type="uint">
@@ -1420,7 +1421,7 @@
     <field name="Illegal Opcode Exception Enable" start="45" end="45" type="bool"/>
     <field name="Software Exception Enable" start="44" end="44" type="bool"/>
     <field name="Maximum Number of Threads" start="32" end="39" type="uint"/>
-    <field name="Enable" start="95" end="95" type="bool"/>
+    <field name="Function Enable" start="95" end="95" type="bool"/>
     <field name="Statistics Enable" start="93" end="93" type="bool"/>
     <field name="Instance Count" start="64" end="67" type="uint"/>
     <field name="Kernel Start Pointer" start="102" end="127" type="offset"/>
@@ -2707,10 +2708,9 @@
     <field name="MI Command Opcode" start="23" end="28" type="uint" default="32"/>
     <field name="Use Global GTT" start="22" end="22" type="bool"/>
     <field name="DWord Length" start="0" end="5" type="uint" default="2"/>
-    <field name="Address" start="66" end="95" type="uint"/>
+    <field name="Address" start="66" end="95" type="address"/>
     <field name="Core Mode Enable" start="64" end="64" type="uint"/>
-    <field name="Data DWord 0" start="96" end="127" type="uint"/>
-    <field name="Data DWord 1" start="128" end="159" type="uint"/>
+    <field name="Immediate Data" start="96" end="159" type="uint"/>
   </instruction>
 
   <instruction name="MI_STORE_DATA_INDEX" bias="2" length="3">
@@ -2909,6 +2909,50 @@
     <field name="SW Tessellation Base Address" start="44" end="63" type="address"/>
     <field name="SW Tessellation Memory Object Control State" start="40" end="43" type="MEMORY_OBJECT_CONTROL_STATE"/>
   </instruction>
+
+  <register name="IA_VERTICES_COUNT" length="2" num="0x2310">
+    <field name="IA Vertices Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="IA_PRIMITIVES_COUNT" length="2" num="0x2318">
+    <field name="IA Primitives Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="VS_INVOCATION_COUNT" length="2" num="0x2320">
+    <field name="VS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="HS_INVOCATION_COUNT" length="2" num="0x2300">
+    <field name="HS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="DS_INVOCATION_COUNT" length="2" num="0x2308">
+    <field name="DS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="GS_INVOCATION_COUNT" length="2" num="0x2328">
+    <field name="GS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="GS_PRIMITIVES_COUNT" length="2" num="0x2330">
+    <field name="GS Primitives Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="CL_INVOCATION_COUNT" length="2" num="0x2338">
+    <field name="CL Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="CL_PRIMITIVES_COUNT" length="2" num="0x2340">
+    <field name="CL Primitives Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="PS_INVOCATION_COUNT" length="2" num="0x2348">
+    <field name="PS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
+
+  <register name="CS_INVOCATION_COUNT" length="2" num="0x2290">
+    <field name="CS Invocation Count Report" start="0" end="63" type="uint"/>
+  </register>
 
   <register name="L3SQCREG1" length="1" num="0xb010">
     <field name="Convert DC_UC" start="24" end="24" type="uint"/>

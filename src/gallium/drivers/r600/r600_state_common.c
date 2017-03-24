@@ -91,7 +91,7 @@ void r600_emit_alphatest_state(struct r600_context *rctx, struct r600_atom *atom
 	radeon_set_context_reg(cs, R_028438_SX_ALPHA_REF, alpha_ref);
 }
 
-static void r600_texture_barrier(struct pipe_context *ctx)
+static void r600_texture_barrier(struct pipe_context *ctx, unsigned flags)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
 
@@ -186,6 +186,10 @@ static void r600_bind_blend_state_internal(struct r600_context *rctx,
 	}
 	if (update_cb) {
 		r600_mark_atom_dirty(rctx, &rctx->cb_misc_state.atom);
+	}
+	if (rctx->framebuffer.dual_src_blend != blend->dual_src_blend) {
+		rctx->framebuffer.dual_src_blend = blend->dual_src_blend;
+		r600_mark_atom_dirty(rctx, &rctx->framebuffer.atom);
 	}
 }
 
@@ -1055,7 +1059,8 @@ void r600_constant_buffers_dirty(struct r600_context *rctx, struct r600_constbuf
 	}
 }
 
-static void r600_set_constant_buffer(struct pipe_context *ctx, uint shader, uint index,
+static void r600_set_constant_buffer(struct pipe_context *ctx,
+				     enum pipe_shader_type shader, uint index,
 				     const struct pipe_constant_buffer *input)
 {
 	struct r600_context *rctx = (struct r600_context *)ctx;
@@ -1093,10 +1098,13 @@ static void r600_set_constant_buffer(struct pipe_context *ctx, uint shader, uint
 				tmpPtr[i] = util_cpu_to_le32(((uint32_t *)ptr)[i]);
 			}
 
-			u_upload_data(rctx->b.uploader, 0, size, 256, tmpPtr, &cb->buffer_offset, &cb->buffer);
+			u_upload_data(ctx->stream_uploader, 0, size, 256,
+                                      tmpPtr, &cb->buffer_offset, &cb->buffer);
 			free(tmpPtr);
 		} else {
-			u_upload_data(rctx->b.uploader, 0, input->buffer_size, 256, ptr, &cb->buffer_offset, &cb->buffer);
+			u_upload_data(ctx->stream_uploader, 0,
+                                      input->buffer_size, 256, ptr,
+                                      &cb->buffer_offset, &cb->buffer);
 		}
 		/* account it in gtt */
 		rctx->b.gtt += input->buffer_size;
@@ -1669,7 +1677,7 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 	struct radeon_winsys_cs *cs = rctx->b.gfx.cs;
 	bool render_cond_bit = rctx->b.render_cond && !rctx->b.render_cond_force_off;
 	uint64_t mask;
-	unsigned num_patches, dirty_fb_counter;
+	unsigned num_patches, dirty_tex_counter;
 
 	if (!info.indirect && !info.count && (info.indexed || !info.count_from_stream_output)) {
 		return;
@@ -1686,9 +1694,9 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 	}
 
 	/* Re-emit the framebuffer state if needed. */
-	dirty_fb_counter = p_atomic_read(&rctx->b.screen->dirty_fb_counter);
-	if (dirty_fb_counter != rctx->b.last_dirty_fb_counter) {
-		rctx->b.last_dirty_fb_counter = dirty_fb_counter;
+	dirty_tex_counter = p_atomic_read(&rctx->b.screen->dirty_tex_counter);
+	if (dirty_tex_counter != rctx->b.last_dirty_tex_counter) {
+		rctx->b.last_dirty_tex_counter = dirty_tex_counter;
 		r600_mark_atom_dirty(rctx, &rctx->framebuffer.atom);
 	}
 
@@ -1736,11 +1744,11 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 				}
 			}
 
-			u_upload_alloc(rctx->b.uploader, start, count * 2, 256,
-				       &out_offset, &out_buffer, &ptr);
+			u_upload_alloc(ctx->stream_uploader, start, count * 2,
+                                       256, &out_offset, &out_buffer, &ptr);
 
 			util_shorten_ubyte_elts_to_userptr(
-						&rctx->b.b, &ib, 0, ib.offset + start, count, ptr);
+						&rctx->b.b, &ib, 0, 0, ib.offset + start, count, ptr);
 
 			pipe_resource_reference(&ib.buffer, NULL);
 			ib.user_buffer = NULL;
@@ -1757,7 +1765,8 @@ static void r600_draw_vbo(struct pipe_context *ctx, const struct pipe_draw_info 
 		if (ib.user_buffer && (R600_BIG_ENDIAN || info.indirect ||
 						 info.instance_count > 1 ||
 						 info.count*ib.index_size > 20)) {
-			u_upload_data(rctx->b.uploader, 0, info.count * ib.index_size, 256,
+			u_upload_data(ctx->stream_uploader, 0,
+                                      info.count * ib.index_size, 256,
 				      ib.user_buffer, &ib.offset, &ib.buffer);
 			ib.user_buffer = NULL;
 		}

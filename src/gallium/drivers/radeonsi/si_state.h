@@ -35,7 +35,7 @@
 
 #define SI_MAX_ATTRIBS			16
 #define SI_NUM_VERTEX_BUFFERS		SI_MAX_ATTRIBS
-#define SI_NUM_SAMPLERS			24 /* OpenGL textures units per shader */
+#define SI_NUM_SAMPLERS			32 /* OpenGL textures units per shader */
 #define SI_NUM_CONST_BUFFERS		16
 #define SI_NUM_IMAGES			16
 #define SI_NUM_SHADER_BUFFERS		16
@@ -99,13 +99,11 @@ struct si_stencil_ref {
 struct si_vertex_element
 {
 	unsigned			count;
-	uint32_t			fix_fetch;
+	unsigned			first_vb_use_mask;
+	/* Vertex buffer descriptor list size aligned for optimal prefetch. */
+	unsigned			desc_list_byte_size;
 
-	/* Two bits per attribute indicating the size of each vector component
-	 * in bytes if the size 3-workaround must be applied.
-	 */
-	uint32_t			fix_size3;
-
+	uint8_t				fix_fetch[SI_MAX_ATTRIBS];
 	uint32_t			rsrc_word3[SI_MAX_ATTRIBS];
 	uint32_t			format_size[SI_MAX_ATTRIBS];
 	struct pipe_vertex_element	elements[SI_MAX_ATTRIBS];
@@ -128,9 +126,12 @@ union si_state {
 	struct si_pm4_state	*array[0];
 };
 
+#define SI_NUM_STATES (sizeof(union si_state) / sizeof(struct si_pm4_state *))
+
 union si_state_atoms {
 	struct {
 		/* The order matters. */
+		struct r600_atom *prefetch_L2;
 		struct r600_atom *render_cond;
 		struct r600_atom *streamout_begin;
 		struct r600_atom *streamout_enable; /* must be after streamout_begin */
@@ -148,6 +149,7 @@ union si_state_atoms {
 		struct r600_atom *viewports;
 		struct r600_atom *stencil_ref;
 		struct r600_atom *spi_map;
+		struct r600_atom *scratch_state;
 	} s;
 	struct r600_atom *array[0];
 };
@@ -237,8 +239,6 @@ struct si_descriptors {
 	/* The shader userdata offset within a shader where the 64-bit pointer to the descriptor
 	 * array will be stored. */
 	unsigned shader_userdata_offset;
-	/* Whether the pointer should be re-emitted. */
-	bool pointer_dirty;
 };
 
 struct si_sampler_views {
@@ -267,6 +267,7 @@ struct si_buffer_resources {
 #define si_pm4_bind_state(sctx, member, value) \
 	do { \
 		(sctx)->queued.named.member = (value); \
+		(sctx)->dirty_states |= 1 << si_pm4_block_idx(member); \
 	} while(0)
 
 #define si_pm4_delete_state(sctx, member, value) \
@@ -288,7 +289,8 @@ void si_set_mutable_tex_desc_fields(struct r600_texture *tex,
 				    uint32_t *state);
 void si_get_pipe_constant_buffer(struct si_context *sctx, uint shader,
 				 uint slot, struct pipe_constant_buffer *cbuf);
-void si_get_shader_buffers(struct si_context *sctx, uint shader,
+void si_get_shader_buffers(struct si_context *sctx,
+			   enum pipe_shader_type shader,
 			   uint start_slot, uint count,
 			   struct pipe_shader_buffer *sbuf);
 void si_set_ring_buffer(struct pipe_context *ctx, uint slot,
@@ -352,6 +354,7 @@ void si_destroy_shader_cache(struct si_screen *sscreen);
 void si_init_shader_selector_async(void *job, int thread_index);
 
 /* si_state_draw.c */
+void si_init_ia_multi_vgt_param_table(struct si_context *sctx);
 void si_emit_cache_flush(struct si_context *sctx);
 void si_ce_pre_draw_synchronization(struct si_context *sctx);
 void si_ce_post_draw_synchronization(struct si_context *sctx);

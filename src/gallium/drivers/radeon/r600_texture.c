@@ -298,11 +298,6 @@ static void r600_texture_init_metadata(struct r600_texture *rtex,
 	metadata->scanout = (surface->flags & RADEON_SURF_SCANOUT) != 0;
 }
 
-static void r600_dirty_all_framebuffer_states(struct r600_common_screen *rscreen)
-{
-	p_atomic_inc(&rscreen->dirty_fb_counter);
-}
-
 static void r600_eliminate_fast_color_clear(struct r600_common_context *rctx,
 					    struct r600_texture *rtex)
 {
@@ -310,13 +305,13 @@ static void r600_eliminate_fast_color_clear(struct r600_common_context *rctx,
 	struct pipe_context *ctx = &rctx->b;
 
 	if (ctx == rscreen->aux_context)
-		pipe_mutex_lock(rscreen->aux_context_lock);
+		mtx_lock(&rscreen->aux_context_lock);
 
 	ctx->flush_resource(ctx, &rtex->resource.b.b);
 	ctx->flush(ctx, NULL, 0);
 
 	if (ctx == rscreen->aux_context)
-		pipe_mutex_unlock(rscreen->aux_context_lock);
+		mtx_unlock(&rscreen->aux_context_lock);
 }
 
 static void r600_texture_discard_cmask(struct r600_common_screen *rscreen,
@@ -341,7 +336,7 @@ static void r600_texture_discard_cmask(struct r600_common_screen *rscreen,
 	    r600_resource_reference(&rtex->cmask_buffer, NULL);
 
 	/* Notify all contexts about the change. */
-	r600_dirty_all_framebuffer_states(rscreen);
+	p_atomic_inc(&rscreen->dirty_tex_counter);
 	p_atomic_inc(&rscreen->compressed_colortex_counter);
 }
 
@@ -365,7 +360,7 @@ static bool r600_texture_discard_dcc(struct r600_common_screen *rscreen,
 	rtex->dcc_offset = 0;
 
 	/* Notify all contexts about the change. */
-	r600_dirty_all_framebuffer_states(rscreen);
+	p_atomic_inc(&rscreen->dirty_tex_counter);
 	return true;
 }
 
@@ -399,14 +394,14 @@ bool r600_texture_disable_dcc(struct r600_common_context *rctx,
 		return false;
 
 	if (&rctx->b == rscreen->aux_context)
-		pipe_mutex_lock(rscreen->aux_context_lock);
+		mtx_lock(&rscreen->aux_context_lock);
 
 	/* Decompress DCC. */
 	rctx->decompress_dcc(&rctx->b, rtex);
 	rctx->b.flush(&rctx->b, NULL, 0);
 
 	if (&rctx->b == rscreen->aux_context)
-		pipe_mutex_unlock(rscreen->aux_context_lock);
+		mtx_unlock(&rscreen->aux_context_lock);
 
 	return r600_texture_discard_dcc(rscreen, rtex);
 }
@@ -480,8 +475,7 @@ static void r600_degrade_tile_mode_to_linear(struct r600_common_context *rctx,
 
 	r600_texture_reference(&new_tex, NULL);
 
-	r600_dirty_all_framebuffer_states(rctx->screen);
-	p_atomic_inc(&rctx->screen->dirty_tex_descriptor_counter);
+	p_atomic_inc(&rctx->screen->dirty_tex_counter);
 }
 
 static boolean r600_texture_get_handle(struct pipe_screen* screen,
@@ -769,7 +763,9 @@ static void r600_texture_alloc_cmask_separate(struct r600_common_screen *rscreen
 	}
 
 	rtex->cmask_buffer = (struct r600_resource *)
-		r600_aligned_buffer_create(&rscreen->b, 0, PIPE_USAGE_DEFAULT,
+		r600_aligned_buffer_create(&rscreen->b,
+					   R600_RESOURCE_FLAG_UNMAPPABLE,
+					   PIPE_USAGE_DEFAULT,
 					   rtex->cmask.size,
 					   rtex->cmask.alignment);
 	if (rtex->cmask_buffer == NULL) {
@@ -880,7 +876,9 @@ static void r600_texture_allocate_htile(struct r600_common_screen *rscreen,
 		return;
 
 	rtex->htile_buffer = (struct r600_resource*)
-		r600_aligned_buffer_create(&rscreen->b, 0, PIPE_USAGE_DEFAULT,
+		r600_aligned_buffer_create(&rscreen->b,
+					   R600_RESOURCE_FLAG_UNMAPPABLE,
+					   PIPE_USAGE_DEFAULT,
 					   rtex->surface.htile_size,
 					   rtex->surface.htile_alignment);
 	if (rtex->htile_buffer == NULL) {
@@ -890,7 +888,7 @@ static void r600_texture_allocate_htile(struct r600_common_screen *rscreen,
 	} else {
 		r600_screen_clear_buffer(rscreen, &rtex->htile_buffer->b.b,
 					 0, rtex->surface.htile_size,
-					 clear_value, R600_COHERENCY_NONE);
+					 clear_value);
 	}
 }
 
@@ -1105,7 +1103,7 @@ r600_texture_create_object(struct pipe_screen *screen,
 		/* Initialize the cmask to 0xCC (= compressed state). */
 		r600_screen_clear_buffer(rscreen, &rtex->cmask_buffer->b.b,
 					 rtex->cmask.offset, rtex->cmask.size,
-					 0xCCCCCCCC, R600_COHERENCY_NONE);
+					 0xCCCCCCCC);
 	}
 
 	/* Initialize DCC only if the texture is not being imported. */
@@ -1113,7 +1111,7 @@ r600_texture_create_object(struct pipe_screen *screen,
 		r600_screen_clear_buffer(rscreen, &rtex->resource.b.b,
 					 rtex->dcc_offset,
 					 rtex->surface.dcc_size,
-					 0xFFFFFFFF, R600_COHERENCY_NONE);
+					 0xFFFFFFFF);
 	}
 
 	/* Initialize the CMASK base register value. */
@@ -1184,7 +1182,9 @@ r600_choose_tiling(struct r600_common_screen *rscreen,
 		/* Textures with a very small height are recommended to be linear. */
 		if (templ->target == PIPE_TEXTURE_1D ||
 		    templ->target == PIPE_TEXTURE_1D_ARRAY ||
-		    templ->height0 <= 4)
+		    /* Only very thin and long 2D textures should benefit from
+		     * linear_aligned. */
+		    (templ->width0 > 8 && templ->height0 <= 2))
 			return RADEON_SURF_MODE_LINEAR_ALIGNED;
 
 		/* Textures likely to be mapped often. */
@@ -1417,8 +1417,7 @@ static void r600_texture_invalidate_storage(struct r600_common_context *rctx,
 	rtex->cmask.base_address_reg =
 		(rtex->resource.gpu_address + rtex->cmask.offset) >> 8;
 
-	r600_dirty_all_framebuffer_states(rscreen);
-	p_atomic_inc(&rscreen->dirty_tex_descriptor_counter);
+	p_atomic_inc(&rscreen->dirty_tex_counter);
 
 	rctx->num_alloc_tex_transfer_bytes += rtex->size;
 }
@@ -1439,6 +1438,7 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 	bool use_staging_texture = false;
 
 	assert(!(texture->flags & R600_RESOURCE_FLAG_TRANSFER));
+	assert(box->width && box->height && box->depth);
 
 	/* Depth textures use staging unconditionally. */
 	if (!rtex->is_depth) {
@@ -1461,8 +1461,8 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 		/* Tiled textures need to be converted into a linear texture for CPU
 		 * access. The staging texture is always linear and is placed in GART.
 		 *
-		 * Reading from VRAM is slow, always use the staging texture in
-		 * this case.
+		 * Reading from VRAM or GTT WC is slow, always use the staging
+		 * texture in this case.
 		 *
 		 * Use the staging texture for uploads if the underlying BO
 		 * is busy.
@@ -1470,8 +1470,9 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 		if (!rtex->surface.is_linear)
 			use_staging_texture = true;
 		else if (usage & PIPE_TRANSFER_READ)
-			use_staging_texture = (rtex->resource.domains &
-					       RADEON_DOMAIN_VRAM) != 0;
+			use_staging_texture =
+				rtex->resource.domains & RADEON_DOMAIN_VRAM ||
+				rtex->resource.flags & RADEON_FLAG_GTT_WC;
 		/* Write & linear only: */
 		else if (r600_rings_is_buffer_referenced(rctx, rtex->resource.buf,
 							 RADEON_USAGE_READWRITE) ||
@@ -1489,7 +1490,7 @@ static void *r600_texture_transfer_map(struct pipe_context *ctx,
 	trans = CALLOC_STRUCT(r600_transfer);
 	if (!trans)
 		return NULL;
-	trans->transfer.resource = texture;
+	pipe_resource_reference(&trans->transfer.resource, texture);
 	trans->transfer.level = level;
 	trans->transfer.usage = usage;
 	trans->transfer.box = *box;
@@ -1642,6 +1643,7 @@ static void r600_texture_transfer_unmap(struct pipe_context *ctx,
 		rctx->num_alloc_tex_transfer_bytes = 0;
 	}
 
+	pipe_resource_reference(&transfer->resource, NULL);
 	FREE(transfer);
 }
 
@@ -2109,7 +2111,8 @@ static void vi_separate_dcc_try_enable(struct r600_common_context *rctx,
 		tex->last_dcc_separate_buffer = NULL;
 	} else {
 		tex->dcc_separate_buffer = (struct r600_resource*)
-			r600_aligned_buffer_create(rctx->b.screen, 0,
+			r600_aligned_buffer_create(rctx->b.screen,
+						   R600_RESOURCE_FLAG_UNMAPPABLE,
 						   PIPE_USAGE_DEFAULT,
 						   tex->surface.dcc_size,
 						   tex->surface.dcc_alignment);
@@ -2401,8 +2404,7 @@ static void si_set_optimal_micro_tile_mode(struct r600_common_screen *rscreen,
 
 	rtex->surface.micro_tile_mode = rtex->last_msaa_resolve_target_micro_mode;
 
-	p_atomic_inc(&rscreen->dirty_fb_counter);
-	p_atomic_inc(&rscreen->dirty_tex_descriptor_counter);
+	p_atomic_inc(&rscreen->dirty_tex_counter);
 }
 
 void evergreen_do_fast_color_clear(struct r600_common_context *rctx,

@@ -26,6 +26,7 @@
 
 #include "radv_meta.h"
 #include "nir/nir_builder.h"
+#include "vk_format.h"
 
 enum blit2d_dst_type {
 	/* We can bind this destination as a "normal" render target and render
@@ -283,8 +284,10 @@ radv_meta_blit2d_normal_dst(struct radv_cmd_buffer *cmd_buffer,
 
 	for (unsigned r = 0; r < num_rects; ++r) {
 		VkFormat depth_format = 0;
-		if (dst->aspect_mask != VK_IMAGE_ASPECT_COLOR_BIT)
-			depth_format = dst->image->vk_format;
+		if (dst->aspect_mask == VK_IMAGE_ASPECT_STENCIL_BIT)
+			depth_format = vk_format_stencil_only(dst->image->vk_format);
+		else if (dst->aspect_mask == VK_IMAGE_ASPECT_DEPTH_BIT)
+			depth_format = vk_format_depth_only(dst->image->vk_format);
 		struct blit2d_src_temps src_temps;
 		blit2d_bind_src(cmd_buffer, src_img, src_buf, &src_temps, src_type, depth_format);
 
@@ -583,7 +586,7 @@ build_nir_copy_fragment_shader(struct radv_device *device,
 						      vec4, "f_color");
 	color_out->data.location = FRAG_RESULT_DATA0;
 
-	nir_ssa_def *pos_int = nir_f2i(&b, nir_load_var(&b, tex_pos_in));
+	nir_ssa_def *pos_int = nir_f2i32(&b, nir_load_var(&b, tex_pos_in));
 	unsigned swiz[4] = { 0, 1 };
 	nir_ssa_def *tex_pos = nir_swizzle(&b, pos_int, swiz, 2, false);
 
@@ -612,7 +615,7 @@ build_nir_copy_fragment_shader_depth(struct radv_device *device,
 						      vec4, "f_color");
 	color_out->data.location = FRAG_RESULT_DEPTH;
 
-	nir_ssa_def *pos_int = nir_f2i(&b, nir_load_var(&b, tex_pos_in));
+	nir_ssa_def *pos_int = nir_f2i32(&b, nir_load_var(&b, tex_pos_in));
 	unsigned swiz[4] = { 0, 1 };
 	nir_ssa_def *tex_pos = nir_swizzle(&b, pos_int, swiz, 2, false);
 
@@ -641,7 +644,7 @@ build_nir_copy_fragment_shader_stencil(struct radv_device *device,
 						      vec4, "f_color");
 	color_out->data.location = FRAG_RESULT_STENCIL;
 
-	nir_ssa_def *pos_int = nir_f2i(&b, nir_load_var(&b, tex_pos_in));
+	nir_ssa_def *pos_int = nir_f2i32(&b, nir_load_var(&b, tex_pos_in));
 	unsigned swiz[4] = { 0, 1 };
 	nir_ssa_def *tex_pos = nir_swizzle(&b, pos_int, swiz, 2, false);
 

@@ -83,7 +83,7 @@ static bool amdgpu_bo_wait(struct pb_buffer *_buf, uint64_t timeout,
       unsigned idle_fences;
       bool buffer_idle;
 
-      pipe_mutex_lock(ws->bo_fence_lock);
+      mtx_lock(&ws->bo_fence_lock);
 
       for (idle_fences = 0; idle_fences < bo->num_fences; ++idle_fences) {
          if (!amdgpu_fence_wait(bo->fences[idle_fences], 0, false))
@@ -99,13 +99,13 @@ static bool amdgpu_bo_wait(struct pb_buffer *_buf, uint64_t timeout,
       bo->num_fences -= idle_fences;
 
       buffer_idle = !bo->num_fences;
-      pipe_mutex_unlock(ws->bo_fence_lock);
+      mtx_unlock(&ws->bo_fence_lock);
 
       return buffer_idle;
    } else {
       bool buffer_idle = true;
 
-      pipe_mutex_lock(ws->bo_fence_lock);
+      mtx_lock(&ws->bo_fence_lock);
       while (bo->num_fences && buffer_idle) {
          struct pipe_fence_handle *fence = NULL;
          bool fence_idle = false;
@@ -113,12 +113,12 @@ static bool amdgpu_bo_wait(struct pb_buffer *_buf, uint64_t timeout,
          amdgpu_fence_reference(&fence, bo->fences[0]);
 
          /* Wait for the fence. */
-         pipe_mutex_unlock(ws->bo_fence_lock);
+         mtx_unlock(&ws->bo_fence_lock);
          if (amdgpu_fence_wait(fence, abs_timeout, true))
             fence_idle = true;
          else
             buffer_idle = false;
-         pipe_mutex_lock(ws->bo_fence_lock);
+         mtx_lock(&ws->bo_fence_lock);
 
          /* Release an idle fence to avoid checking it again later, keeping in
           * mind that the fence array may have been modified by other threads.
@@ -132,7 +132,7 @@ static bool amdgpu_bo_wait(struct pb_buffer *_buf, uint64_t timeout,
 
          amdgpu_fence_reference(&fence, NULL);
       }
-      pipe_mutex_unlock(ws->bo_fence_lock);
+      mtx_unlock(&ws->bo_fence_lock);
 
       return buffer_idle;
    }
@@ -160,10 +160,10 @@ void amdgpu_bo_destroy(struct pb_buffer *_buf)
 
    assert(bo->bo && "must not be called for slab entries");
 
-   pipe_mutex_lock(bo->ws->global_bo_list_lock);
+   mtx_lock(&bo->ws->global_bo_list_lock);
    LIST_DEL(&bo->u.real.global_list_item);
    bo->ws->num_buffers--;
-   pipe_mutex_unlock(bo->ws->global_bo_list_lock);
+   mtx_unlock(&bo->ws->global_bo_list_lock);
 
    amdgpu_bo_va_op(bo->bo, 0, bo->base.size, bo->va, 0, AMDGPU_VA_OP_UNMAP);
    amdgpu_va_range_free(bo->u.real.va_handle);
@@ -181,6 +181,7 @@ void amdgpu_bo_destroy(struct pb_buffer *_buf)
          bo->ws->mapped_vram -= bo->base.size;
       else if (bo->initial_domain & RADEON_DOMAIN_GTT)
          bo->ws->mapped_gtt -= bo->base.size;
+      bo->ws->num_mapped_buffers--;
    }
 
    FREE(bo);
@@ -253,14 +254,17 @@ static void *amdgpu_bo_map(struct pb_buffer *buf,
              * (neither one is changing it).
              *
              * Only check whether the buffer is being used for write. */
-            if (cs && amdgpu_bo_is_referenced_by_cs_with_usage(cs, bo,
-                                                               RADEON_USAGE_WRITE)) {
-               cs->flush_cs(cs->flush_data, 0, NULL);
-            } else {
-               /* Try to avoid busy-waiting in amdgpu_bo_wait. */
-               if (p_atomic_read(&bo->num_active_ioctls))
-                  amdgpu_cs_sync_flush(rcs);
+            if (cs) {
+               if (amdgpu_bo_is_referenced_by_cs_with_usage(cs, bo,
+                                                            RADEON_USAGE_WRITE)) {
+                  cs->flush_cs(cs->flush_data, 0, NULL);
+               } else {
+                  /* Try to avoid busy-waiting in amdgpu_bo_wait. */
+                  if (p_atomic_read(&bo->num_active_ioctls))
+                     amdgpu_cs_sync_flush(rcs);
+               }
             }
+
             amdgpu_bo_wait((struct pb_buffer*)bo, PIPE_TIMEOUT_INFINITE,
                            RADEON_USAGE_WRITE);
          } else {
@@ -308,6 +312,7 @@ static void *amdgpu_bo_map(struct pb_buffer *buf,
          real->ws->mapped_vram += real->base.size;
       else if (real->initial_domain & RADEON_DOMAIN_GTT)
          real->ws->mapped_gtt += real->base.size;
+      real->ws->num_mapped_buffers++;
    }
    return (uint8_t*)cpu + offset;
 }
@@ -327,6 +332,7 @@ static void amdgpu_bo_unmap(struct pb_buffer *buf)
          real->ws->mapped_vram -= real->base.size;
       else if (real->initial_domain & RADEON_DOMAIN_GTT)
          real->ws->mapped_gtt -= real->base.size;
+      real->ws->num_mapped_buffers--;
    }
 
    amdgpu_bo_cpu_unmap(real->bo);
@@ -343,10 +349,10 @@ static void amdgpu_add_buffer_to_global_list(struct amdgpu_winsys_bo *bo)
 
    assert(bo->bo);
 
-   pipe_mutex_lock(ws->global_bo_list_lock);
+   mtx_lock(&ws->global_bo_list_lock);
    LIST_ADDTAIL(&bo->u.real.global_list_item, &ws->global_bo_list);
    ws->num_buffers++;
-   pipe_mutex_unlock(ws->global_bo_list_lock);
+   mtx_unlock(&ws->global_bo_list_lock);
 }
 
 static struct amdgpu_winsys_bo *amdgpu_create_bo(struct amdgpu_winsys *ws,

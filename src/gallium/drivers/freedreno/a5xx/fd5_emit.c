@@ -366,6 +366,7 @@ fd5_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd5_emit *emit)
 			struct fd_resource *rsc = fd_resource(vb->buffer);
 			enum pipe_format pfmt = elem->src_format;
 			enum a5xx_vtx_fmt fmt = fd5_pipe2vtx(pfmt);
+			bool isint = util_format_is_pure_integer(pfmt);
 			uint32_t off = vb->buffer_offset + elem->src_offset;
 			uint32_t size = fd_bo_size(rsc->bo) - off;
 			debug_assert(fmt != ~0);
@@ -378,7 +379,9 @@ fd5_emit_vertex_bufs(struct fd_ringbuffer *ring, struct fd5_emit *emit)
 			OUT_PKT4(ring, REG_A5XX_VFD_DECODE(j), 2);
 			OUT_RING(ring, A5XX_VFD_DECODE_INSTR_IDX(j) |
 					A5XX_VFD_DECODE_INSTR_FORMAT(fmt) |
-					0xc0000000);  // XXX
+					COND(elem->instance_divisor, A5XX_VFD_DECODE_INSTR_INSTANCED) |
+					A5XX_VFD_DECODE_INSTR_UNK30 |
+					COND(!isint, A5XX_VFD_DECODE_INSTR_FLOAT));
 			OUT_RING(ring, MAX2(1, elem->instance_divisor)); /* VFD_DECODE[j].STEP_RATE */
 
 			OUT_PKT4(ring, REG_A5XX_VFD_DEST_CNTL(j), 1);
@@ -455,10 +458,12 @@ fd5_emit_state(struct fd_context *ctx, struct fd_ringbuffer *ring,
 		OUT_RING(ring, zsa->rb_depth_cntl);
 
 		OUT_PKT4(ring, REG_A5XX_RB_DEPTH_PLANE_CNTL, 1);
-		OUT_RING(ring, COND(fragz, A5XX_RB_DEPTH_PLANE_CNTL_FRAG_WRITES_Z));
+		OUT_RING(ring, COND(fragz, A5XX_RB_DEPTH_PLANE_CNTL_FRAG_WRITES_Z) |
+				COND(fragz && fp->frag_coord, A5XX_RB_DEPTH_PLANE_CNTL_UNK1));
 
 		OUT_PKT4(ring, REG_A5XX_GRAS_SU_DEPTH_PLANE_CNTL, 1);
-		OUT_RING(ring, COND(fragz, A5XX_GRAS_SU_DEPTH_PLANE_CNTL_FRAG_WRITES_Z));
+		OUT_RING(ring, COND(fragz, A5XX_GRAS_SU_DEPTH_PLANE_CNTL_FRAG_WRITES_Z) |
+				COND(fragz && fp->frag_coord, A5XX_GRAS_SU_DEPTH_PLANE_CNTL_UNK1));
 	}
 
 	if (dirty & FD_DIRTY_RASTERIZER) {

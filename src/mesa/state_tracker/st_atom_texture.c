@@ -91,6 +91,10 @@ update_single_texture(struct st_context *st,
       stObj->prev_sRGBDecode = samp->sRGBDecode;
    }
 
+   if (texObj->TargetIndex == TEXTURE_EXTERNAL_INDEX &&
+       stObj->pt->screen->resource_changed)
+         stObj->pt->screen->resource_changed(stObj->pt->screen, stObj->pt);
+
    *sampler_view =
       st_get_texture_sampler_view_from_stobj(st, stObj, samp, glsl_version);
    return GL_TRUE;
@@ -111,9 +115,6 @@ update_textures(struct st_context *st,
    GLbitfield free_slots = ~prog->SamplersUsed;
    GLbitfield external_samplers_used = prog->ExternalSamplersUsed;
    GLuint unit;
-   struct gl_shader_program *shader =
-      st->ctx->_Shader->CurrentProgram[mesa_shader];
-   unsigned glsl_version = shader ? shader->data->Version : 0;
    enum pipe_shader_type shader_stage = st_shader_stage_to_ptarget(mesa_shader);
 
    if (samplers_used == 0x0 && old_max == 0)
@@ -126,6 +127,8 @@ update_textures(struct st_context *st,
       struct pipe_sampler_view *sampler_view = NULL;
 
       if (samplers_used & 1) {
+         /* prog->sh.data is NULL if it's ARB_fragment_program */
+         unsigned glsl_version = prog->sh.data ? prog->sh.data->Version : 0;
          const GLuint texUnit = prog->SamplerUnits[unit];
          GLboolean retval;
 

@@ -91,14 +91,13 @@ libEGL_la_LIBADD += $(ANDROID_LIBS)
 dri2_backend_FILES += drivers/dri2/platform_android.c
 endif
 
-if HAVE_EGL_DRIVER_DRI2
 AM_CFLAGS += \
 	-I$(top_srcdir)/src/loader \
 	-I$(top_srcdir)/src/egl/drivers/dri2 \
 	-I$(top_srcdir)/src/gbm/backends/dri \
 	-I$(top_srcdir)/src/egl/wayland/wayland-egl \
-	-I$(top_srcdir)/src/egl/wayland/wayland-drm \
 	-I$(top_builddir)/src/egl/wayland/wayland-drm \
+	-I$(top_srcdir)/src/egl/wayland/wayland-drm \
 	-DDEFAULT_DRIVER_DIR=\"$(DRI_DRIVER_SEARCH_DIR)\" \
 	-D_EGL_BUILT_IN_DRIVER_DRI2
 
@@ -109,7 +108,6 @@ libEGL_la_SOURCES += \
 
 libEGL_la_LIBADD += $(top_builddir)/src/loader/libloader.la
 libEGL_la_LIBADD += $(DLOPEN_LIBS) $(LIBDRM_LIBS) $(CLOCK_LIB)
-endif
 
 include $(top_srcdir)/install-lib-links.mk
 
@@ -128,10 +126,11 @@ egl_HEADERS = \
 	$(top_srcdir)/include/EGL/eglmesaext.h \
 	$(top_srcdir)/include/EGL/eglplatform.h
 
-TESTS = egl-symbols-check
+TESTS = egl-symbols-check \
+	egl-entrypoint-check
 
 EXTRA_DIST = \
-	egl-symbols-check \
+	$(TESTS) \
 	SConscript \
 	drivers/haiku \
 	main/egl.def \

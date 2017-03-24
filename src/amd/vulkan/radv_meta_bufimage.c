@@ -85,7 +85,7 @@ build_nir_itob_compute_shader(struct radv_device *dev)
 	tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
 	tex->op = nir_texop_txf;
 	tex->src[0].src_type = nir_tex_src_coord;
-	tex->src[0].src = nir_src_for_ssa(img_coord);
+	tex->src[0].src = nir_src_for_ssa(nir_channels(&b, img_coord, 0x3));
 	tex->src[1].src_type = nir_tex_src_lod;
 	tex->src[1].src = nir_src_for_ssa(nir_imm_int(&b, 0));
 	tex->dest_type = nir_type_float;
@@ -288,7 +288,7 @@ build_nir_btoi_compute_shader(struct radv_device *dev)
 	tex->sampler_dim = GLSL_SAMPLER_DIM_BUF;
 	tex->op = nir_texop_txf;
 	tex->src[0].src_type = nir_tex_src_coord;
-	tex->src[0].src = nir_src_for_ssa(buf_coord);
+	tex->src[0].src = nir_src_for_ssa(nir_channels(&b, buf_coord, 1));
 	tex->src[1].src_type = nir_tex_src_lod;
 	tex->src[1].src = nir_src_for_ssa(nir_imm_int(&b, 0));
 	tex->dest_type = nir_type_float;
@@ -477,7 +477,7 @@ build_nir_itoi_compute_shader(struct radv_device *dev)
 	tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
 	tex->op = nir_texop_txf;
 	tex->src[0].src_type = nir_tex_src_coord;
-	tex->src[0].src = nir_src_for_ssa(src_coord);
+	tex->src[0].src = nir_src_for_ssa(nir_channels(&b, src_coord, 3));
 	tex->src[1].src_type = nir_tex_src_lod;
 	tex->src[1].src = nir_src_for_ssa(nir_imm_int(&b, 0));
 	tex->dest_type = nir_type_float;
@@ -1014,7 +1014,7 @@ btoi_bind_descriptors(struct radv_cmd_buffer *cmd_buffer,
 						  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 						  .pImageInfo = (VkDescriptorImageInfo[]) {
 							  {
-								  .sampler = NULL,
+								  .sampler = VK_NULL_HANDLE,
 								  .imageView = radv_image_view_to_handle(&tmp->dst_iview),
 								  .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 							  },
@@ -1101,7 +1101,7 @@ itoi_bind_descriptors(struct radv_cmd_buffer *cmd_buffer,
 						  .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
 						  .pImageInfo = (VkDescriptorImageInfo[]) {
 							  {
-								  .sampler = NULL,
+								  .sampler = VK_NULL_HANDLE,
 								  .imageView = radv_image_view_to_handle(&tmp->src_iview),
 								  .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 							  },
@@ -1116,7 +1116,7 @@ itoi_bind_descriptors(struct radv_cmd_buffer *cmd_buffer,
 						  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 						  .pImageInfo = (VkDescriptorImageInfo[]) {
 							  {
-								  .sampler = NULL,
+								  .sampler = VK_NULL_HANDLE,
 								  .imageView = radv_image_view_to_handle(&tmp->dst_iview),
 								  .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 							  },
@@ -1204,7 +1204,7 @@ cleari_bind_descriptors(struct radv_cmd_buffer *cmd_buffer,
 						  .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
 						  .pImageInfo = (VkDescriptorImageInfo[]) {
 							  {
-								  .sampler = NULL,
+								  .sampler = VK_NULL_HANDLE,
 								  .imageView = radv_image_view_to_handle(&tmp->dst_iview),
 								  .imageLayout = VK_IMAGE_LAYOUT_GENERAL,
 							  },

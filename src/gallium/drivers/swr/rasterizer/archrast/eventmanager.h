@@ -29,8 +29,8 @@
 
 #include "common/os.h"
 
-#include "gen_ar_event.h"
-#include "gen_ar_eventhandler.h"
+#include "gen_ar_event.hpp"
+#include "gen_ar_eventhandler.hpp"
 
 #include <vector>
 
@@ -69,10 +69,18 @@ namespace ArchRast
                 event.Accept(pHandler);
             }
         }
+
+        void FlushDraw(uint32_t drawId)
+        {
+            for (auto pHandler : mHandlers)
+            {
+                pHandler->FlushDraw(drawId);
+            }
+        }
     private:
 
         // Handlers stay registered for life
-        void Detach(EventHandler* pHandler) { SWR_ASSERT(0); }
+        void Detach(EventHandler* pHandler) { SWR_INVALID("Should not be called"); }
 
         std::vector<EventHandler*> mHandlers;
     };

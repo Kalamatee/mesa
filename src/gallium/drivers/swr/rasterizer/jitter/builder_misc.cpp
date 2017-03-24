@@ -350,6 +350,13 @@ namespace SwrJit
     }
     #endif
 
+    //////////////////////////////////////////////////////////////////////////
+    Value *Builder::DEBUGTRAP()
+    {
+        Function *func = Intrinsic::getDeclaration(JM()->mpCurrentModule, Intrinsic::debugtrap);
+        return CALL(func);
+    }
+
     Value *Builder::VRCP(Value *va)
     {
         return FDIV(VIMMED1(1.0f), va);  // 1 / a
@@ -626,6 +633,55 @@ namespace SwrJit
                 vGather = VINSERT(vGather, val, C(i));
             }
 
+            STACKRESTORE(pStack);
+        }
+        return vGather;
+    }
+
+    //////////////////////////////////////////////////////////////////////////
+    /// @brief Generate a masked gather operation in LLVM IR.  If not
+    /// supported on the underlying platform, emulate it with loads
+    /// @param vSrc - SIMD wide value that will be loaded if mask is invalid
+    /// @param pBase - Int8* base VB address pointer value
+    /// @param vIndices - SIMD wide value of VB byte offsets
+    /// @param vMask - SIMD wide mask that controls whether to access memory or the src values
+    /// @param scale - value to scale indices by
+    Value *Builder::GATHERPD(Value* vSrc, Value* pBase, Value* vIndices, Value* vMask, Value* scale)
+    {
+        Value* vGather;
+
+        // use avx2 gather instruction if available
+        if(JM()->mArch.AVX2())
+        {
+            vGather = VGATHERPD(vSrc, pBase, vIndices, vMask, scale);
+        }
+        else
+        {
+            Value* pStack = STACKSAVE();
+
+            // store vSrc on the stack.  this way we can select between a valid load address and the vSrc address
+            Value* vSrcPtr = ALLOCA(vSrc->getType());
+            STORE(vSrc, vSrcPtr);
+
+            vGather = UndefValue::get(VectorType::get(mDoubleTy, 4));
+            Value *vScaleVec = VECTOR_SPLAT(4, Z_EXT(scale,mInt32Ty));
+            Value *vOffsets = MUL(vIndices,vScaleVec);
+            Value *mask = MASK(vMask);
+            for(uint32_t i = 0; i < mVWidth/2; ++i)
+            {
+                // single component byte index
+                Value *offset = VEXTRACT(vOffsets,C(i));
+                // byte pointer to component
+                Value *loadAddress = GEP(pBase,offset);
+                loadAddress = BITCAST(loadAddress,PointerType::get(mDoubleTy,0));
+                // pointer to the value to load if we're masking off a component
+                Value *maskLoadAddress = GEP(vSrcPtr,{C(0), C(i)});
+                Value *selMask = VEXTRACT(mask,C(i));
+                // switch in a safe address to load if we're trying to access a vertex
+                Value *validAddress = SELECT(selMask, loadAddress, maskLoadAddress);
+                Value *val = LOAD(validAddress);
+                vGather = VINSERT(vGather,val,C(i));
+            }
             STACKRESTORE(pStack);
         }
         return vGather;
@@ -1041,7 +1097,7 @@ namespace SwrJit
             }
                 break;
             default:
-                SWR_ASSERT(0, "Invalid float format");
+                SWR_INVALID("Invalid float format");
                 break;
         }
     }
@@ -1128,7 +1184,7 @@ namespace SwrJit
             }
                 break;
             default:
-                SWR_ASSERT(0, "unsupported format");
+                SWR_INVALID("unsupported format");
             break;
         }
     }

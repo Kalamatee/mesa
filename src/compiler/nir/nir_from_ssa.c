@@ -26,21 +26,22 @@
  */
 
 #include "nir.h"
+#include "nir_builder.h"
 #include "nir_vla.h"
 
 /*
  * This file implements an out-of-SSA pass as described in "Revisiting
  * Out-of-SSA Translation for Correctness, Code Quality, and Efficiency" by
- * Boissinot et. al.
+ * Boissinot et al.
  */
 
 struct from_ssa_state {
-   void *mem_ctx;
+   nir_builder builder;
    void *dead_ctx;
    bool phi_webs_only;
    struct hash_table *merge_node_table;
    nir_instr *instr;
-   nir_function_impl *impl;
+   bool progress;
 };
 
 /* Returns true if a dominates b */
@@ -63,16 +64,16 @@ ssa_def_dominates(nir_ssa_def *a, nir_ssa_def *b)
 
 /* The following data structure, which I have named merge_set is a way of
  * representing a set registers of non-interfering registers.  This is
- * based on the concept of a "dominence forest" presented in "Fast Copy
- * Coalescing and Live-Range Identification" by Budimlic et. al. but the
+ * based on the concept of a "dominance forest" presented in "Fast Copy
+ * Coalescing and Live-Range Identification" by Budimlic et al. but the
  * implementation concept is taken from  "Revisiting Out-of-SSA Translation
- * for Correctness, Code Quality, and Efficiency" by Boissinot et. al..
+ * for Correctness, Code Quality, and Efficiency" by Boissinot et al.
  *
  * Each SSA definition is associated with a merge_node and the association
  * is represented by a combination of a hash table and the "def" parameter
  * in the merge_node structure.  The merge_set stores a linked list of
- * merge_node's in dominence order of the ssa definitions.  (Since the
- * liveness analysis pass indexes the SSA values in dominence order for us,
+ * merge_nodes in dominance order of the ssa definitions.  (Since the
+ * liveness analysis pass indexes the SSA values in dominance order for us,
  * this is an easy thing to keep up.)  It is assumed that no pair of the
  * nodes in a given set interfere.  Merging two sets or checking for
  * interference can be done in a single linear-time merge-sort walk of the
@@ -177,7 +178,7 @@ merge_merge_sets(merge_set *a, merge_set *b)
  *
  * This is an implementation of Algorithm 2 in "Revisiting Out-of-SSA
  * Translation for Correctness, Code Quality, and Efficiency" by
- * Boissinot et. al.
+ * Boissinot et al.
  */
 static bool
 merge_sets_interfere(merge_set *a, merge_set *b)
@@ -313,7 +314,7 @@ isolate_phi_nodes_block(nir_block *block, void *dead_ctx)
       last_phi_instr = instr;
    }
 
-   /* If we don't have any phi's, then there's nothing for us to do. */
+   /* If we don't have any phis, then there's nothing for us to do. */
    if (last_phi_instr == NULL)
       return true;
 
@@ -477,7 +478,7 @@ rewrite_ssa_def(nir_ssa_def *def, void *void_state)
        * matter which node's definition we use.
        */
       if (node->set->reg == NULL)
-         node->set->reg = create_reg_for_ssa_def(def, state->impl);
+         node->set->reg = create_reg_for_ssa_def(def, state->builder.impl);
 
       reg = node->set->reg;
    } else {
@@ -490,7 +491,7 @@ rewrite_ssa_def(nir_ssa_def *def, void *void_state)
       if (def->parent_instr->type == nir_instr_type_load_const)
          return true;
 
-      reg = create_reg_for_ssa_def(def, state->impl);
+      reg = create_reg_for_ssa_def(def, state->builder.impl);
    }
 
    nir_ssa_def_rewrite_uses(def, nir_src_for_reg(reg));
@@ -503,6 +504,7 @@ rewrite_ssa_def(nir_ssa_def *def, void *void_state)
       nir_instr *parent_instr = def->parent_instr;
       nir_instr_remove(parent_instr);
       ralloc_steal(state->dead_ctx, parent_instr);
+      state->progress = true;
       return true;
    }
 
@@ -514,14 +516,14 @@ rewrite_ssa_def(nir_ssa_def *def, void *void_state)
    nir_dest *dest = exec_node_data(nir_dest, def, ssa);
 
    nir_instr_rewrite_dest(state->instr, dest, nir_dest_for_reg(reg));
-
+   state->progress = true;
    return true;
 }
 
 /* Resolves ssa definitions to registers.  While we're at it, we also
  * remove phi nodes.
  */
-static bool
+static void
 resolve_registers_block(nir_block *block, struct from_ssa_state *state)
 {
    nir_foreach_instr_safe(instr, block) {
@@ -531,16 +533,14 @@ resolve_registers_block(nir_block *block, struct from_ssa_state *state)
       if (instr->type == nir_instr_type_phi) {
          nir_instr_remove(instr);
          ralloc_steal(state->dead_ctx, instr);
+         state->progress = true;
       }
    }
    state->instr = NULL;
-
-   return true;
 }
 
 static void
-emit_copy(nir_parallel_copy_instr *pcopy, nir_src src, nir_src dest_src,
-          void *mem_ctx)
+emit_copy(nir_builder *b, nir_src src, nir_src dest_src)
 {
    assert(!dest_src.is_ssa &&
           dest_src.reg.indirect == NULL &&
@@ -551,18 +551,18 @@ emit_copy(nir_parallel_copy_instr *pcopy, nir_src src, nir_src dest_src,
    else
       assert(src.reg.reg->num_components >= dest_src.reg.reg->num_components);
 
-   nir_alu_instr *mov = nir_alu_instr_create(mem_ctx, nir_op_imov);
+   nir_alu_instr *mov = nir_alu_instr_create(b->shader, nir_op_imov);
    nir_src_copy(&mov->src[0].src, &src, mov);
    mov->dest.dest = nir_dest_for_reg(dest_src.reg.reg);
    mov->dest.write_mask = (1 << dest_src.reg.reg->num_components) - 1;
 
-   nir_instr_insert_before(&pcopy->instr, &mov->instr);
+   nir_builder_instr_insert(b, &mov->instr);
 }
 
-/* Resolves a single parallel copy operation into a sequence of mov's
+/* Resolves a single parallel copy operation into a sequence of movs
  *
  * This is based on Algorithm 1 from "Revisiting Out-of-SSA Translation for
- * Correctness, Code Quality, and Efficiency" by Boissinot et. al..
+ * Correctness, Code Quality, and Efficiency" by Boissinot et al.
  * However, I never got the algorithm to work as written, so this version
  * is slightly modified.
  *
@@ -612,6 +612,8 @@ resolve_parallel_copy(nir_parallel_copy_instr *pcopy,
    /* The destinations we have yet to properly fill */
    NIR_VLA(int, to_do, num_copies * 2);
    int to_do_idx = -1;
+
+   state->builder.cursor = nir_before_instr(&pcopy->instr);
 
    /* Now we set everything up:
     *  - All values get assigned a temporary index
@@ -676,7 +678,7 @@ resolve_parallel_copy(nir_parallel_copy_instr *pcopy,
       while (ready_idx >= 0) {
          int b = ready[ready_idx--];
          int a = pred[b];
-         emit_copy(pcopy, values[loc[a]], values[b], state->mem_ctx);
+         emit_copy(&state->builder, values[loc[a]], values[b]);
 
          /* If any other copies want a they can find it at b */
          loc[a] = b;
@@ -702,7 +704,7 @@ resolve_parallel_copy(nir_parallel_copy_instr *pcopy,
        * backend can coalesce the (possibly multiple) temporaries.
        */
       assert(num_vals < num_copies * 2);
-      nir_register *reg = nir_local_reg_create(state->impl);
+      nir_register *reg = nir_local_reg_create(state->builder.impl);
       reg->name = "copy_temp";
       reg->num_array_elems = 0;
       if (values[b].is_ssa)
@@ -712,7 +714,7 @@ resolve_parallel_copy(nir_parallel_copy_instr *pcopy,
       values[num_vals].is_ssa = false;
       values[num_vals].reg.reg = reg;
 
-      emit_copy(pcopy, values[b], values[num_vals], state->mem_ctx);
+      emit_copy(&state->builder, values[b], values[num_vals]);
       loc[b] = num_vals;
       ready[++ready_idx] = b;
       num_vals++;
@@ -755,17 +757,17 @@ resolve_parallel_copies_block(nir_block *block, struct from_ssa_state *state)
    return true;
 }
 
-static void
+static bool
 nir_convert_from_ssa_impl(nir_function_impl *impl, bool phi_webs_only)
 {
    struct from_ssa_state state;
 
-   state.mem_ctx = ralloc_parent(impl);
+   nir_builder_init(&state.builder, impl);
    state.dead_ctx = ralloc_context(NULL);
-   state.impl = impl;
    state.phi_webs_only = phi_webs_only;
    state.merge_node_table = _mesa_hash_table_create(NULL, _mesa_hash_pointer,
                                                     _mesa_key_pointer_equal);
+   state.progress = false;
 
    nir_foreach_block(block, impl) {
       add_parallel_copy_to_end_of_block(block, state.dead_ctx);
@@ -804,15 +806,20 @@ nir_convert_from_ssa_impl(nir_function_impl *impl, bool phi_webs_only)
    /* Clean up dead instructions and the hash tables */
    _mesa_hash_table_destroy(state.merge_node_table, NULL);
    ralloc_free(state.dead_ctx);
+   return state.progress;
 }
 
-void
+bool
 nir_convert_from_ssa(nir_shader *shader, bool phi_webs_only)
 {
+   bool progress = false;
+
    nir_foreach_function(function, shader) {
       if (function->impl)
-         nir_convert_from_ssa_impl(function->impl, phi_webs_only);
+         progress |= nir_convert_from_ssa_impl(function->impl, phi_webs_only);
    }
+
+   return progress;
 }
 
 
@@ -851,10 +858,10 @@ place_phi_read(nir_shader *shader, nir_register *reg,
    nir_instr_insert(nir_after_block_before_jump(block), &mov->instr);
 }
 
-/** Lower all of the phi nodes in a block to imov's to and from a register
+/** Lower all of the phi nodes in a block to imovs to and from a register
  *
  * This provides a very quick-and-dirty out-of-SSA pass that you can run on a
- * single block to convert all of it's phis to a register and some imov's.
+ * single block to convert all of its phis to a register and some imovs.
  * The code that is generated, while not optimal for actual codegen in a
  * back-end, is easy to generate, correct, and will turn into the same set of
  * phis after you call regs_to_ssa and do some copy propagation.
@@ -970,7 +977,6 @@ nir_lower_ssa_defs_to_regs_block(nir_block *block)
       } else {
          nir_foreach_dest(instr, dest_replace_ssa_with_reg, &state);
       }
-         nir_foreach_dest(instr, dest_replace_ssa_with_reg, &state);
    }
 
    return state.progress;

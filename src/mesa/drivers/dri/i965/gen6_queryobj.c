@@ -98,6 +98,54 @@ write_xfb_primitives_written(struct brw_context *brw,
    }
 }
 
+static void
+write_xfb_overflow_streams(struct gl_context *ctx,
+                           drm_intel_bo *bo, int stream, int count,
+                           int idx)
+{
+   struct brw_context *brw = brw_context(ctx);
+
+   brw_emit_mi_flush(brw);
+
+   for (int i = 0; i < count; i++) {
+      int w_idx = 4 * i + idx;
+      int g_idx = 4 * i + idx + 2;
+
+      if (brw->gen >= 7) {
+         brw_store_register_mem64(brw, bo,
+                                  GEN7_SO_NUM_PRIMS_WRITTEN(stream + i),
+                                  g_idx * sizeof(uint64_t));
+         brw_store_register_mem64(brw, bo,
+                                  GEN7_SO_PRIM_STORAGE_NEEDED(stream + i),
+                                  w_idx * sizeof(uint64_t));
+      } else {
+         brw_store_register_mem64(brw, bo,
+                                  GEN6_SO_NUM_PRIMS_WRITTEN,
+                                  g_idx * sizeof(uint64_t));
+         brw_store_register_mem64(brw, bo,
+                                  GEN6_SO_PRIM_STORAGE_NEEDED,
+                                  w_idx * sizeof(uint64_t));
+      }
+   }
+}
+
+static bool
+check_xfb_overflow_streams(uint64_t *results, int count)
+{
+   bool overflow = false;
+
+   for (int i = 0; i < count; i++) {
+      uint64_t *result_i = &results[4 * i];
+
+      if ((result_i[3] - result_i[2]) != (result_i[1] - result_i[0])) {
+         overflow = true;
+         break;
+      }
+   }
+
+   return overflow;
+}
+
 static inline int
 pipeline_target_to_index(int target)
 {
@@ -171,30 +219,18 @@ gen6_queryobj_get_results(struct gl_context *ctx,
       /* The query BO contains the starting and ending timestamps.
        * Subtract the two and convert to nanoseconds.
        */
-      query->Base.Result += 80 * (results[1] - results[0]);
+      query->Base.Result = brw_raw_timestamp_delta(brw, results[0], results[1]);
+      query->Base.Result = brw_timebase_scale(brw, query->Base.Result);
       break;
 
    case GL_TIMESTAMP:
-      /* Our timer is a clock that increments every 80ns (regardless of
-       * other clock scaling in the system).  The timestamp register we can
-       * read for glGetTimestamp() masks out the top 32 bits, so we do that
-       * here too to let the two counters be compared against each other.
-       *
-       * If we just multiplied that 32 bits of data by 80, it would roll
-       * over at a non-power-of-two, so an application couldn't use
-       * GL_QUERY_COUNTER_BITS to handle rollover correctly.  Instead, we
-       * report 36 bits and truncate at that (rolling over 5 times as often
-       * as the HW counter), and when the 32-bit counter rolls over, it
-       * happens to also be at a rollover in the reported value from near
-       * (1<<36) to 0.
-       *
-       * The low 32 bits rolls over in ~343 seconds.  Our 36-bit result
-       * rolls over every ~69 seconds.
-       *
-       * The query BO contains a single timestamp value in results[0].
+      /* The query BO contains a single timestamp value in results[0]. */
+      query->Base.Result = brw_timebase_scale(brw, results[0]);
+
+      /* Ensure the scaled timestamp overflows according to
+       * GL_QUERY_COUNTER_BITS
        */
-      query->Base.Result = 80 * (results[0] & 0xffffffff);
-      query->Base.Result &= (1ull << 36) - 1;
+      query->Base.Result &= (1ull << ctx->Const.QueryCounterBits.Timestamp) - 1;
       break;
 
    case GL_SAMPLES_PASSED_ARB:
@@ -223,6 +259,14 @@ gen6_queryobj_get_results(struct gl_context *ctx,
    case GL_TESS_CONTROL_SHADER_PATCHES_ARB:
    case GL_TESS_EVALUATION_SHADER_INVOCATIONS_ARB:
       query->Base.Result = results[1] - results[0];
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB:
+      query->Base.Result = check_xfb_overflow_streams(results, 1);
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB:
+      query->Base.Result = check_xfb_overflow_streams(results, MAX_VERTEX_STREAMS);
       break;
 
    case GL_FRAGMENT_SHADER_INVOCATIONS_ARB:
@@ -314,6 +358,14 @@ gen6_begin_query(struct gl_context *ctx, struct gl_query_object *q)
       write_xfb_primitives_written(brw, query->bo, query->Base.Stream, 0);
       break;
 
+   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB:
+      write_xfb_overflow_streams(ctx, query->bo, query->Base.Stream, 1, 0);
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB:
+      write_xfb_overflow_streams(ctx, query->bo, 0, MAX_VERTEX_STREAMS, 0);
+      break;
+
    case GL_VERTICES_SUBMITTED_ARB:
    case GL_PRIMITIVES_SUBMITTED_ARB:
    case GL_VERTEX_SHADER_INVOCATIONS_ARB:
@@ -368,6 +420,15 @@ gen6_end_query(struct gl_context *ctx, struct gl_query_object *q)
       write_xfb_primitives_written(brw, query->bo, query->Base.Stream, 1);
       break;
 
+   case GL_TRANSFORM_FEEDBACK_STREAM_OVERFLOW_ARB:
+      write_xfb_overflow_streams(ctx, query->bo, query->Base.Stream, 1, 1);
+      break;
+
+   case GL_TRANSFORM_FEEDBACK_OVERFLOW_ARB:
+      write_xfb_overflow_streams(ctx, query->bo, 0, MAX_VERTEX_STREAMS, 1);
+      break;
+
+      /* calculate overflow here */
    case GL_VERTICES_SUBMITTED_ARB:
    case GL_PRIMITIVES_SUBMITTED_ARB:
    case GL_VERTEX_SHADER_INVOCATIONS_ARB:

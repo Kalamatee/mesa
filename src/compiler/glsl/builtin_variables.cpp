@@ -30,6 +30,7 @@
 #include "main/uniforms.h"
 #include "program/prog_statevars.h"
 #include "program/prog_instruction.h"
+#include "builtin_functions.h"
 
 using namespace ir_builder;
 
@@ -443,7 +444,7 @@ private:
 builtin_variable_generator::builtin_variable_generator(
    exec_list *instructions, struct _mesa_glsl_parse_state *state)
    : instructions(instructions), state(state), symtab(state->symbols),
-     compatibility(!state->is_version(140, 100)),
+     compatibility(state->compat_shader || !state->is_version(140, 100)),
      bool_t(glsl_type::bool_type), int_t(glsl_type::int_type),
      uint_t(glsl_type::uint_type),
      float_t(glsl_type::float_type), vec2_t(glsl_type::vec2_type),
@@ -839,8 +840,7 @@ builtin_variable_generator::generate_constants()
                 state->Const.MaxTransformFeedbackInterleavedComponents);
    }
 
-   if (state->is_version(420, 310) ||
-       state->ARB_shader_image_load_store_enable) {
+   if (state->has_shader_image_load_store()) {
       add_const("gl_MaxImageUnits",
                 state->Const.MaxImageUnits);
       add_const("gl_MaxVertexImageUniforms",
@@ -1075,10 +1075,17 @@ builtin_variable_generator::generate_tes_special_vars()
    add_system_value(SYSTEM_VALUE_PRIMITIVE_ID, int_t, "gl_PrimitiveID");
    add_system_value(SYSTEM_VALUE_VERTICES_IN, int_t, "gl_PatchVerticesIn");
    add_system_value(SYSTEM_VALUE_TESS_COORD, vec3_t, "gl_TessCoord");
-   add_system_value(SYSTEM_VALUE_TESS_LEVEL_OUTER, array(float_t, 4),
-                    "gl_TessLevelOuter");
-   add_system_value(SYSTEM_VALUE_TESS_LEVEL_INNER, array(float_t, 2),
-                    "gl_TessLevelInner");
+   if (this->state->ctx->Const.GLSLTessLevelsAsInputs) {
+      add_input(VARYING_SLOT_TESS_LEVEL_OUTER, array(float_t, 4),
+                "gl_TessLevelOuter")->data.patch = 1;
+      add_input(VARYING_SLOT_TESS_LEVEL_INNER, array(float_t, 2),
+                "gl_TessLevelInner")->data.patch = 1;
+   } else {
+      add_system_value(SYSTEM_VALUE_TESS_LEVEL_OUTER, array(float_t, 4),
+                       "gl_TessLevelOuter");
+      add_system_value(SYSTEM_VALUE_TESS_LEVEL_INNER, array(float_t, 2),
+                       "gl_TessLevelInner");
+   }
    if (state->ARB_shader_viewport_layer_array_enable) {
       var = add_output(VARYING_SLOT_LAYER, int_t, "gl_Layer");
       var->data.interpolation = INTERP_MODE_FLAT;
@@ -1184,6 +1191,9 @@ builtin_variable_generator::generate_fs_special_vars()
     */
    if (state->is_version(110, 300))
       add_output(FRAG_RESULT_DEPTH, float_t, "gl_FragDepth");
+
+   if (state->EXT_frag_depth_enable)
+      add_output(FRAG_RESULT_DEPTH, float_t, "gl_FragDepthEXT");
 
    if (state->ARB_shader_stencil_export_enable) {
       ir_variable *const var =

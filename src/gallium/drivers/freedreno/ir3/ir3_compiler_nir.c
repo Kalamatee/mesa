@@ -722,16 +722,16 @@ emit_alu(struct ir3_compile *ctx, nir_alu_instr *alu)
 	}
 
 	switch (alu->op) {
-	case nir_op_f2i:
+	case nir_op_f2i32:
 		dst[0] = ir3_COV(b, src[0], TYPE_F32, TYPE_S32);
 		break;
-	case nir_op_f2u:
+	case nir_op_f2u32:
 		dst[0] = ir3_COV(b, src[0], TYPE_F32, TYPE_U32);
 		break;
-	case nir_op_i2f:
+	case nir_op_i2f32:
 		dst[0] = ir3_COV(b, src[0], TYPE_S32, TYPE_F32);
 		break;
-	case nir_op_u2f:
+	case nir_op_u2f32:
 		dst[0] = ir3_COV(b, src[0], TYPE_U32, TYPE_F32);
 		break;
 	case nir_op_imov:
@@ -1246,10 +1246,12 @@ emit_intrinsic(struct ir3_compile *ctx, nir_intrinsic_instr *intr)
 		dst[0] = ctx->basevertex;
 		break;
 	case nir_intrinsic_load_vertex_id_zero_base:
+	case nir_intrinsic_load_vertex_id:
 		if (!ctx->vertex_id) {
+			gl_system_value sv = (intr->intrinsic == nir_intrinsic_load_vertex_id) ?
+				SYSTEM_VALUE_VERTEX_ID : SYSTEM_VALUE_VERTEX_ID_ZERO_BASE;
 			ctx->vertex_id = create_input(b, 0);
-			add_sysval_input(ctx, SYSTEM_VALUE_VERTEX_ID_ZERO_BASE,
-					ctx->vertex_id);
+			add_sysval_input(ctx, sv, ctx->vertex_id);
 		}
 		dst[0] = ctx->vertex_id;
 		break;
@@ -2426,8 +2428,14 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 	if (so->key.half_precision) {
 		for (i = 0; i < ir->noutputs; i++) {
 			struct ir3_instruction *out = ir->outputs[i];
+
 			if (!out)
 				continue;
+
+			/* if frag shader writes z, that needs to be full precision: */
+			if (so->outputs[i/4].slot == FRAG_RESULT_DEPTH)
+				continue;
+
 			out->regs[0]->flags |= IR3_REG_HALF;
 			/* output could be a fanout (ie. texture fetch output)
 			 * in which case we need to propagate the half-reg flag
@@ -2499,7 +2507,7 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 	actual_in = 0;
 	inloc = 0;
 	for (i = 0; i < so->inputs_count; i++) {
-		unsigned j, regid = ~0, compmask = 0;
+		unsigned j, regid = ~0, compmask = 0, maxcomp = 0;
 		so->inputs[i].ncomp = 0;
 		so->inputs[i].inloc = inloc;
 		for (j = 0; j < 4; j++) {
@@ -2512,14 +2520,19 @@ ir3_compile_shader_nir(struct ir3_compiler *compiler,
 				if ((so->type == SHADER_FRAGMENT) && so->inputs[i].bary) {
 					/* assign inloc: */
 					assert(in->regs[1]->flags & IR3_REG_IMMED);
-					in->regs[1]->iim_val = inloc++;
+					in->regs[1]->iim_val = inloc + j;
+					maxcomp = j + 1;
 				}
 			}
 		}
-		if ((so->type == SHADER_FRAGMENT) && compmask && so->inputs[i].bary)
+		if ((so->type == SHADER_FRAGMENT) && compmask && so->inputs[i].bary) {
 			so->varying_in++;
+			so->inputs[i].compmask = (1 << maxcomp) - 1;
+			inloc += maxcomp;
+		} else {
+			so->inputs[i].compmask = compmask;
+		}
 		so->inputs[i].regid = regid;
-		so->inputs[i].compmask = compmask;
 	}
 
 	if (ctx->astc_srgb)

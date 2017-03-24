@@ -227,11 +227,13 @@ lp_build_gather_elem_vec(struct gallivm_state *gallivm,
           * with src_width >= 32 here?
           */
       } else {
+         LLVMTypeRef dst_elem_type = lp_build_vec_type(gallivm, dst_type);
+
          /*
           * Only valid if src_ptr_type is int type...
           */
-         res = LLVMBuildZExt(gallivm->builder, res,
-                             lp_build_vec_type(gallivm, dst_type), "");
+         res = LLVMBuildZExt(gallivm->builder, res, dst_elem_type, "");
+
          if (vector_justify) {
 #ifdef PIPE_ARCH_BIG_ENDIAN
          res = LLVMBuildShl(gallivm->builder, res,
@@ -525,7 +527,7 @@ lp_build_gather(struct gallivm_state *gallivm,
       if (vec_zext) {
          res = LLVMBuildZExt(gallivm->builder, res, res_t, "");
          if (vector_justify) {
-#if PIPE_ARCH_BIG_ENDIAN
+#ifdef PIPE_ARCH_BIG_ENDIAN
             unsigned sv = dst_type.width - src_width;
             res = LLVMBuildShl(gallivm->builder, res,
                                lp_build_const_int_vec(gallivm, res_type, sv), "");

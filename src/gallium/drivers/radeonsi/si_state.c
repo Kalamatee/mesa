@@ -34,13 +34,14 @@
 #include "util/u_format_s3tc.h"
 #include "util/u_memory.h"
 #include "util/u_resource.h"
+#include "util/u_upload_mgr.h"
 
 /* Initialize an external atom (owned by ../radeon). */
 static void
 si_init_external_atom(struct si_context *sctx, struct r600_atom *atom,
 		      struct r600_atom **list_elem)
 {
-	atom->id = list_elem - sctx->atoms.array + 1;
+	atom->id = list_elem - sctx->atoms.array;
 	*list_elem = atom;
 }
 
@@ -50,7 +51,7 @@ void si_init_atom(struct si_context *sctx, struct r600_atom *atom,
 		  void (*emit_func)(struct si_context *ctx, struct r600_atom *state))
 {
 	atom->emit = (void*)emit_func;
-	atom->id = list_elem - sctx->atoms.array + 1; /* index+1 in the atom array */
+	atom->id = list_elem - sctx->atoms.array;
 	*list_elem = atom;
 }
 
@@ -717,8 +718,10 @@ static void si_update_poly_offset_state(struct si_context *sctx)
 {
 	struct si_state_rasterizer *rs = sctx->queued.named.rasterizer;
 
-	if (!rs || !rs->uses_poly_offset || !sctx->framebuffer.state.zsbuf)
+	if (!rs || !rs->uses_poly_offset || !sctx->framebuffer.state.zsbuf) {
+		si_pm4_bind_state(sctx, poly_offset, NULL);
 		return;
+	}
 
 	/* Use the user format, not db_render_format, so that the polygon
 	 * offset behaves as expected by applications.
@@ -916,6 +919,8 @@ static void si_bind_rs_state(struct pipe_context *ctx, void *state)
 	si_update_poly_offset_state(sctx);
 
 	si_mark_atom_dirty(sctx, &sctx->clip_regs);
+	sctx->ia_multi_vgt_param_key.u.line_stipple_enabled =
+		rs->line_stipple_enable;
 	sctx->do_update_shaders = true;
 }
 
@@ -1363,11 +1368,17 @@ static uint32_t si_translate_texformat(struct pipe_screen *screen,
 		case PIPE_FORMAT_Z16_UNORM:
 			return V_008F14_IMG_DATA_FORMAT_16;
 		case PIPE_FORMAT_X24S8_UINT:
+		case PIPE_FORMAT_S8X24_UINT:
+			/*
+			 * Implemented as an 8_8_8_8 data format to fix texture
+			 * gathers in stencil sampling. This affects at least
+			 * GL45-CTS.texture_cube_map_array.sampling on VI.
+			 */
+			return V_008F14_IMG_DATA_FORMAT_8_8_8_8;
 		case PIPE_FORMAT_Z24X8_UNORM:
 		case PIPE_FORMAT_Z24_UNORM_S8_UINT:
 			return V_008F14_IMG_DATA_FORMAT_8_24;
 		case PIPE_FORMAT_X8Z24_UNORM:
-		case PIPE_FORMAT_S8X24_UINT:
 		case PIPE_FORMAT_S8_UINT_Z24_UNORM:
 			return V_008F14_IMG_DATA_FORMAT_24_8;
 		case PIPE_FORMAT_S8_UINT:
@@ -1697,17 +1708,12 @@ static uint32_t si_translate_buffer_dataformat(struct pipe_screen *screen,
 					       const struct util_format_description *desc,
 					       int first_non_void)
 {
-	unsigned type;
 	int i;
 
 	if (desc->format == PIPE_FORMAT_R11G11B10_FLOAT)
 		return V_008F0C_BUF_DATA_FORMAT_10_11_11;
 
 	assert(first_non_void >= 0);
-	type = desc->channel[first_non_void].type;
-
-	if (type == UTIL_FORMAT_TYPE_FIXED)
-		return V_008F0C_BUF_DATA_FORMAT_INVALID;
 
 	if (desc->nr_channels == 4 &&
 	    desc->channel[0].size == 10 &&
@@ -1726,10 +1732,10 @@ static uint32_t si_translate_buffer_dataformat(struct pipe_screen *screen,
 	case 8:
 		switch (desc->nr_channels) {
 		case 1:
+		case 3: /* 3 loads */
 			return V_008F0C_BUF_DATA_FORMAT_8;
 		case 2:
 			return V_008F0C_BUF_DATA_FORMAT_8_8;
-		case 3:
 		case 4:
 			return V_008F0C_BUF_DATA_FORMAT_8_8_8_8;
 		}
@@ -1737,23 +1743,15 @@ static uint32_t si_translate_buffer_dataformat(struct pipe_screen *screen,
 	case 16:
 		switch (desc->nr_channels) {
 		case 1:
+		case 3: /* 3 loads */
 			return V_008F0C_BUF_DATA_FORMAT_16;
 		case 2:
 			return V_008F0C_BUF_DATA_FORMAT_16_16;
-		case 3:
 		case 4:
 			return V_008F0C_BUF_DATA_FORMAT_16_16_16_16;
 		}
 		break;
 	case 32:
-		/* From the Southern Islands ISA documentation about MTBUF:
-		 * 'Memory reads of data in memory that is 32 or 64 bits do not
-		 * undergo any format conversion.'
-		 */
-		if (type != UTIL_FORMAT_TYPE_FLOAT &&
-		    !desc->channel[first_non_void].pure_integer)
-			return V_008F0C_BUF_DATA_FORMAT_INVALID;
-
 		switch (desc->nr_channels) {
 		case 1:
 			return V_008F0C_BUF_DATA_FORMAT_32;
@@ -1762,6 +1760,19 @@ static uint32_t si_translate_buffer_dataformat(struct pipe_screen *screen,
 		case 3:
 			return V_008F0C_BUF_DATA_FORMAT_32_32_32;
 		case 4:
+			return V_008F0C_BUF_DATA_FORMAT_32_32_32_32;
+		}
+		break;
+	case 64:
+		/* Legacy double formats. */
+		switch (desc->nr_channels) {
+		case 1: /* 1 load */
+			return V_008F0C_BUF_DATA_FORMAT_32_32;
+		case 2: /* 1 load */
+			return V_008F0C_BUF_DATA_FORMAT_32_32_32_32;
+		case 3: /* 3 loads */
+			return V_008F0C_BUF_DATA_FORMAT_32_32;
+		case 4: /* 2 loads */
 			return V_008F0C_BUF_DATA_FORMAT_32_32_32_32;
 		}
 		break;
@@ -1781,18 +1792,21 @@ static uint32_t si_translate_buffer_numformat(struct pipe_screen *screen,
 
 	switch (desc->channel[first_non_void].type) {
 	case UTIL_FORMAT_TYPE_SIGNED:
-		if (desc->channel[first_non_void].normalized)
-			return V_008F0C_BUF_NUM_FORMAT_SNORM;
-		else if (desc->channel[first_non_void].pure_integer)
+	case UTIL_FORMAT_TYPE_FIXED:
+		if (desc->channel[first_non_void].size >= 32 ||
+		    desc->channel[first_non_void].pure_integer)
 			return V_008F0C_BUF_NUM_FORMAT_SINT;
+		else if (desc->channel[first_non_void].normalized)
+			return V_008F0C_BUF_NUM_FORMAT_SNORM;
 		else
 			return V_008F0C_BUF_NUM_FORMAT_SSCALED;
 		break;
 	case UTIL_FORMAT_TYPE_UNSIGNED:
-		if (desc->channel[first_non_void].normalized)
-			return V_008F0C_BUF_NUM_FORMAT_UNORM;
-		else if (desc->channel[first_non_void].pure_integer)
+		if (desc->channel[first_non_void].size >= 32 ||
+		    desc->channel[first_non_void].pure_integer)
 			return V_008F0C_BUF_NUM_FORMAT_UINT;
+		else if (desc->channel[first_non_void].normalized)
+			return V_008F0C_BUF_NUM_FORMAT_UNORM;
 		else
 			return V_008F0C_BUF_NUM_FORMAT_USCALED;
 		break;
@@ -2123,11 +2137,15 @@ static void si_initialize_color_surface(struct si_context *sctx,
 		blend_bypass = 1;
 	}
 
-	if ((ntype == V_028C70_NUMBER_UINT || ntype == V_028C70_NUMBER_SINT) &&
-	    (format == V_028C70_COLOR_8 ||
-	     format == V_028C70_COLOR_8_8 ||
-	     format == V_028C70_COLOR_8_8_8_8))
-		surf->color_is_int8 = true;
+	if (ntype == V_028C70_NUMBER_UINT || ntype == V_028C70_NUMBER_SINT) {
+		if (format == V_028C70_COLOR_8 ||
+		    format == V_028C70_COLOR_8_8 ||
+		    format == V_028C70_COLOR_8_8_8_8)
+			surf->color_is_int8 = true;
+		else if (format == V_028C70_COLOR_10_10_10_2 ||
+			 format == V_028C70_COLOR_2_10_10_10)
+			surf->color_is_int10 = true;
+	}
 
 	color_info = S_028C70_FORMAT(format) |
 		S_028C70_COMP_SWAP(swap) |
@@ -2371,7 +2389,8 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 	 */
 	sctx->b.flags |= SI_CONTEXT_INV_VMEM_L1 |
 			 SI_CONTEXT_INV_GLOBAL_L2 |
-			 SI_CONTEXT_FLUSH_AND_INV_FRAMEBUFFER |
+			 SI_CONTEXT_FLUSH_AND_INV_CB |
+			 SI_CONTEXT_FLUSH_AND_INV_DB |
 			 SI_CONTEXT_CS_PARTIAL_FLUSH;
 
 	/* Take the maximum of the old and new count. If the new count is lower,
@@ -2390,6 +2409,7 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 	sctx->framebuffer.spi_shader_col_format_blend = 0;
 	sctx->framebuffer.spi_shader_col_format_blend_alpha = 0;
 	sctx->framebuffer.color_is_int8 = 0;
+	sctx->framebuffer.color_is_int10 = 0;
 
 	sctx->framebuffer.compressed_cb_mask = 0;
 	sctx->framebuffer.nr_samples = util_framebuffer_get_num_samples(state);
@@ -2419,6 +2439,8 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 
 		if (surf->color_is_int8)
 			sctx->framebuffer.color_is_int8 |= 1 << i;
+		if (surf->color_is_int10)
+			sctx->framebuffer.color_is_int10 |= 1 << i;
 
 		if (rtex->fmask.size) {
 			sctx->framebuffer.compressed_cb_mask |= 1 << i;
@@ -2489,6 +2511,7 @@ static void si_set_framebuffer_state(struct pipe_context *ctx,
 
 	sctx->need_check_render_feedback = true;
 	sctx->do_update_shaders = true;
+	sctx->framebuffer.do_update_surf_dirtiness = true;
 }
 
 static void si_emit_framebuffer_state(struct si_context *sctx, struct r600_atom *atom)
@@ -2804,13 +2827,21 @@ si_make_texture_descriptor(struct si_screen *screen,
 	if (desc->colorspace == UTIL_FORMAT_COLORSPACE_ZS) {
 		const unsigned char swizzle_xxxx[4] = {0, 0, 0, 0};
 		const unsigned char swizzle_yyyy[4] = {1, 1, 1, 1};
+		const unsigned char swizzle_wwww[4] = {3, 3, 3, 3};
 
 		switch (pipe_format) {
 		case PIPE_FORMAT_S8_UINT_Z24_UNORM:
-		case PIPE_FORMAT_X24S8_UINT:
 		case PIPE_FORMAT_X32_S8X24_UINT:
 		case PIPE_FORMAT_X8Z24_UNORM:
 			util_format_compose_swizzles(swizzle_yyyy, state_swizzle, swizzle);
+			break;
+		case PIPE_FORMAT_X24S8_UINT:
+			/*
+			 * X24S8 is implemented as an 8_8_8_8 data format, to
+			 * fix texture gathers. This affects at least
+			 * GL45-CTS.texture_cube_map_array.sampling on VI.
+			 */
+			util_format_compose_swizzles(swizzle_wwww, state_swizzle, swizzle);
 			break;
 		default:
 			util_format_compose_swizzles(swizzle_xxxx, state_swizzle, swizzle);
@@ -3333,6 +3364,7 @@ static void *si_create_vertex_elements(struct pipe_context *ctx,
 				       const struct pipe_vertex_element *elements)
 {
 	struct si_vertex_element *v = CALLOC_STRUCT(si_vertex_element);
+	bool used[SI_NUM_VERTEX_BUFFERS] = {};
 	int i;
 
 	assert(count <= SI_MAX_ATTRIBS);
@@ -3340,22 +3372,33 @@ static void *si_create_vertex_elements(struct pipe_context *ctx,
 		return NULL;
 
 	v->count = count;
+	v->desc_list_byte_size = align(count * 16, SI_CPDMA_ALIGNMENT);
+
 	for (i = 0; i < count; ++i) {
 		const struct util_format_description *desc;
+		const struct util_format_channel_description *channel;
 		unsigned data_format, num_format;
 		int first_non_void;
+		unsigned vbo_index = elements[i].vertex_buffer_index;
+		unsigned char swizzle[4];
+
+		if (vbo_index >= SI_NUM_VERTEX_BUFFERS) {
+			FREE(v);
+			return NULL;
+		}
+
+		if (!used[vbo_index]) {
+			v->first_vb_use_mask |= 1 << i;
+			used[vbo_index] = true;
+		}
 
 		desc = util_format_description(elements[i].src_format);
 		first_non_void = util_format_get_first_non_void_channel(elements[i].src_format);
 		data_format = si_translate_buffer_dataformat(ctx->screen, desc, first_non_void);
 		num_format = si_translate_buffer_numformat(ctx->screen, desc, first_non_void);
+		channel = first_non_void >= 0 ? &desc->channel[first_non_void] : NULL;
+		memcpy(swizzle, desc->swizzle, sizeof(swizzle));
 
-		v->rsrc_word3[i] = S_008F0C_DST_SEL_X(si_map_swizzle(desc->swizzle[0])) |
-				   S_008F0C_DST_SEL_Y(si_map_swizzle(desc->swizzle[1])) |
-				   S_008F0C_DST_SEL_Z(si_map_swizzle(desc->swizzle[2])) |
-				   S_008F0C_DST_SEL_W(si_map_swizzle(desc->swizzle[3])) |
-				   S_008F0C_NUM_FORMAT(num_format) |
-				   S_008F0C_DATA_FORMAT(data_format);
 		v->format_size[i] = desc->block.bits / 8;
 
 		/* The hardware always treats the 2-bit alpha channel as
@@ -3363,23 +3406,88 @@ static void *si_create_vertex_elements(struct pipe_context *ctx,
 		 */
 		if (data_format == V_008F0C_BUF_DATA_FORMAT_2_10_10_10) {
 			if (num_format == V_008F0C_BUF_NUM_FORMAT_SNORM) {
-				v->fix_fetch |= SI_FIX_FETCH_A2_SNORM << (2 * i);
+				v->fix_fetch[i] = SI_FIX_FETCH_A2_SNORM;
 			} else if (num_format == V_008F0C_BUF_NUM_FORMAT_SSCALED) {
-				v->fix_fetch |= SI_FIX_FETCH_A2_SSCALED << (2 * i);
+				v->fix_fetch[i] = SI_FIX_FETCH_A2_SSCALED;
 			} else if (num_format == V_008F0C_BUF_NUM_FORMAT_SINT) {
 				/* This isn't actually used in OpenGL. */
-				v->fix_fetch |= SI_FIX_FETCH_A2_SINT << (2 * i);
+				v->fix_fetch[i] = SI_FIX_FETCH_A2_SINT;
+			}
+		} else if (channel && channel->type == UTIL_FORMAT_TYPE_FIXED) {
+			if (desc->swizzle[3] == PIPE_SWIZZLE_1)
+				v->fix_fetch[i] = SI_FIX_FETCH_RGBX_32_FIXED;
+			else
+				v->fix_fetch[i] = SI_FIX_FETCH_RGBA_32_FIXED;
+		} else if (channel && channel->size == 32 && !channel->pure_integer) {
+			if (channel->type == UTIL_FORMAT_TYPE_SIGNED) {
+				if (channel->normalized) {
+					if (desc->swizzle[3] == PIPE_SWIZZLE_1)
+						v->fix_fetch[i] = SI_FIX_FETCH_RGBX_32_SNORM;
+					else
+						v->fix_fetch[i] = SI_FIX_FETCH_RGBA_32_SNORM;
+				} else {
+					v->fix_fetch[i] = SI_FIX_FETCH_RGBA_32_SSCALED;
+				}
+			} else if (channel->type == UTIL_FORMAT_TYPE_UNSIGNED) {
+				if (channel->normalized) {
+					if (desc->swizzle[3] == PIPE_SWIZZLE_1)
+						v->fix_fetch[i] = SI_FIX_FETCH_RGBX_32_UNORM;
+					else
+						v->fix_fetch[i] = SI_FIX_FETCH_RGBA_32_UNORM;
+				} else {
+					v->fix_fetch[i] = SI_FIX_FETCH_RGBA_32_USCALED;
+				}
+			}
+		} else if (channel && channel->size == 64 &&
+			   channel->type == UTIL_FORMAT_TYPE_FLOAT) {
+			switch (desc->nr_channels) {
+			case 1:
+			case 2:
+				v->fix_fetch[i] = SI_FIX_FETCH_RG_64_FLOAT;
+				swizzle[0] = PIPE_SWIZZLE_X;
+				swizzle[1] = PIPE_SWIZZLE_Y;
+				swizzle[2] = desc->nr_channels == 2 ? PIPE_SWIZZLE_Z : PIPE_SWIZZLE_0;
+				swizzle[3] = desc->nr_channels == 2 ? PIPE_SWIZZLE_W : PIPE_SWIZZLE_0;
+				break;
+			case 3:
+				v->fix_fetch[i] = SI_FIX_FETCH_RGB_64_FLOAT;
+				swizzle[0] = PIPE_SWIZZLE_X; /* 3 loads */
+				swizzle[1] = PIPE_SWIZZLE_Y;
+				swizzle[2] = PIPE_SWIZZLE_0;
+				swizzle[3] = PIPE_SWIZZLE_0;
+				break;
+			case 4:
+				v->fix_fetch[i] = SI_FIX_FETCH_RGBA_64_FLOAT;
+				swizzle[0] = PIPE_SWIZZLE_X; /* 2 loads */
+				swizzle[1] = PIPE_SWIZZLE_Y;
+				swizzle[2] = PIPE_SWIZZLE_Z;
+				swizzle[3] = PIPE_SWIZZLE_W;
+				break;
+			default:
+				assert(0);
+			}
+		} else if (channel && desc->nr_channels == 3) {
+			assert(desc->swizzle[0] == PIPE_SWIZZLE_X);
+
+			if (channel->size == 8) {
+				if (channel->pure_integer)
+					v->fix_fetch[i] = SI_FIX_FETCH_RGB_8_INT;
+				else
+					v->fix_fetch[i] = SI_FIX_FETCH_RGB_8;
+			} else if (channel->size == 16) {
+				if (channel->pure_integer)
+					v->fix_fetch[i] = SI_FIX_FETCH_RGB_16_INT;
+				else
+					v->fix_fetch[i] = SI_FIX_FETCH_RGB_16;
 			}
 		}
 
-		/* We work around the fact that 8_8_8 and 16_16_16 data formats
-		 * do not exist by using the corresponding 4-component formats.
-		 * This requires a fixup of the descriptor for bounds checks.
-		 */
-		if (desc->block.bits == 3 * 8 ||
-		    desc->block.bits == 3 * 16) {
-			v->fix_size3 |= (desc->block.bits / 24) << (2 * i);
-		}
+		v->rsrc_word3[i] = S_008F0C_DST_SEL_X(si_map_swizzle(swizzle[0])) |
+				   S_008F0C_DST_SEL_Y(si_map_swizzle(swizzle[1])) |
+				   S_008F0C_DST_SEL_Z(si_map_swizzle(swizzle[2])) |
+				   S_008F0C_DST_SEL_W(si_map_swizzle(swizzle[3])) |
+				   S_008F0C_NUM_FORMAT(num_format) |
+				   S_008F0C_DATA_FORMAT(data_format);
 	}
 	memcpy(v->elements, elements, sizeof(struct pipe_vertex_element) * count);
 
@@ -3419,14 +3527,31 @@ static void si_set_vertex_buffers(struct pipe_context *ctx,
 		for (i = 0; i < count; i++) {
 			const struct pipe_vertex_buffer *src = buffers + i;
 			struct pipe_vertex_buffer *dsti = dst + i;
-			struct pipe_resource *buf = src->buffer;
 
-			pipe_resource_reference(&dsti->buffer, buf);
-			dsti->buffer_offset = src->buffer_offset;
-			dsti->stride = src->stride;
-			r600_context_add_resource_size(ctx, buf);
-			if (buf)
-				r600_resource(buf)->bind_history |= PIPE_BIND_VERTEX_BUFFER;
+			if (unlikely(src->user_buffer)) {
+				/* Zero-stride attribs only. */
+				assert(src->stride == 0);
+
+				/* Assume the attrib has 4 dwords like the vbo
+				 * module. This is also a good upper bound.
+				 *
+				 * Use const_uploader to upload into VRAM directly.
+				 */
+				u_upload_data(sctx->b.b.const_uploader, 0, 16, 16,
+					      src->user_buffer,
+					      &dsti->buffer_offset,
+					      &dsti->buffer);
+				dsti->stride = 0;
+			} else {
+				struct pipe_resource *buf = src->buffer;
+
+				pipe_resource_reference(&dsti->buffer, buf);
+				dsti->buffer_offset = src->buffer_offset;
+				dsti->stride = src->stride;
+				r600_context_add_resource_size(ctx, buf);
+				if (buf)
+					r600_resource(buf)->bind_history |= PIPE_BIND_VERTEX_BUFFER;
+			}
 		}
 	} else {
 		for (i = 0; i < count; i++) {
@@ -3481,14 +3606,14 @@ static void si_set_tess_state(struct pipe_context *ctx,
 	pipe_resource_reference(&cb.buffer, NULL);
 }
 
-static void si_texture_barrier(struct pipe_context *ctx)
+static void si_texture_barrier(struct pipe_context *ctx, unsigned flags)
 {
 	struct si_context *sctx = (struct si_context *)ctx;
 
 	sctx->b.flags |= SI_CONTEXT_INV_VMEM_L1 |
 			 SI_CONTEXT_INV_GLOBAL_L2 |
-			 SI_CONTEXT_FLUSH_AND_INV_CB |
-			 SI_CONTEXT_CS_PARTIAL_FLUSH;
+			 SI_CONTEXT_FLUSH_AND_INV_CB;
+	sctx->framebuffer.do_update_surf_dirtiness = true;
 }
 
 /* This only ensures coherency for shader image/buffer stores. */
@@ -3526,7 +3651,8 @@ static void si_memory_barrier(struct pipe_context *ctx, unsigned flags)
 	}
 
 	if (flags & PIPE_BARRIER_FRAMEBUFFER)
-		sctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_FRAMEBUFFER;
+		sctx->b.flags |= SI_CONTEXT_FLUSH_AND_INV_CB |
+				 SI_CONTEXT_FLUSH_AND_INV_DB;
 
 	if (flags & (PIPE_BARRIER_FRAMEBUFFER |
 		     PIPE_BARRIER_INDIRECT_BUFFER))
